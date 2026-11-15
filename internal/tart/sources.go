@@ -20,7 +20,7 @@ func (b *Client) AdoptSource(ctx context.Context, s backend.Spec, hostKey []byte
 	}
 	defer b.mu.Unlock()
 	if !config.Name(s.Name) {
-		return backend.VM{}, Err
+		return backend.VM{}, failure("source identity/hardware/state condition failed", nil)
 	}
 	if existing := b.records[s.Name]; existing != nil {
 		if _, err := os.Lstat(b.path(s.Name)); os.IsNotExist(err) && existing.Reusable {
@@ -40,12 +40,15 @@ func (b *Client) AdoptSource(ctx context.Context, s backend.Spec, hostKey []byte
 		return backend.VM{}, &backend.Error{Code: 404}
 	}
 	h, e := b.inspect(ctx, s.Name)
-	if e != nil || h.CPU != s.CPU || h.Memory != s.Memory || (h.State != "stopped" && h.State != "suspended") {
-		return backend.VM{}, Err
+	if e != nil {
+		return backend.VM{}, failure("adopt inspect", e)
+	}
+	if h.CPU != s.CPU || h.Memory != s.Memory || (h.State != "stopped" && h.State != "suspended") {
+		return backend.VM{}, failure("source identity/hardware/state condition failed", nil)
 	}
 	var id [16]byte
 	if _, e = rand.Read(id[:]); e != nil {
-		return backend.VM{}, Err
+		return backend.VM{}, failure("source random identity", e)
 	}
 	r := &record{Spec: s, UID: hex.EncodeToString(id[:]), Phase: "prepared", Reusable: true, Delivered: true, MAC: h.MACAddress, Created: time.Now().UTC()}
 	r.HostKey = append([]byte(nil), hostKey...)
@@ -62,7 +65,7 @@ func (b *Client) RetainSource(ctx context.Context, name, uid string) error {
 	defer b.mu.Unlock()
 	r := b.records[name]
 	if r == nil || r.UID != uid {
-		return Err
+		return failure("retain source UID mismatch", nil)
 	}
 	r.Reusable = true
 	r.Delivered = true

@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"golang.org/x/crypto/ssh"
 	"io"
 	"net"
@@ -26,7 +27,7 @@ func Exec(ctx context.Context, dial func(context.Context) (net.Conn, error), use
 	defer cancel()
 	conn, e := dial(ctx)
 	if e != nil {
-		return nil, Err
+		return nil, failure("dial", errors.Join(e, ctx.Err()))
 	}
 	defer conn.Close()
 	stop := context.AfterFunc(ctx, func() { conn.Close() })
@@ -35,21 +36,21 @@ func Exec(ctx context.Context, dial func(context.Context) (net.Conn, error), use
 	if len(key) > 0 {
 		pub, _, _, _, e := ssh.ParseAuthorizedKey(key)
 		if e != nil {
-			return nil, Err
+			return nil, failure("parse host key", errors.Join(e, ctx.Err()))
 		}
 		callback = ssh.FixedHostKey(pub)
 	}
 	conn.SetDeadline(time.Now().Add(15 * time.Second))
 	cc, ch, req, e := ssh.NewClientConn(conn, "guest", &ssh.ClientConfig{User: user, Auth: []ssh.AuthMethod{ssh.Password(password)}, HostKeyCallback: callback})
 	if e != nil {
-		return nil, Err
+		return nil, failure("SSH handshake", errors.Join(e, ctx.Err()))
 	}
 	conn.SetDeadline(time.Time{})
 	client := ssh.NewClient(cc, ch, req)
 	defer client.Close()
 	session, e := client.NewSession()
 	if e != nil {
-		return nil, Err
+		return nil, failure("SSH session", errors.Join(e, ctx.Err()))
 	}
 	defer session.Close()
 	var out output
@@ -57,7 +58,11 @@ func Exec(ctx context.Context, dial func(context.Context) (net.Conn, error), use
 	session.Stdout = &out
 	session.Stderr = io.Discard
 	if e = session.Run("/bin/bash -s"); e != nil {
-		return nil, Err
+		return nil, failure("SSH execution", errors.Join(e, ctx.Err()))
 	}
 	return out.Bytes(), nil
+}
+
+func failure(operation string, cause error) error {
+	return fmt.Errorf("%w: %s: %w", Err, operation, cause)
 }

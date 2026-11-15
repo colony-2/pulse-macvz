@@ -3,10 +3,12 @@ package orchard
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -110,5 +112,125 @@ func TestSuspendPreservesUnknownFieldsAndUID(t *testing.T) {
 	}
 	if err = c.Suspend(t.Context(), "name", "owned"); err != nil || puts != 1 {
 		t.Fatal(err, puts)
+	}
+}
+
+type diagnosticTransport func(*http.Request) (*http.Response, error)
+
+func (f diagnosticTransport) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+type diagnosticBody struct {
+	data  []byte
+	read  int
+	cause error
+}
+
+func (b *diagnosticBody) Read(p []byte) (int, error) {
+	if len(b.data) == 0 {
+		if b.cause != nil {
+			return 0, b.cause
+		}
+		return 0, io.EOF
+	}
+	n := copy(p, b.data)
+	b.data = b.data[n:]
+	b.read += n
+	return n, nil
+}
+func (*diagnosticBody) Close() error { return nil }
+func TestDiagnosticHTTPErrorCapture(t *testing.T) {
+	for _, size := range []int{16383, 16384, 16385, 1 << 20} {
+		t.Run(fmt.Sprint(size), func(t *testing.T) {
+			body := &diagnosticBody{data: []byte(strings.Repeat("x", size))}
+			c, _ := New(config.Orchard{URL: "http://fixture.invalid", AllowInsecureHTTP: true})
+			calls := 0
+			c.HTTP.Transport = diagnosticTransport(func(*http.Request) (*http.Response, error) {
+				calls++
+				return &http.Response{StatusCode: 503, Body: body, Header: make(http.Header)}, nil
+			})
+			_, err := c.List(t.Context())
+			var status *Error
+			prefix := strings.Repeat("x", min(size, 16384))
+			want := prefix
+			if size > 16384 {
+				want += "[truncated after 16384 bytes]"
+			}
+			if !IsStatus(err, 503) || !errors.As(err, &status) || !strings.HasSuffix(err.Error(), want) || strings.Contains(err.Error(), "[truncated") != (size > 16384) || body.read > 16385 || calls != 1 {
+				t.Fatalf("capture size=%d read=%d calls=%d err length=%d", size, body.read, calls, len(err.Error()))
+			}
+		})
+	}
+	raw := errors.New("reader failed\nrequest=\"synthetic\"")
+	for _, size := range []int{7, 16385} {
+		t.Run(fmt.Sprintf("read-fault-%d", size), func(t *testing.T) {
+			c, _ := New(config.Orchard{URL: "http://fixture.invalid", AllowInsecureHTTP: true})
+			body := &diagnosticBody{data: []byte(strings.Repeat("y", size)), cause: raw}
+			c.HTTP.Transport = diagnosticTransport(func(*http.Request) (*http.Response, error) {
+				return &http.Response{StatusCode: 503, Body: body, Header: make(http.Header)}, nil
+			})
+			_, err := c.List(t.Context())
+			if !IsStatus(err, 503) || (size < 16385 && !errors.Is(err, raw)) || !strings.Contains(err.Error(), strings.Repeat("y", min(size, 16384))) {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+func TestDiagnosticHTTPReturnedCauses(t *testing.T) {
+	raw := errors.New("transport says\n\"preserve this\"")
+	c, _ := New(config.Orchard{URL: "http://fixture.invalid", AllowInsecureHTTP: true})
+	c.HTTP.Transport = diagnosticTransport(func(*http.Request) (*http.Response, error) { return nil, raw })
+	_, err := c.List(t.Context())
+	if !errors.Is(err, raw) || !errors.Is(err, Err) || !strings.Contains(err.Error(), raw.Error()) {
+		t.Fatal(err)
+	}
+	c.Base = ":"
+	if err = c.call(t.Context(), "GET", "/vms", nil, nil); err == nil || !strings.Contains(err.Error(), "construct request") {
+		t.Fatal(err)
+	}
+	c.Base = "http://fixture.invalid"
+	if err = c.call(t.Context(), "POST", "/vms", make(chan int), nil); err == nil || !strings.Contains(err.Error(), "marshal") {
+		t.Fatal(err)
+	}
+	for _, body := range []string{"[{malformed PRIVATE-SUCCESS-BODY", strings.Repeat("z", MaxBody+1)} {
+		c.HTTP.Transport = diagnosticTransport(func(*http.Request) (*http.Response, error) {
+			return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(body)), Header: make(http.Header)}, nil
+		})
+		_, err = c.List(t.Context())
+		if err == nil || strings.Contains(err.Error(), "PRIVATE-SUCCESS-BODY") {
+			t.Fatal(err)
+		}
+	}
+}
+
+type diagnosticPartialBody struct {
+	data  []byte
+	cause error
+	read  int
+}
+
+func (b *diagnosticPartialBody) Read(p []byte) (int, error) {
+	n := copy(p, b.data)
+	b.data = b.data[n:]
+	b.read += n
+	if len(b.data) == 0 {
+		return n, b.cause
+	}
+	return n, nil
+}
+func (*diagnosticPartialBody) Close() error { return nil }
+func TestDiagnosticPartialErrorBodyWithReadFailure(t *testing.T) {
+	for _, size := range []int{8, 16385} {
+		t.Run(fmt.Sprint(size), func(t *testing.T) {
+			raw := errors.New("partial response reader\n\"cause\"")
+			body := &diagnosticPartialBody{data: []byte(strings.Repeat("p", size)), cause: raw}
+			c, _ := New(config.Orchard{URL: "http://fixture.invalid", AllowInsecureHTTP: true})
+			c.HTTP.Transport = diagnosticTransport(func(*http.Request) (*http.Response, error) {
+				return &http.Response{StatusCode: 503, Body: body, Header: make(http.Header)}, nil
+			})
+			_, e := c.List(t.Context())
+			if !IsStatus(e, 503) || !errors.Is(e, raw) || !strings.Contains(e.Error(), strings.Repeat("p", min(size, 16384))) || strings.Contains(e.Error(), "[truncated") != (size > 16384) || body.read > 16385 {
+				t.Fatal(e)
+			}
+		})
 	}
 }

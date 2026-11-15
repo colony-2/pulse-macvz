@@ -7,6 +7,7 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -39,7 +40,7 @@ type Client struct {
 func New(c config.Orchard) (*Client, error) {
 	base, e := config.NormalizeURL(c.URL, c.AllowInsecureHTTP)
 	if e != nil {
-		return nil, e
+		return nil, fmt.Errorf("Orchard URL: %w", e)
 	}
 	tr := http.DefaultTransport.(*http.Transport).Clone()
 	// A controller connection must not be redirected through an inherited proxy.
@@ -52,20 +53,20 @@ func New(c config.Orchard) (*Client, error) {
 			pool = x509.NewCertPool()
 		}
 		if !pool.AppendCertsFromPEM(b) {
-			return nil, config.Err
+			return nil, fmt.Errorf("Orchard CA contains no certificates: %w", config.Err)
 		}
 		tr.TLSClientConfig.RootCAs = pool
 	}
 	token := string(c.Token)
 	if (token == "") != (c.Username == "") {
-		return nil, config.Err
+		return nil, fmt.Errorf("Orchard username/token must be configured together: %w", config.Err)
 	}
 	timeout := c.RequestTimeout
 	if timeout == 0 {
 		timeout = 30 * time.Second
 	}
 	if timeout < 0 {
-		return nil, config.Err
+		return nil, fmt.Errorf("Orchard request timeout is negative: %w", config.Err)
 	}
 	return &Client{Base: base, HTTP: &http.Client{Transport: tr, Timeout: timeout, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}, user: c.Username, token: token}, nil
 }
@@ -74,13 +75,13 @@ func (c *Client) call(ctx context.Context, method, path string, in, out any) err
 	if in != nil {
 		b, e := json.Marshal(in)
 		if e != nil {
-			return Err
+			return failure("marshal request", e)
 		}
 		body = bytes.NewReader(b)
 	}
 	req, e := http.NewRequestWithContext(ctx, method, c.Base+path, body)
 	if e != nil {
-		return Err
+		return failure("construct request", e)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	if c.token != "" {
@@ -88,18 +89,32 @@ func (c *Client) call(ctx context.Context, method, path string, in, out any) err
 	}
 	resp, e := c.HTTP.Do(req)
 	if e != nil {
-		return Err
+		return failure(method+" "+path, e)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return &Error{Code: resp.StatusCode}
+		b, readErr := io.ReadAll(io.LimitReader(resp.Body, 16385))
+		text := string(b)
+		if len(b) > 16384 {
+			text = string(b[:16384]) + "[truncated after 16384 bytes]"
+		}
+		status := fmt.Errorf("%s %s: %w: %s", method, path, &Error{Code: resp.StatusCode}, text)
+		if readErr != nil {
+			return errors.Join(status, failure("read error response", readErr))
+		}
+		return status
 	}
 	b, e := io.ReadAll(io.LimitReader(resp.Body, MaxBody+1))
-	if e != nil || len(b) > MaxBody {
-		return Err
+	if e != nil {
+		return failure("read response", e)
 	}
-	if out != nil && json.Unmarshal(b, out) != nil {
-		return Err
+	if len(b) > MaxBody {
+		return failure("response exceeds success body limit", nil)
+	}
+	if out != nil {
+		if e := json.Unmarshal(b, out); e != nil {
+			return failure("decode response", e)
+		}
 	}
 	return nil
 }
@@ -111,7 +126,7 @@ func (c *Client) Info(ctx context.Context) error {
 		return e
 	}
 	if info.Version == "" {
-		return Err
+		return failure("controller version missing", nil)
 	}
 	return nil
 }
@@ -120,12 +135,12 @@ func (c *Client) List(ctx context.Context) ([]VM, error) {
 	e := c.call(ctx, "GET", "/vms", nil, &v)
 	if e == nil {
 		if v == nil {
-			return nil, Err
+			return nil, failure("inventory is null", nil)
 		}
 		seen := map[string]bool{}
 		for _, vm := range v {
 			if vm.Name == "" || vm.UID == "" || seen[vm.Name] {
-				return nil, Err
+				return nil, failure("inventory identity missing or duplicate", nil)
 			}
 			seen[vm.Name] = true
 		}
@@ -159,15 +174,18 @@ func (c *Client) Suspend(ctx context.Context, name, uid string) error {
 		return e
 	}
 	var gotUID, power string
-	if json.Unmarshal(v["uid"], &gotUID) != nil || gotUID != uid {
-		return Err
+	if e := json.Unmarshal(v["uid"], &gotUID); e != nil {
+		return failure("suspend decode UID", e)
+	}
+	if gotUID != uid {
+		return failure("suspend UID mismatch", nil)
 	}
 	_ = json.Unmarshal(v["powerState"], &power)
 	if power == "suspended" {
 		return nil
 	}
 	if power != "running" {
-		return Err
+		return failure("suspend requires running power state", nil)
 	}
 	v["powerState"] = json.RawMessage(`"suspended"`)
 	return c.call(ctx, "PUT", path, v, nil)
@@ -187,3 +205,10 @@ func (c *Client) Close() error { c.HTTP.CloseIdleConnections(); return nil }
 // Worker-local Tart sources are not listed by the controller. A disposable
 // clone probes their presence before falling back to initial preparation.
 func (c *Client) ProbeLocalSources() bool { return true }
+
+func failure(operation string, cause error) error {
+	if cause == nil {
+		return fmt.Errorf("%w: %s", Err, operation)
+	}
+	return fmt.Errorf("%w: %s: %w", Err, operation, cause)
+}

@@ -40,7 +40,7 @@ func endpointFailure(dir, stage string, output []byte, err error) error {
 	}
 	detail := fmt.Sprintf("%s: %v\n%s", stage, err, strings.TrimSpace(string(output)))
 	_ = os.WriteFile(filepath.Join(dir, "last-error.log"), []byte(detail+"\n"), 0600)
-	return fmt.Errorf("Docker endpoint %s: %w", detail, Err)
+	return fmt.Errorf("Docker endpoint %s: %w", detail, errors.Join(Err, err))
 }
 func (b *Client) Endpoint(ctx context.Context, name, uid string, port int) (bool, error) {
 	if e := b.mu.LockContext(ctx); e != nil {
@@ -49,7 +49,7 @@ func (b *Client) Endpoint(ctx context.Context, name, uid string, port int) (bool
 	defer b.mu.Unlock()
 	v, e := b.get(ctx, name)
 	if e != nil || v.UID != uid || v.Stopped() {
-		return false, fmt.Errorf("Docker endpoint engine identity/state unavailable: %w", Err)
+		return false, failure("Docker endpoint engine identity/state unavailable", e)
 	}
 	data, e := b.command(ctx, "ip", name, "--wait", "5")
 	if e != nil {
@@ -57,7 +57,7 @@ func (b *Client) Endpoint(ctx context.Context, name, uid string, port int) (bool
 	}
 	ip := strings.TrimSpace(string(data))
 	if net.ParseIP(ip) == nil {
-		return false, Err
+		return false, failure("Docker endpoint IP is invalid", nil)
 	}
 	return b.ensureEndpoint(ctx, uid, net.JoinHostPort(ip, "2222"), port)
 }
@@ -100,7 +100,7 @@ func (b *Client) ensureEndpoint(ctx context.Context, uid, target string, port in
 		python = "/usr/bin/python3"
 	}
 	if !filepath.IsAbs(python) {
-		return false, Err
+		return false, failure("Docker endpoint Python path must be absolute", nil)
 	}
 	script := filepath.Join(dir, "bridge.py")
 	plist := filepath.Join(dir, "service.plist")

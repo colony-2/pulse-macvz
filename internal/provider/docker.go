@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	api "github.com/colony-2/pulse-provider-api"
 	"github.com/colony-2/pulse-tart/internal/backend"
@@ -70,7 +71,15 @@ func (p *Provider) dockerMatch(g config.SlotGroup, l api.Launch) bool {
 	}
 	b := p.base(g.Base)
 	b.Capabilities = append(slices.Clone(b.Capabilities), "docker")
-	return baseMatches(b, l) && g.CPU*1000 >= l.CPUMillis && (g.MemoryMiB-512)*(1<<20) >= l.MemoryBytes
+	if !p.baseFits(b, l) {
+		return false
+	}
+	p.observe("Docker group %s configured CPU millicores request=%d limit=%d", g.Name, l.CPUMillis, g.CPU*1000)
+	if g.CPU*1000 < l.CPUMillis {
+		return false
+	}
+	p.observe("Docker group %s configured memory bytes request=%d limit=%d", g.Name, l.MemoryBytes, (g.MemoryMiB-512)*(1<<20))
+	return (g.MemoryMiB-512)*(1<<20) >= l.MemoryBytes
 }
 func shell(s string) string { return "'" + strings.ReplaceAll(s, "'", "'\"'\"'") + "'" }
 func fileScript(path string, data []byte, linux bool) string {
@@ -188,16 +197,22 @@ func (p *Provider) pairVM(ctx context.Context, pair *PairRecord, primary bool) (
 	}
 	v, e := p.Backend.Get(ctx, name)
 	if backend.IsStatus(e, 404) {
+		p.observeError("Docker pair missing candidate", e)
 		return v, false, nil
 	}
 	if e != nil {
-		return v, false, ErrBackend
+		return v, false, backendError("Docker pair Get", e)
 	}
 	if !p.pairMatches(pair, v, primary) {
 		pair.Phase = "quarantine"
-		_ = p.Store.save()
-		return v, false, fmt.Errorf("Docker allocation identity mismatch")
+		cause := fmt.Errorf("Docker allocation identity mismatch")
+		if p.diagnostic == nil {
+			p.pairPreparation(pair, primary, cause)
+		}
+		saveErr := p.Store.save()
+		return v, false, combine("Docker pair identity", cause, "save Docker quarantine", saveErr)
 	}
+	p.pairPreparation(pair, primary, nil)
 	if primary {
 		pair.PrimaryUID = v.UID
 	} else {
@@ -212,7 +227,7 @@ func (p *Provider) pairEngineReady(ctx context.Context, pair *PairRecord) (bool,
 	}
 	ev, e := p.Backend.(templateBackend).Events(ctx, name)
 	if e != nil {
-		return false, ErrBackend
+		return false, backendError("Docker engine events", e)
 	}
 	for _, v := range ev {
 		for _, line := range strings.Split(v.Payload+"\n"+v.Message, "\n") {
@@ -238,7 +253,7 @@ func (p *Provider) configurePrimary(ctx context.Context, pair *PairRecord) error
 	_, e = p.Backend.(dockerBackend).Exec(ctx, pair.Primary.Name, pair.PrimaryUID, []byte(content))
 	return e
 }
-func (p *Provider) primaryReady(ctx context.Context, pair *PairRecord) bool {
+func (p *Provider) primaryReadyDetail(ctx context.Context, pair *PairRecord) error {
 	b := p.base(pair.Base)
 	g := p.dockerGroup(pair.SlotID)
 	// Both the OS/resource facts and the exact engine identity must be observed.
@@ -269,7 +284,13 @@ assert r('sudo','-n','-u','pulseworker','/opt/pulse-tart/bin/docker','--host','u
 	}
 	code += "print('PULSE_DOCKER_PRIMARY_READY')\n"
 	out, e := p.Backend.(dockerBackend).Exec(ctx, pair.Primary.Name, pair.PrimaryUID, []byte("set -eu\ncd /tmp\nsudo -n /opt/pulse-tart/bin/python3 - <<'PULSE_CHECK'\n"+code+"PULSE_CHECK\n"))
-	return e == nil && strings.Contains(string(out), "PULSE_DOCKER_PRIMARY_READY")
+	if e != nil {
+		return backendError("Docker primary readiness Exec", e)
+	}
+	if !strings.Contains(string(out), "PULSE_DOCKER_PRIMARY_READY") {
+		return errors.New("Docker primary readiness missing PULSE_DOCKER_PRIMARY_READY marker")
+	}
+	return nil
 }
 func (p *Provider) reclaimPair(ctx context.Context, pair *PairRecord) error {
 	b := p.Backend.(dockerBackend)
@@ -303,7 +324,7 @@ func (p *Provider) reclaimPair(ctx context.Context, pair *PairRecord) error {
 			return b.Stop(ctx, v.Name, v.UID)
 		}
 		if e = p.Backend.Delete(ctx, v.Name); e != nil && !backend.IsStatus(e, 404) {
-			return ErrBackend
+			return backendError("Docker delete allocation", e)
 		}
 		if _, exists, e = p.pairVM(ctx, pair, primary); e != nil {
 			return e
@@ -326,6 +347,7 @@ func (p *Provider) reclaimPair(ctx context.Context, pair *PairRecord) error {
 	pair.Phase = "gone"
 	if r := p.Store.data.Records[pair.LaunchID]; r != nil {
 		r.Phase = "done"
+		r.diagnostic = ""
 	}
 	// Release stored transport credentials only after all native resources are gone.
 	pair.Primary.StartupScript.Content = ""
@@ -413,8 +435,13 @@ func (p *Provider) reconcilePairs(ctx context.Context) error {
 					pair.EngineUID = v.UID
 				}
 			}
-			if e = p.Store.save(); e != nil {
-				return e
+			cause := e
+			if cause == nil && ((primary && pair.PrimaryUID == "") || (!primary && pair.EngineUID == "")) {
+				cause = errors.New("Docker preparation create identity mismatch")
+			}
+			p.pairPreparation(pair, primary, cause)
+			if saveErr := p.Store.save(); saveErr != nil {
+				return combine("Docker preparation create", cause, "save Docker preparation result", saveErr)
 			}
 			continue
 		}
@@ -474,8 +501,13 @@ func (p *Provider) reconcilePairs(ctx context.Context) error {
 				if e == nil && p.pairMatches(pair, v, true) {
 					pair.PrimaryUID = v.UID
 				}
-				if e = p.Store.save(); e != nil {
-					return e
+				cause := e
+				if cause == nil && pair.PrimaryUID == "" {
+					cause = errors.New("Docker primary create identity mismatch")
+				}
+				p.pairPreparation(pair, true, cause)
+				if saveErr := p.Store.save(); saveErr != nil {
+					return combine("Docker primary create", cause, "save Docker primary result", saveErr)
 				}
 				continue
 			}
@@ -487,6 +519,7 @@ func (p *Provider) reconcilePairs(ctx context.Context) error {
 		if !hasPrimary {
 			continue
 		}
+		var observationCause error
 		switch pair.Phase {
 		case "primary-dispatch", "configuring":
 			if pair.Engine.Name == "" {
@@ -503,25 +536,35 @@ func (p *Provider) reconcilePairs(ctx context.Context) error {
 				return e
 			}
 			if e = p.configurePrimary(ctx, pair); e != nil {
+				p.preparation("pair:"+pair.ID, backendError("configure Docker primary", e))
 				continue
 			}
-			if !p.primaryReady(ctx, pair) {
+			if e := p.primaryReadyDetail(ctx, pair); e != nil {
+				p.preparation("pair:"+pair.ID, e)
 				continue
 			}
+			p.preparation("pair:"+pair.ID, nil)
 			pair.Phase = "ready"
 		case "handoff-intent":
 			// Observe the exact durable receipt. Never resubmit the envelope after ambiguity.
 			script := "set -eu\ntest \"$(sudo -n cat /var/db/pulse-tart/fingerprint)\" = " + shell(pair.DeliveryHash) + "\nsudo -n /bin/bash /opt/pulse-tart-image/bootstrap-guest.sh\necho PULSE_HANDOFF_OK\n"
 			out, e := b.Exec(ctx, pair.Primary.Name, pair.PrimaryUID, []byte(script))
+			if e != nil {
+				observationCause = backendError("observe Docker handoff receipt Exec", e)
+			} else if !strings.Contains(string(out), "PULSE_HANDOFF_OK") {
+				observationCause = errors.New("Docker handoff receipt missing PULSE_HANDOFF_OK marker")
+			}
+			p.preparation("pair:"+pair.ID, observationCause)
 			if e == nil && strings.Contains(string(out), "PULSE_HANDOFF_OK") {
 				pair.Phase = "running"
 				r := p.Store.data.Records[pair.LaunchID]
 				r.Outcome = api.Accepted
+				r.diagnostic = ""
 				r.Phase = "active"
 			}
 		}
-		if e = p.Store.save(); e != nil {
-			return e
+		if saveErr := p.Store.save(); saveErr != nil {
+			return combine("Docker handoff receipt", observationCause, "save Docker reconciliation result", saveErr)
 		}
 	}
 	if p.Config.Docker == nil {
@@ -553,10 +596,10 @@ func (p *Provider) reconcilePairs(ctx context.Context) error {
 				}
 				v, e := p.Backend.Get(ctx, s.Name)
 				if e != nil {
-					return ErrBackend
+					return backendError("Docker template Get", e)
 				}
 				if !p.matchesSlot(s, v) || !suspended(v) {
-					return ErrBackend
+					return backendError("Docker template identity or suspension mismatch", nil)
 				}
 			}
 			pair, e := p.newPair(g, slot, p.Store.data.Slots[slot])
@@ -582,10 +625,12 @@ func (p *Provider) reconcilePairs(ctx context.Context) error {
 func (p *Provider) submitDocker(ctx context.Context, l api.Launch, hash string) (api.Submission, bool) {
 	wants := slices.Contains(l.Capabilities, "docker")
 	compatible := false
+	compatibleGroups := []config.SlotGroup{}
 	ordinary := false
 	for _, g := range p.Config.Slots {
 		if p.dockerMatch(g, l) {
 			compatible = true
+			compatibleGroups = append(compatibleGroups, g)
 		}
 		if g.DockerProfile == "" && baseMatches(p.base(g.Base), l) && g.CPU*1000 >= l.CPUMillis && g.MemoryMiB*(1<<20) >= l.MemoryBytes {
 			ordinary = true
@@ -594,18 +639,42 @@ func (p *Provider) submitDocker(ctx context.Context, l api.Launch, hash string) 
 	if !wants && (!compatible || ordinary) {
 		return api.Submission{}, false
 	}
-	if !compatible || l.TimeoutSeconds != 0 || l.StartBefore != nil || l.ScratchBytes != 0 {
-		return result(l.LaunchID, api.Unsupported), true
+	if !compatible {
+		p.observe("no Docker group passed configured request fit")
+		return p.submission(l.LaunchID, api.Unsupported), true
+	}
+	if condition := unsupportedSemantics(l); condition != "" {
+		p.observe("%s", condition)
+		return p.submission(l.LaunchID, api.Unsupported), true
 	}
 	if !p.fitsJobCounts(p.jobReservations()) {
-		return result(l.LaunchID, api.NoCapacity), true
+		return p.submission(l.LaunchID, api.NoCapacity), true
 	}
 	// Preserve configured base preference; stable smallest fitting slot within it.
 	candidates := []*PairRecord{}
 	for _, pair := range p.Store.data.Pairs {
 		g := p.dockerGroup(pair.SlotID)
-		if pair.Phase == "ready" && pair.LaunchID == "" && g.Count > 0 && pair.ConfigHash == p.dockerHash(g) && p.dockerMatch(g, l) {
+		if pair.Phase != "ready" {
+			p.observe("Docker slot %s recorded readiness phase=%s; occupancy unknown", pair.SlotID, pair.Phase)
+			p.earlierPreparation("pair:" + pair.ID)
+			continue
+		}
+		if pair.LaunchID != "" {
+			p.observe("Docker slot %s reservation occupied", pair.SlotID)
+			continue
+		}
+		if g.Count <= 0 {
+			p.observe("Docker slot %s configured count disabled", pair.SlotID)
+			continue
+		}
+		if pair.ConfigHash != p.dockerHash(g) {
+			p.observe("Docker slot %s stale configuration", pair.SlotID)
+			continue
+		}
+		if p.dockerMatch(g, l) {
 			candidates = append(candidates, pair)
+		} else {
+			p.observe("Docker slot %s configured request fit failed", pair.SlotID)
 		}
 	}
 	pref := map[string]int{}
@@ -628,22 +697,27 @@ func (p *Provider) submitDocker(ctx context.Context, l api.Launch, hash string) 
 	for _, pair := range candidates {
 		v, exists, e := p.pairVM(ctx, pair, true)
 		if e != nil {
-			return result(l.LaunchID, api.Unavailable), true
+			p.observeError("Docker primary observation", e)
+			return p.submission(l.LaunchID, api.Unavailable), true
 		}
 		if !exists || v.Stopped() {
+			p.observe("Docker primary missing or stopped")
 			continue
 		}
 		if pair.Engine.Name != "" {
 			v, exists, e = p.pairVM(ctx, pair, false)
 			if e != nil {
-				return result(l.LaunchID, api.Unavailable), true
+				p.observeError("Docker engine observation", e)
+				return p.submission(l.LaunchID, api.Unavailable), true
 			}
 			if !exists || v.Stopped() {
+				p.observe("Docker engine missing or stopped")
 				continue
 			}
 		}
-		if !p.primaryReady(ctx, pair) {
-			return result(l.LaunchID, api.Unavailable), true
+		if e := p.primaryReadyDetail(ctx, pair); e != nil {
+			p.observeError("Docker primary readiness", e)
+			return p.submission(l.LaunchID, api.Unavailable), true
 		}
 		b := p.base(pair.Base)
 		if wants {
@@ -662,8 +736,10 @@ func (p *Provider) submitDocker(ctx context.Context, l api.Launch, hash string) 
 		r := &Record{LaunchID: l.LaunchID, Fingerprint: hash, Name: pair.Primary.Name, UID: pair.PrimaryUID, NativeHash: pair.PrimaryHash, Job: l.Job, Created: time.Now().UTC(), Outcome: api.Unknown, Phase: "dispatch", SlotID: pair.SlotID, PairID: pair.ID}
 		p.Store.data.Records[l.LaunchID] = r
 		p.preferredGroup = ""
-		if p.Store.save() != nil {
-			return result(l.LaunchID, api.Unknown), true
+		if e := p.Store.save(); e != nil {
+			p.observeError("save Docker handoff intent", e)
+			r.diagnostic = p.diagnosticText()
+			return p.submission(l.LaunchID, api.Unknown), true
 		}
 		decode := "-D"
 		if b.OS == "linux" {
@@ -676,15 +752,52 @@ func (p *Provider) submitDocker(ctx context.Context, l api.Launch, hash string) 
 			r.Phase = "active"
 			pair.Phase = "running"
 		}
-		if p.Store.save() != nil {
-			return result(l.LaunchID, api.Unknown), true
+		if e != nil {
+			p.observeError("Docker handoff Exec", e)
+		} else if r.Outcome != api.Accepted {
+			p.observe("Docker handoff missing PULSE_HANDOFF_OK marker")
+		} else {
+			p.observe("Docker handoff observed PULSE_HANDOFF_OK; result durability not yet confirmed")
 		}
-		return result(l.LaunchID, r.Outcome), true
+		if e := p.Store.save(); e != nil {
+			p.observeError("save Docker handoff result", e)
+			r.diagnostic = p.diagnosticText()
+			return p.submission(l.LaunchID, api.Unknown), true
+		}
+		if r.Outcome != api.Accepted {
+			r.diagnostic = p.diagnosticText()
+		}
+		return p.submission(l.LaunchID, r.Outcome), true
+	}
+	// No pair was admitted. Cite only retained preparation evidence for missing
+	// pairs in groups whose configured request fit was already checked above.
+	// This does not probe capacity or infer reservation occupancy/readiness.
+	prepared := map[string]bool{}
+	for _, pair := range p.Store.data.Pairs {
+		if pair.Phase != "gone" {
+			prepared[pair.SlotID] = true
+		}
+	}
+	for _, g := range compatibleGroups {
+		for i := 1; i <= g.Count; i++ {
+			slot := fmt.Sprintf("%s-%04d", g.Name, i)
+			if prepared[slot] {
+				continue
+			}
+			p.observe("Docker slot %s readiness unknown: no prepared pair; occupancy unknown", slot)
+			image := p.Store.data.Images[p.baseImageName(g.Base)]
+			if image == nil || image.Phase != "ready" {
+				p.earlierPreparation("image:" + p.baseImageName(g.Base))
+			} else if p.base(g.Base).OS != "linux" {
+				p.earlierPreparation("slot:" + slot)
+			}
+		}
 	}
 	if err := p.requestJobRoom(ctx, l); err != nil {
-		return result(l.LaunchID, api.Unavailable), true
+		p.observeError("Docker room request", err)
+		return p.submission(l.LaunchID, api.Unavailable), true
 	}
-	return result(l.LaunchID, api.NoCapacity), true
+	return p.submission(l.LaunchID, api.NoCapacity), true
 }
 
 func (p *Provider) dockerReadyTimeout() time.Duration {
@@ -706,7 +819,7 @@ func (p *Provider) pairInstances(vs []backend.VM, q api.ListRequest, after strin
 		}
 		r := p.Store.data.Records[pair.LaunchID]
 		if r == nil {
-			return nil, ErrState
+			return nil, stateError("Docker allocation references missing launch record", nil)
 		}
 		if q.LaunchID != "" && q.LaunchID != r.LaunchID {
 			continue
@@ -749,7 +862,7 @@ func (p *Provider) DockerAllocations() ([]DockerStatus, error) {
 	p.Store.mu.Lock()
 	defer p.Store.mu.Unlock()
 	if p.Store.broken {
-		return nil, ErrState
+		return nil, p.Store.stateError()
 	}
 	out := []DockerStatus{}
 	for _, pair := range p.Store.data.Pairs {
@@ -759,4 +872,8 @@ func (p *Provider) DockerAllocations() ([]DockerStatus, error) {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Slot < out[j].Slot })
 	return out, nil
+}
+
+func (p *Provider) primaryReady(ctx context.Context, pair *PairRecord) bool {
+	return p.primaryReadyDetail(ctx, pair) == nil
 }

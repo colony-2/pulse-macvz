@@ -38,7 +38,7 @@ func (p *Provider) Images() ([]ImageStatus, error) {
 	p.Store.mu.Lock()
 	defer p.Store.mu.Unlock()
 	if p.Store.broken {
-		return nil, ErrState
+		return nil, p.Store.stateError()
 	}
 	out := []ImageStatus{}
 	for _, r := range p.Store.data.Images {
@@ -140,22 +140,25 @@ func (p *Provider) reconcileImages(ctx context.Context) error {
 				continue
 			}
 			if err != nil {
-				return ErrBackend
+				return backendError("prepared base Get", err)
 			}
 			if !p.imageMatches(r, v) {
 				r.Phase = "quarantine"
+				p.preparation("image:"+name, backendError("prepared base identity mismatch", nil))
 				continue
 			}
+			p.preparation("image:"+name, nil)
 			r.UID = v.UID
 			if r.Phase == "ready" {
 				if !sourceStopped(v) {
 					r.Phase = "quarantine"
+					p.preparation("image:"+name, backendError("prepared base no longer observed stopped", nil))
 				}
 				continue
 			}
 			events, err := p.Backend.(templateBackend).Events(ctx, name)
 			if err != nil {
-				return ErrBackend
+				return backendError("prepared base Events", err)
 			}
 			if eventHas(events, "PULSE_BASE_READY") && sourceStopped(v) {
 				if err := p.retain(ctx, name, v.UID); err != nil {
@@ -180,6 +183,7 @@ func (p *Provider) reconcileImages(ctx context.Context) error {
 				}
 			}
 			if r.Phase != "deleting" {
+				p.preparation("image:"+name, fmt.Errorf("base preparation phase %s; PULSE_BASE_READY and stopped source not observed together", r.Phase))
 				continue
 			}
 		}
@@ -219,7 +223,7 @@ func (p *Provider) reconcileImages(ctx context.Context) error {
 			var err error
 			setup, err = p.Setup(ctx)
 			if err != nil {
-				return err
+				return fmt.Errorf("prepare base setup: %w", err)
 			}
 		}
 		spec.StartupScript.Content = baseStartup(setup, p.BaseScript, int(p.Config.BootstrapTimeout.Seconds()), base.OSVersion, probe)
@@ -237,8 +241,15 @@ func (p *Provider) reconcileImages(ctx context.Context) error {
 			r.UID = v.UID
 			r.Phase = "preparing"
 		}
-		if err := p.Store.save(); err != nil {
-			return err
+		var cause error
+		if err != nil {
+			cause = backendError("prepare base create", err)
+		} else if r.UID == "" {
+			cause = backendError("prepare base create identity mismatch", nil)
+		}
+		p.preparation("image:"+name, cause)
+		if saveErr := p.Store.save(); saveErr != nil {
+			return combine("base preparation", cause, "save base preparation result", saveErr)
 		}
 	}
 	return p.Store.save()
@@ -252,6 +263,7 @@ func (p *Provider) PurgeImages(ctx context.Context) error {
 		return err
 	}
 	defer p.Store.mu.Unlock()
+	defer p.prunePreparation()
 	for _, pair := range p.Store.data.Pairs {
 		if pair.Phase != "gone" {
 			return fmt.Errorf("Docker allocations are still owned")

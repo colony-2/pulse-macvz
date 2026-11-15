@@ -78,16 +78,16 @@ func New(c config.Tart, common config.Config) (*Client, error) {
 	}
 	binary, e := exec.LookPath(c.Binary)
 	if e != nil {
-		return nil, Err
+		return nil, failure("resolve Tart executable/home", e)
 	}
 	c.Binary, e = filepath.Abs(binary)
 	if e != nil {
-		return nil, Err
+		return nil, failure("resolve Tart executable/home", e)
 	}
 	if c.Home == "" {
 		home, e := os.UserHomeDir()
 		if e != nil {
-			return nil, Err
+			return nil, failure("resolve Tart executable/home", e)
 		}
 		c.Home = filepath.Join(home, ".tart")
 	}
@@ -120,17 +120,17 @@ func open(c config.Tart, common config.Config) (*Client, error) {
 		}
 	}
 	b := &Client{service: service, cfg: c, dir: filepath.Join(common.StateDir, "native"), bases: common.Bases, timeout: common.BootstrapTimeout, records: map[string]*record{}, workers: map[string]bool{}, ctx: ctx, cancel: cancel}
-	fail := func() (*Client, error) { cancel(); return nil, Err }
-	if os.MkdirAll(b.dir, 0700) != nil {
-		return fail()
+	fail := func(cause error) (*Client, error) { cancel(); return nil, failure("open native records", cause) }
+	if e := os.MkdirAll(b.dir, 0700); e != nil {
+		return fail(e)
 	}
 	st, e := os.Lstat(b.dir)
 	if e != nil || !st.IsDir() || st.Mode().Perm()&0077 != 0 {
-		return fail()
+		return fail(errors.Join(e, errors.New("native directory must be private and a directory")))
 	}
 	entries, e := os.ReadDir(b.dir)
 	if e != nil {
-		return fail()
+		return fail(e)
 	}
 	for _, entry := range entries {
 		if !strings.HasSuffix(entry.Name(), ".json") {
@@ -138,11 +138,14 @@ func open(c config.Tart, common config.Config) (*Client, error) {
 		}
 		data, e := os.ReadFile(filepath.Join(b.dir, entry.Name()))
 		if e != nil {
-			return fail()
+			return fail(e)
 		}
 		var r record
-		if json.Unmarshal(data, &r) != nil || !config.Name(r.Spec.Name) || entry.Name() != r.Spec.Name+".json" || r.UID == "" {
-			return fail()
+		if e := json.Unmarshal(data, &r); e != nil {
+			return fail(e)
+		}
+		if !config.Name(r.Spec.Name) || entry.Name() != r.Spec.Name+".json" || r.UID == "" {
+			return fail(errors.New("invalid native record identity"))
 		}
 		b.records[r.Spec.Name] = &r
 	}
@@ -178,20 +181,25 @@ func (b *Client) execute(ctx context.Context, args ...string) ([]byte, error) {
 	cmd.Env = b.env()
 	var out boundedBuffer
 	cmd.Stdout = &out
-	cmd.Stderr = io.Discard
-	if cmd.Run() != nil {
-		return nil, Err
+	var stderr stderrPrefix
+	cmd.Stderr = &stderr
+	if e := cmd.Run(); e != nil {
+		op := "command"
+		if len(args) > 0 {
+			op = args[0]
+		}
+		return nil, failure("command "+op, errors.Join(e, ctx.Err(), stderr.cause()))
 	}
 	return out.Bytes(), nil
 }
 func (b *Client) save(r *record) error {
 	data, e := json.Marshal(r)
 	if e != nil {
-		return Err
+		return failure("save native record", e)
 	}
 	f, e := os.CreateTemp(b.dir, ".pending-")
 	if e != nil {
-		return Err
+		return failure("save native record", e)
 	}
 	defer os.Remove(f.Name())
 	if _, e = f.Write(data); e == nil {
@@ -207,13 +215,13 @@ func (b *Client) save(r *record) error {
 	if e == nil {
 		d, de := os.Open(b.dir)
 		if de != nil {
-			return Err
+			return failure("save native record", de)
 		}
 		e = d.Sync()
 		d.Close()
 	}
 	if e != nil {
-		return Err
+		return failure("save native record", e)
 	}
 	return nil
 }
@@ -221,27 +229,30 @@ func (b *Client) path(name string) string { return filepath.Join(b.cfg.Home, "vm
 func (b *Client) binding(r *record, claim bool) error {
 	st, e := os.Lstat(b.path(r.Spec.Name))
 	if e != nil {
-		return Err
+		return failure("observe native directory ownership", e)
 	}
 	if !st.IsDir() {
-		return Err
+		return failure("native ownership/state condition failed", nil)
 	}
 	sys, ok := st.Sys().(*syscall.Stat_t)
 	if !ok {
-		return Err
+		return failure("native ownership/state condition failed", nil)
 	}
 	marker := filepath.Join(b.path(r.Spec.Name), ".pulse-owner")
 	if claim {
-		if os.WriteFile(marker, []byte(r.UID), 0600) != nil {
-			return Err
+		if e := os.WriteFile(marker, []byte(r.UID), 0600); e != nil {
+			return failure("write ownership marker", e)
 		}
 		r.Device = uint64(sys.Dev)
 		r.Inode = uint64(sys.Ino)
 		return nil
 	}
 	got, e := os.ReadFile(marker)
-	if e != nil || string(got) != r.UID || r.Device != uint64(sys.Dev) || r.Inode != uint64(sys.Ino) {
-		return Err
+	if e != nil {
+		return failure("observe native directory ownership", e)
+	}
+	if string(got) != r.UID || r.Device != uint64(sys.Dev) || r.Inode != uint64(sys.Ino) {
+		return failure("native identity, hardware or state mismatch", nil)
 	}
 	return nil
 }
@@ -251,8 +262,11 @@ func (b *Client) inspect(ctx context.Context, name string) (hardware, error) {
 	if e != nil {
 		return h, e
 	}
-	if json.Unmarshal(data, &h) != nil || h.State == "" {
-		return h, Err
+	if e := json.Unmarshal(data, &h); e != nil {
+		return h, failure("decode inspect", e)
+	}
+	if h.State == "" {
+		return h, failure("inspect state missing", nil)
 	}
 	return h, nil
 }
@@ -269,16 +283,21 @@ func (b *Client) get(ctx context.Context, name string) (backend.VM, error) {
 	if _, e := os.Lstat(b.path(name)); os.IsNotExist(e) {
 		// Before run is dispatched, absence is uncertain, not deletion evidence.
 		if r.Phase == "creating" {
-			return backend.VM{}, Err
+			return backend.VM{}, failure("Get creating instance directory is absent; dispatch remains uncertain", e)
 		}
 		return backend.VM{}, &backend.Error{Code: 404}
 	}
-	if !r.Reusable && b.binding(r, false) != nil {
-		return backend.VM{}, Err
+	if !r.Reusable {
+		if e := b.binding(r, false); e != nil {
+			return backend.VM{}, e
+		}
 	}
 	h, e := b.inspect(ctx, name)
-	if e != nil || h.CPU != r.Spec.CPU || h.Memory != r.Spec.Memory || (!r.Reusable && h.MACAddress != r.MAC) {
-		return backend.VM{}, Err
+	if e != nil {
+		return backend.VM{}, failure("Get native instance", e)
+	}
+	if h.CPU != r.Spec.CPU || h.Memory != r.Spec.Memory || (!r.Reusable && h.MACAddress != r.MAC) {
+		return backend.VM{}, failure("native identity, hardware or state mismatch", nil)
 	}
 	v := backend.VM{Spec: r.Spec, UID: r.UID, Worker: "local", LocalName: name, CreatedAt: r.Created, PowerState: h.State, Generation: 1, ObservedGeneration: 1, Status: "pending"}
 	running := "false"
@@ -295,7 +314,7 @@ func (b *Client) get(ctx context.Context, name string) (backend.VM, error) {
 			running = "true"
 		}
 	default:
-		return backend.VM{}, Err
+		return backend.VM{}, failure("Get native instance: unrecognized power state", nil)
 	}
 	v.Conditions = []backend.Condition{{Type: "running", State: running}}
 	return v, nil
@@ -314,11 +333,14 @@ func (b *Client) List(ctx context.Context) ([]backend.VM, error) {
 	defer b.mu.Unlock()
 	data, e := b.command(ctx, "list", "--source", "local", "--format", "json")
 	if e != nil {
-		return nil, Err
+		return nil, failure("List native inventory", e)
 	}
 	var inventory []hardware
-	if json.Unmarshal(data, &inventory) != nil || inventory == nil {
-		return nil, Err
+	if e := json.Unmarshal(data, &inventory); e != nil {
+		return nil, failure("decode inventory", e)
+	}
+	if inventory == nil {
+		return nil, failure("inventory is null", nil)
 	}
 	out := []backend.VM{}
 	for _, h := range inventory {
@@ -337,7 +359,7 @@ func (b *Client) List(ctx context.Context) ([]backend.VM, error) {
 		}
 		v, e := b.get(ctx, h.Name)
 		if e != nil {
-			return nil, Err
+			return nil, failure("List native inventory", e)
 		}
 		out = append(out, v)
 	}
@@ -348,11 +370,20 @@ func (b *Client) Create(ctx context.Context, s backend.Spec) (backend.VM, error)
 		return backend.VM{}, e
 	}
 	defer b.mu.Unlock()
-	if b.closed || ctx.Err() != nil || !config.Name(s.Name) || b.records[s.Name] != nil {
-		return backend.VM{}, Err
+	if b.closed {
+		return backend.VM{}, failure("create native clone: client closed", nil)
+	}
+	if e := ctx.Err(); e != nil {
+		return backend.VM{}, failure("create native clone canceled", e)
+	}
+	if !config.Name(s.Name) {
+		return backend.VM{}, failure("create native clone: invalid name", nil)
+	}
+	if b.records[s.Name] != nil {
+		return backend.VM{}, failure("create native clone: name already reserved; no redispatch", nil)
 	}
 	if _, e := os.Lstat(b.path(s.Name)); !os.IsNotExist(e) {
-		return backend.VM{}, Err
+		return backend.VM{}, failure("create destination must be absent", e)
 	}
 	var key []byte
 	template := strings.Contains(s.Image, "@sha256:")
@@ -367,30 +398,33 @@ func (b *Client) Create(ctx context.Context, s backend.Spec) (backend.VM, error)
 			}
 		}
 		if !found {
-			return backend.VM{}, Err
+			return backend.VM{}, failure("clone digest source is not configured", nil)
 		}
 	} else {
 		parent := b.records[s.Image]
 		if parent == nil {
-			return backend.VM{}, Err
+			return backend.VM{}, failure("clone source has no native ownership record", nil)
 		}
 		v, e := b.get(ctx, s.Image)
-		if e != nil || (v.PowerState != "suspended" && !(parent.Reusable && v.PowerState == "stopped")) {
-			return backend.VM{}, Err
+		if e != nil {
+			return backend.VM{}, failure("create native clone", e)
+		}
+		if v.PowerState != "suspended" && !(parent.Reusable && v.PowerState == "stopped") {
+			return backend.VM{}, failure("native identity, hardware or state mismatch", nil)
 		}
 		cold = v.PowerState == "stopped"
 		key = parent.HostKey
 		sourceHardware, err := b.inspect(ctx, s.Image)
 		if err != nil {
-			return backend.VM{}, Err
+			return backend.VM{}, failure("create native clone", err)
 		}
 		data, e := b.command(ctx, "list", "--source", "local", "--format", "json")
 		if e != nil {
-			return backend.VM{}, Err
+			return backend.VM{}, failure("create native clone", e)
 		}
 		var inventory []hardware
-		if json.Unmarshal(data, &inventory) != nil {
-			return backend.VM{}, Err
+		if e := json.Unmarshal(data, &inventory); e != nil {
+			return backend.VM{}, failure("decode inventory", e)
 		}
 		for _, vm := range inventory {
 			if vm.State != "running" && !vm.Running {
@@ -399,72 +433,81 @@ func (b *Client) Create(ctx context.Context, s backend.Spec) (backend.VM, error)
 			h, e := b.inspect(ctx, vm.Name)
 			// The published source can be replaced between observation and clone.
 			// Collision checks against the actual cloned MAC happen below.
-			if e != nil || (!cold && h.MACAddress == sourceHardware.MACAddress) {
-				return backend.VM{}, Err
+			if e != nil {
+				return backend.VM{}, failure("create native clone", e)
+			}
+			if !cold && h.MACAddress == sourceHardware.MACAddress {
+				return backend.VM{}, failure("native identity, hardware or state mismatch", nil)
 			}
 		}
 	}
 	var uid [16]byte
 	if _, e := rand.Read(uid[:]); e != nil {
-		return backend.VM{}, Err
+		return backend.VM{}, failure("create native clone", e)
 	}
 	r := &record{Spec: s, UID: hex.EncodeToString(uid[:]), Phase: "creating", Created: time.Now().UTC(), HostKey: key}
 	b.records[s.Name] = r
-	if b.save(r) != nil {
-		return backend.VM{}, Err
+	if e := b.save(r); e != nil {
+		return backend.VM{}, e
 	}
 	if _, e := b.command(ctx, "clone", s.Image, s.Name); e != nil {
-		return backend.VM{}, Err
+		return backend.VM{}, failure("create native clone", e)
 	}
 	if cold {
 		if _, e := b.command(ctx, "set", s.Name, "--cpu", strconv.FormatInt(s.CPU, 10), "--memory", strconv.FormatInt(s.Memory, 10), "--random-mac"); e != nil {
-			return backend.VM{}, Err
+			return backend.VM{}, failure("create native clone", e)
 		}
 	}
 	h, e := b.inspect(ctx, s.Name)
-	if e != nil || h.CPU != s.CPU || h.Memory != s.Memory || h.MACAddress == "" {
-		return backend.VM{}, Err
+	if e != nil {
+		return backend.VM{}, failure("create native clone", e)
+	}
+	if h.CPU != s.CPU || h.Memory != s.Memory || h.MACAddress == "" {
+		return backend.VM{}, failure("native identity, hardware or state mismatch", nil)
 	}
 	if !cold && h.State != "suspended" {
-		return backend.VM{}, Err
+		return backend.VM{}, failure("restored clone is not suspended", nil)
 	}
 	data, e := b.command(ctx, "list", "--source", "local", "--format", "json")
 	if e != nil {
-		return backend.VM{}, Err
+		return backend.VM{}, failure("create native clone", e)
 	}
 	var inventory []hardware
-	if json.Unmarshal(data, &inventory) != nil {
-		return backend.VM{}, Err
+	if e := json.Unmarshal(data, &inventory); e != nil {
+		return backend.VM{}, failure("decode inventory", e)
 	}
 	for _, vm := range inventory {
 		if vm.Name == s.Name || (vm.State != "running" && !vm.Running) {
 			continue
 		}
 		other, err := b.inspect(ctx, vm.Name)
-		if err != nil || other.MACAddress == h.MACAddress {
-			return backend.VM{}, Err
+		if err != nil {
+			return backend.VM{}, failure("inspect native hardware", err)
+		}
+		if other.MACAddress == h.MACAddress {
+			return backend.VM{}, failure("native MAC collision", nil)
 		}
 	}
 	r.MAC = h.MACAddress
-	if b.binding(r, true) != nil {
-		return backend.VM{}, Err
+	if e := b.binding(r, true); e != nil {
+		return backend.VM{}, e
 	}
 	r.Phase = "prepared"
-	if b.save(r) != nil {
-		return backend.VM{}, Err
+	if e := b.save(r); e != nil {
+		return backend.VM{}, e
 	}
 	r.Phase = "starting"
-	if b.save(r) != nil {
-		return backend.VM{}, Err
+	if e := b.save(r); e != nil {
+		return backend.VM{}, e
 	}
 	pid, e := b.launch(s.Name)
 	if e != nil {
-		return backend.VM{}, Err
+		return backend.VM{}, failure("create native clone", e)
 	}
 	r.PID = pid
 	r.Phase = "started"
-	if b.save(r) != nil {
-		return backend.VM{}, Err
+	if e := b.save(r); e != nil {
+		return backend.VM{}, e
 	}
 	b.deliver(r)
 	return backend.VM{Spec: s, UID: r.UID, Worker: "local", LocalName: s.Name, Status: "pending", CreatedAt: r.Created}, nil
@@ -475,7 +518,7 @@ func (b *Client) Create(ctx context.Context, s backend.Spec) (backend.VM, error)
 func (b *Client) start(name string) (int, error) {
 	f, e := os.OpenFile(filepath.Join(b.dir, name+".run.log"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
 	if e != nil {
-		return 0, Err
+		return 0, failure("start detached Tart run", e)
 	}
 	suspendable := true
 	if r := b.records[name]; r != nil {
@@ -491,9 +534,9 @@ mv "$3.tmp" "$3"
 	cmd.Stdout = f
 	cmd.Stderr = f
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
-	if cmd.Start() != nil {
+	if e := cmd.Start(); e != nil {
 		f.Close()
-		return 0, Err
+		return 0, failure("start detached Tart run", e)
 	}
 	f.Close()
 	go func() { _ = cmd.Wait() }()
@@ -505,14 +548,17 @@ func (b *Client) Suspend(ctx context.Context, name, uid string) error {
 	}
 	defer b.mu.Unlock()
 	v, e := b.get(ctx, name)
-	if e != nil || v.UID != uid {
-		return Err
+	if e != nil {
+		return failure("suspend native instance", e)
+	}
+	if v.UID != uid {
+		return failure("native identity, hardware or state mismatch", nil)
 	}
 	if v.PowerState == "suspended" {
 		return nil
 	}
 	if v.PowerState != "running" {
-		return Err
+		return failure("native ownership/state condition failed", nil)
 	}
 	_, e = b.command(ctx, "suspend", name)
 	return e
@@ -526,17 +572,20 @@ func (b *Client) Delete(ctx context.Context, name string) error {
 	if e != nil {
 		return e
 	}
-	if !v.Stopped() || b.workers[name] {
-		return Err
+	if !v.Stopped() {
+		return failure("delete requires observed stopped VM", nil)
+	}
+	if b.workers[name] {
+		return failure("delete blocked by native delivery worker", nil)
 	}
 	if _, e = b.command(ctx, "delete", name); e != nil {
 		return e
 	}
 	if _, e = os.Lstat(b.path(name)); !os.IsNotExist(e) {
-		return Err
+		return failure("delete destination still exists or cannot be observed", e)
 	}
-	if os.Remove(filepath.Join(b.dir, name+".json")) != nil {
-		return Err
+	if e := os.Remove(filepath.Join(b.dir, name+".json")); e != nil {
+		return failure("remove native record", e)
 	}
 	delete(b.records, name)
 	for _, suffix := range []string{".run.log", ".events", ".exit"} {
@@ -549,28 +598,31 @@ func (b *Client) Events(ctx context.Context, name string) ([]backend.Event, erro
 		return nil, e
 	}
 	defer b.mu.Unlock()
-	if ctx.Err() != nil || b.records[name] == nil {
-		return nil, Err
+	if e := ctx.Err(); e != nil {
+		return nil, failure("read native events canceled", e)
+	}
+	if b.records[name] == nil {
+		return nil, failure("native events require an owned record", nil)
 	}
 	f, e := os.Open(filepath.Join(b.dir, name+".events"))
 	if os.IsNotExist(e) {
 		return []backend.Event{}, nil
 	}
 	if e != nil {
-		return nil, Err
+		return nil, failure("read native preparation events", e)
 	}
 	defer f.Close()
 	// Startup output is fixed markers; bound even unexpected SSH output.
 	st, e := f.Stat()
 	if e != nil {
-		return nil, Err
+		return nil, failure("read native preparation events", e)
 	}
 	if st.Size() > 1<<20 {
 		_, _ = f.Seek(-(1 << 20), io.SeekEnd)
 	}
 	data, e := io.ReadAll(io.LimitReader(f, 1<<20))
 	if e != nil {
-		return nil, Err
+		return nil, failure("read native preparation events", e)
 	}
 	return []backend.Event{{Payload: string(data)}}, nil
 }
@@ -583,7 +635,7 @@ func (b *Client) Recover(ctx context.Context) error {
 	}
 	defer b.mu.Unlock()
 	if b.closed {
-		return Err
+		return failure("recover native delivery: client closed", nil)
 	}
 	for name, r := range b.records {
 		if r.Phase != "started" || r.Delivered || b.workers[name] {
@@ -661,14 +713,14 @@ func (b *Client) sendAddress(ctx context.Context, address string, spec backend.S
 	if len(key) > 0 {
 		pub, _, _, _, e := ssh.ParseAuthorizedKey(key)
 		if e != nil {
-			return Err
+			return failure("delivery SSH", e)
 		}
 		callback = ssh.FixedHostKey(pub)
 	}
 	cfg := &ssh.ClientConfig{User: spec.Username, Auth: []ssh.AuthMethod{ssh.Password(spec.Password)}, HostKeyCallback: callback, Timeout: b.cfg.SSHTimeout}
 	conn, e := (&net.Dialer{Timeout: b.cfg.SSHTimeout}).DialContext(ctx, "tcp", address)
 	if e != nil {
-		return Err
+		return failure("delivery SSH", e)
 	}
 	defer conn.Close()
 	stop := context.AfterFunc(ctx, func() { conn.Close() })
@@ -676,26 +728,26 @@ func (b *Client) sendAddress(ctx context.Context, address string, spec backend.S
 	_ = conn.SetDeadline(time.Now().Add(b.cfg.SSHTimeout))
 	cc, ch, req, e := ssh.NewClientConn(conn, address, cfg)
 	if e != nil {
-		return Err
+		return failure("delivery SSH", e)
 	}
 	_ = conn.SetDeadline(time.Time{})
 	client := ssh.NewClient(cc, ch, req)
 	defer client.Close()
 	session, e := client.NewSession()
 	if e != nil {
-		return Err
+		return failure("delivery SSH", e)
 	}
 	defer session.Close()
 	f, e := os.OpenFile(filepath.Join(b.dir, spec.Name+".events"), os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0600)
 	if e != nil {
-		return Err
+		return failure("delivery SSH", e)
 	}
 	defer f.Close()
 	session.Stdin = strings.NewReader(spec.StartupScript.Content)
 	session.Stdout = f
 	session.Stderr = f
-	if session.Run("/bin/bash -s") != nil {
-		return Err
+	if e := session.Run("/bin/bash -s"); e != nil {
+		return failure("delivery SSH", e)
 	}
 	return nil
 }
@@ -710,3 +762,36 @@ func (b *Client) Close() error {
 
 // String intentionally excludes SSH credentials and private delivery records.
 func (b *Client) String() string { return fmt.Sprintf("Tart(%s)", b.cfg.Home) }
+
+// stderrPrefix drains the command while retaining only the per-command prefix.
+type stderrPrefix struct {
+	data      []byte
+	truncated bool
+}
+
+func (b *stderrPrefix) Write(p []byte) (int, error) {
+	n := len(p)
+	remaining := 16384 - len(b.data)
+	if len(p) > remaining {
+		b.truncated = true
+		p = p[:remaining]
+	}
+	b.data = append(b.data, p...)
+	return n, nil
+}
+func (b *stderrPrefix) cause() error {
+	text := string(b.data)
+	if b.truncated {
+		text += "[truncated after 16384 bytes]"
+	}
+	if text == "" {
+		return nil
+	}
+	return errors.New(text)
+}
+func failure(operation string, cause error) error {
+	if cause == nil {
+		return fmt.Errorf("%w: %s", Err, operation)
+	}
+	return fmt.Errorf("%w: %s: %w", Err, operation, cause)
+}

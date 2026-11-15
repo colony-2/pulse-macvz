@@ -13,12 +13,15 @@ import (
 
 func (c *Client) Exec(ctx context.Context, name, uid string, script []byte) ([]byte, error) {
 	v, e := c.Get(ctx, name)
-	if e != nil || v.UID != uid {
-		return nil, Err
+	if e != nil {
+		return nil, failure("Exec Get", e)
+	}
+	if v.UID != uid {
+		return nil, failure("Exec UID mismatch", nil)
 	}
 	key, e := c.guestKey(ctx, v.Image)
 	if e != nil {
-		return nil, e
+		return nil, failure("Exec inherited host key", e)
 	}
 	dial := func(ctx context.Context) (net.Conn, error) {
 		u, _ := url.Parse(c.Base + "/vms/" + url.PathEscape(name) + "/port-forward?port=22&wait=5")
@@ -48,7 +51,11 @@ func (c *Client) Exec(ctx context.Context, name, uid string, script []byte) ([]b
 		ws.PayloadType = websocket.BinaryFrame
 		return ws, nil
 	}
-	return guestconn.Exec(ctx, dial, v.Username, v.Password, key, script)
+	out, e := guestconn.Exec(ctx, dial, v.Username, v.Password, key, script)
+	if e != nil {
+		return nil, failure("Exec management SSH", e)
+	}
+	return out, nil
 }
 func (c *Client) Stop(ctx context.Context, name, uid string) error {
 	return c.power(ctx, name, uid, "stopped")
@@ -60,8 +67,11 @@ func (c *Client) power(ctx context.Context, name, uid, power string) error {
 		return e
 	}
 	var got string
-	if json.Unmarshal(v["uid"], &got) != nil || got != uid {
-		return Err
+	if e := json.Unmarshal(v["uid"], &got); e != nil {
+		return failure("power decode UID", e)
+	}
+	if got != uid {
+		return failure("power UID mismatch", nil)
 	}
 	v["powerState"], _ = json.Marshal(power)
 	return c.call(ctx, "PUT", path, v, nil)
@@ -76,8 +86,11 @@ func (c *Client) Endpoint(ctx context.Context, name, uid string, port int) (bool
 		return false, e
 	}
 	var got string
-	if json.Unmarshal(v["uid"], &got) != nil || got != uid {
-		return false, Err
+	if e := json.Unmarshal(v["uid"], &got); e != nil {
+		return false, failure("endpoint decode UID", e)
+	}
+	if got != uid {
+		return false, failure("endpoint UID mismatch", nil)
 	}
 	var endpoints []map[string]any
 	_ = json.Unmarshal(v["endpoints"], &endpoints)
@@ -88,11 +101,11 @@ func (c *Client) Endpoint(ctx context.Context, name, uid string, port int) (bool
 			target, _ := e["target"].(map[string]any)
 			vm, _ := target["vm"].(map[string]any)
 			if e["protocol"] != "tcp" || vm["port"] != float64(2222) {
-				return false, Err
+				return false, failure("endpoint configuration mismatch", nil)
 			}
 			pr, ok := e["workerPortRange"].(map[string]any)
 			if !ok || pr["min"] != float64(port) || pr["max"] != float64(port) {
-				return false, Err
+				return false, failure("endpoint configuration mismatch", nil)
 			}
 		}
 	}
@@ -154,5 +167,5 @@ func inheritedGuestKey(keys map[string][]byte, sources []backend.VM, image strin
 		}
 		image = parent
 	}
-	return nil, Err
+	return nil, failure("inherited host key source unavailable", nil)
 }

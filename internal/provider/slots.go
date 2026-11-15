@@ -163,7 +163,7 @@ func (p *Provider) reconcileSlots(ctx context.Context) error {
 	}
 	b, ok := p.Backend.(templateBackend)
 	if !ok {
-		return ErrBackend
+		return backendError("template backend", nil)
 	}
 	targets, err := p.slotTargets()
 	if err != nil {
@@ -194,12 +194,14 @@ func (p *Provider) reconcileSlots(ctx context.Context) error {
 			continue
 		}
 		if err != nil {
-			return ErrBackend
+			return backendError("template Get", err)
 		}
 		if !p.matchesSlot(s, v) {
 			s.Phase = "quarantine"
+			p.preparation("slot:"+id, backendError("template preparation identity mismatch", nil))
 			continue
 		}
+		p.preparation("slot:"+id, nil)
 		s.UID = v.UID
 		t, wanted := targets[id]
 		retire := !wanted || s.ConfigHash != t.hash || s.Phase == "deleting"
@@ -215,7 +217,7 @@ func (p *Provider) reconcileSlots(ctx context.Context) error {
 			// Legacy or incomplete builders are owned by the journal, not published sources.
 			if !v.Stopped() {
 				if err = b.Suspend(ctx, s.Name, s.UID); err != nil {
-					return ErrBackend
+					return backendError("retire template Suspend", err)
 				}
 				continue
 			}
@@ -225,12 +227,12 @@ func (p *Provider) reconcileSlots(ctx context.Context) error {
 			}
 			// The GET above verified immutable ownership immediately before this deletion.
 			if err = p.Backend.Delete(ctx, s.Name); err != nil && !backend.IsStatus(err, 404) {
-				return ErrBackend
+				return backendError("retire template Delete", err)
 			}
 			if _, err = p.Backend.Get(ctx, s.Name); backend.IsStatus(err, 404) {
 				delete(p.Store.data.Slots, id)
 			} else if err != nil {
-				return ErrBackend
+				return backendError("confirm template deletion Get", err)
 			}
 			continue
 		}
@@ -253,6 +255,7 @@ func (p *Provider) reconcileSlots(ctx context.Context) error {
 		if s.Phase == "ready" {
 			if !suspended(v) || s.LocalName != v.LocalName || v.Worker != s.Worker {
 				s.Phase = "quarantine"
+				p.preparation("slot:"+id, backendError("prepared template suspension/local name/worker mismatch", nil))
 			}
 			continue
 		}
@@ -260,15 +263,17 @@ func (p *Provider) reconcileSlots(ctx context.Context) error {
 			s.Phase = "preparing"
 			events, err := b.Events(ctx, s.Name)
 			if err != nil {
-				return ErrBackend
+				return backendError("template Events", err)
 			}
 			mac, boot, ready := templateIdentity(events)
 			if !ready {
+				p.preparation("slot:"+id, fmt.Errorf("template Events missing valid PULSE_TEMPLATE_READY identity"))
 				continue
 			}
 			for otherID, other := range p.Store.data.Slots {
 				if otherID != id && other.MAC == mac {
 					s.Phase = "quarantine"
+					p.preparation("slot:"+id, fmt.Errorf("template preparation MAC duplicates another slot"))
 					break
 				}
 			}
@@ -299,7 +304,7 @@ func (p *Provider) reconcileSlots(ctx context.Context) error {
 				return err
 			}
 			if err = b.Suspend(ctx, s.Name, s.UID); err != nil {
-				return ErrBackend
+				return backendError("template Suspend", err)
 			}
 		}
 	}
@@ -364,8 +369,15 @@ func (p *Provider) reconcileSlots(ctx context.Context) error {
 			s.UID = v.UID
 			s.Phase = "preparing"
 		}
-		if err = p.Store.save(); err != nil {
-			return err
+		var cause error
+		if err != nil {
+			cause = backendError("prepare template create", err)
+		} else if s.UID == "" {
+			cause = backendError("prepare template create identity mismatch", nil)
+		}
+		p.preparation("slot:"+id, cause)
+		if saveErr := p.Store.save(); saveErr != nil {
+			return combine("template preparation", cause, "save template result", saveErr)
 		}
 	}
 	return nil
@@ -376,6 +388,7 @@ func (p *Provider) reconcileSlots(ctx context.Context) error {
 func (p *Provider) chooseSlot(ctx context.Context, l compute.Launch, spec backend.Spec, inventory []backend.VM) (backend.Spec, string, compute.Status) {
 	targets, err := p.slotTargets()
 	if err != nil {
+		p.observeError("resolve template targets", err)
 		return spec, "", compute.Unavailable
 	}
 	ids := []string{}
@@ -411,7 +424,22 @@ func (p *Provider) chooseSlot(ctx context.Context, l compute.Launch, spec backen
 	for _, id := range ids {
 		s := p.Store.data.Slots[id]
 		t := targets[id]
-		if s == nil || s.Phase != "ready" || s.ConfigHash != t.hash || p.slotBusy(id) {
+		if s == nil {
+			p.observe("slot %s readiness unknown: no prepared record", id)
+			p.earlierPreparation("image:" + p.baseImageName(t.image))
+			continue
+		}
+		if s.Phase != "ready" {
+			p.observe("slot %s recorded readiness phase=%s; reservation observation skipped", id, s.Phase)
+			p.earlierPreparation("slot:" + id)
+			continue
+		}
+		if s.ConfigHash != t.hash {
+			p.observe("slot %s stale configured template", id)
+			continue
+		}
+		if p.slotBusy(id) {
+			p.observe("slot %s reservation occupied; template identity/suspension unknown", id)
 			continue
 		}
 		// A foreign/unresolved clone of this local image also makes its MAC unavailable.
@@ -423,15 +451,29 @@ func (p *Provider) chooseSlot(ctx context.Context, l compute.Launch, spec backen
 			}
 		}
 		if busy {
+			p.observe("slot %s source-referencing clone observed; identity/suspension unknown", id)
 			continue
 		}
 		v, err := p.Backend.Get(ctx, s.Name)
 		if err != nil {
+			p.observeError("template read", err)
 			return spec, "", compute.Unavailable
 		}
-		if !p.matchesSlot(s, v) || !suspended(v) || v.LocalName != s.LocalName || v.Worker != s.Worker {
+		condition := ""
+		if !p.matchesSlot(s, v) {
+			condition = "template identity mismatch; suspension unknown"
+		} else if !suspended(v) {
+			condition = "template suspension invalid"
+		} else if v.LocalName != s.LocalName {
+			condition = "template local name mismatch"
+		} else if v.Worker != s.Worker {
+			condition = "template worker mismatch"
+		}
+		if condition != "" {
+			p.observe("slot %s %s; quarantined", id, condition)
 			s.Phase = "quarantine"
-			if p.Store.save() != nil {
+			if err := p.Store.save(); err != nil {
+				p.observeError("save template quarantine", err)
 				return spec, "", compute.Unavailable
 			}
 			continue
@@ -484,7 +526,7 @@ func (p *Provider) Slots() ([]SlotStatus, error) {
 	p.Store.mu.Lock()
 	defer p.Store.mu.Unlock()
 	if p.Store.broken {
-		return nil, ErrState
+		return nil, p.Store.stateError()
 	}
 	statuses := []SlotStatus{}
 	for _, s := range p.Store.data.Slots {

@@ -23,39 +23,46 @@ func newID() string {
 	}
 	return hex.EncodeToString(b[:])
 }
-func validLaunch(l compute.Launch) bool {
-	if !launchID.MatchString(l.LaunchID) || !config.BaseSelector(l.Base) {
-		return false
+func validLaunch(l compute.Launch) bool { return launchValidation(l) == "" }
+func launchValidation(l compute.Launch) string {
+	if !launchID.MatchString(l.LaunchID) {
+		return "launch ID is malformed"
+	}
+	if !config.BaseSelector(l.Base) {
+		return "base selector is malformed"
 	}
 	for _, q := range []int64{l.CPUMillis, l.MemoryBytes, l.ScratchBytes} {
 		if q < 0 || q > compute.MaxQuantity {
-			return false
+			return "allocation quantity is outside the allowed range"
 		}
 	}
-	if l.TimeoutSeconds < 0 || l.TimeoutSeconds > 31536000 || len(l.Lease) == 0 || len(l.Lease) > 1<<20 {
-		return false
+	if l.TimeoutSeconds < 0 || l.TimeoutSeconds > 31536000 {
+		return "timeout is outside the allowed range"
+	}
+	if len(l.Lease) == 0 || len(l.Lease) > 1<<20 {
+		return "lease is absent or oversized"
 	}
 	for _, id := range []string{l.Job.InstanceID, l.Job.TenantID, l.Job.JobID} {
 		if id == "" || len(id) > 4096 || !utf8.ValidString(id) || strings.ContainsRune(id, 0) {
-			return false
+			return "job identity is absent, oversized or malformed"
 		}
 	}
 	if len(l.Job.JobDB) > 8192 || !utf8.ValidString(l.Job.JobDB) {
-		return false
+		return "JobDB URL is oversized or malformed"
 	}
 	u, e := url.Parse(l.Job.JobDB)
 	if e != nil || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || (u.Scheme != "https" && u.Scheme != "http") {
-		return false
+		return "JobDB URL must be HTTP(S) with a host and without credentials, query or fragment"
 	}
 	if len(l.Capabilities) > 256 {
-		return false
+		return "too many requested capabilities"
 	}
 	for _, c := range l.Capabilities {
 		if c == "" || len(c) > 256 || !utf8.ValidString(c) || strings.ContainsRune(c, 0) {
-			return false
+			return "requested capability is empty, oversized or malformed"
 		}
 	}
-	return true
+	return ""
 }
 func copyLaunch(l compute.Launch) compute.Launch {
 	l.Capabilities = slices.Clone(l.Capabilities)

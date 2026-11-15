@@ -14,21 +14,25 @@ func (b *Client) Exec(ctx context.Context, name, uid string, script []byte) ([]b
 	v, e := b.get(ctx, name)
 	if e != nil || v.UID != uid || b.records[name] == nil {
 		b.mu.Unlock()
-		return nil, Err
+		return nil, failure("Exec Get or UID mismatch", e)
 	}
 	key := append([]byte{}, b.records[name].HostKey...)
 	b.mu.Unlock()
 	data, e := b.command(ctx, "ip", name, "--wait", "5")
 	if e != nil {
-		return nil, e
+		return nil, failure("Exec IP command", e)
 	}
 	ip := strings.TrimSpace(string(data))
 	if net.ParseIP(ip) == nil {
-		return nil, Err
+		return nil, failure("Exec IP is invalid", nil)
 	}
-	return guestconn.Exec(ctx, func(ctx context.Context) (net.Conn, error) {
+	out, e := guestconn.Exec(ctx, func(ctx context.Context) (net.Conn, error) {
 		return (&net.Dialer{Timeout: b.cfg.SSHTimeout}).DialContext(ctx, "tcp", net.JoinHostPort(ip, "22"))
 	}, v.Username, v.Password, key, script)
+	if e != nil {
+		return nil, failure("Exec management SSH", e)
+	}
+	return out, nil
 }
 func (b *Client) Stop(ctx context.Context, name, uid string) error {
 	if e := b.mu.LockContext(ctx); e != nil {
@@ -37,7 +41,7 @@ func (b *Client) Stop(ctx context.Context, name, uid string) error {
 	defer b.mu.Unlock()
 	v, e := b.get(ctx, name)
 	if e != nil || v.UID != uid {
-		return Err
+		return failure("Stop Get or UID mismatch", e)
 	}
 	if v.Stopped() {
 		return nil

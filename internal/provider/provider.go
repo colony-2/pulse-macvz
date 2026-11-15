@@ -32,13 +32,15 @@ type Provider struct {
 	BaseScript []byte
 	Assets     fs.FS
 	// A short-lived pool preparation hint, never a queued launch or lease.
-	preferredGroup string
-	preferUntil    time.Time
+	preferredGroup    string
+	preferUntil       time.Time
+	diagnostic        *diagnostics
+	preparationCauses map[string]preparationObservation
 }
 
 func New(c config.Settings, b Backend) (*Provider, error) {
 	if _, ok := b.(templateBackend); !ok {
-		return nil, ErrBackend
+		return nil, backendError("backend does not support templates", nil)
 	}
 	s, e := OpenStore(c.StateDir, c.Scope())
 	if e != nil {
@@ -49,22 +51,28 @@ func New(c config.Settings, b Backend) (*Provider, error) {
 func Attach(c config.Settings, b Backend, s *Store) *Provider {
 	return &Provider{Config: c, Store: s, Backend: b}
 }
-func (p *Provider) Close() error { return p.Store.Close() }
+func (p *Provider) Close() error {
+	p.Store.mu.Lock()
+	p.preparationCauses = nil
+	p.Store.mu.Unlock()
+	return p.Store.Close()
+}
 func (p *Provider) Check(ctx context.Context) error {
 	if e := p.Store.mu.LockContext(ctx); e != nil {
 		return e
 	}
 	broken := p.Store.broken
+	cause := p.Store.stateError()
 	p.Store.mu.Unlock()
 	if broken {
-		return ErrState
+		return cause
 	}
-	if p.Backend.Info(ctx) != nil {
-		return ErrBackend
+	if e := p.Backend.Info(ctx); e != nil {
+		return backendError("Check Info", e)
 	}
 	_, e := p.Backend.List(ctx)
 	if e != nil {
-		return ErrBackend
+		return backendError("Check inventory", e)
 	}
 	return nil
 }
@@ -75,7 +83,7 @@ func reason(status compute.Status) string {
 	case compute.Unknown:
 		return "provisioning outcome uncertain"
 	case compute.NoCapacity:
-		return "provider reservation budget exhausted"
+		return "no compatible allocation available"
 	case compute.Unsupported:
 		return "requested semantics are unsupported"
 	case compute.Rejected:
@@ -105,17 +113,24 @@ func (p *Provider) Submit(ctx context.Context, ls []compute.Launch) ([]compute.S
 	}
 	defer p.Store.mu.Unlock()
 	out := make([]compute.Submission, 0, len(ls))
+	defer func() { p.diagnostic = nil }()
 	for _, l := range ls {
+		p.diagnostic = &diagnostics{}
 		if p.Store.broken {
+			p.observeError("journal unavailable", p.Store.stateError())
+			if old := p.Store.data.Records[l.LaunchID]; old != nil && old.diagnostic != "" {
+				p.observe("earlier dispatch observation: %s", old.diagnostic)
+			}
 			status := compute.Unavailable
 			if p.Store.data.Records[l.LaunchID] != nil {
 				status = compute.Unknown
 			}
-			out = append(out, result(l.LaunchID, status))
+			out = append(out, p.submission(l.LaunchID, status))
 			continue
 		}
-		if !validLaunch(l) {
-			out = append(out, result(l.LaunchID, compute.Rejected))
+		if condition := launchValidation(l); condition != "" {
+			p.observe("launch validation failed: %s", condition)
+			out = append(out, p.submission(l.LaunchID, compute.Rejected))
 			continue
 		}
 		l = copyLaunch(l)
@@ -124,16 +139,28 @@ func (p *Provider) Submit(ctx context.Context, ls []compute.Launch) ([]compute.S
 			status := old.Outcome
 			if old.Fingerprint != hash {
 				status = compute.Rejected
+				p.observe("launch fingerprint conflicts with recorded assignment")
+			} else if status != compute.Accepted {
+				if old.diagnostic != "" {
+					p.observe("%s", old.diagnostic)
+				} else {
+					p.observe("recorded %s outcome; historical cause unavailable", old.Phase)
+				}
+				if old.PairID != "" {
+					p.earlierPreparation("pair:" + old.PairID)
+				}
 			}
-			out = append(out, result(l.LaunchID, status))
+			out = append(out, p.submission(l.LaunchID, status))
 			continue
 		}
 		if l.StartBefore != nil && !time.Now().Before(*l.StartBefore) {
-			out = append(out, result(l.LaunchID, compute.Rejected))
+			p.observe("start deadline expired")
+			out = append(out, p.submission(l.LaunchID, compute.Rejected))
 			continue
 		}
 		if ctx.Err() != nil || p.Store.broken {
-			out = append(out, result(l.LaunchID, compute.Unavailable))
+			p.observeError("before dispatch", ctx.Err())
+			out = append(out, p.submission(l.LaunchID, compute.Unavailable))
 			continue
 		}
 		if submission, handled := p.submitDocker(ctx, l, hash); handled {
@@ -142,7 +169,7 @@ func (p *Provider) Submit(ctx context.Context, ls []compute.Launch) ([]compute.S
 		}
 		spec, status := p.plan(l)
 		if status != compute.Accepted {
-			out = append(out, result(l.LaunchID, status))
+			out = append(out, p.submission(l.LaunchID, status))
 			continue
 		}
 		active := 0
@@ -151,18 +178,21 @@ func (p *Provider) Submit(ctx context.Context, ls []compute.Launch) ([]compute.S
 				active++
 			}
 		}
+		p.observe("journal reservation occupancy=%d configured slot budget=%d", active, p.Config.Capacity())
 		if active >= p.Config.Capacity() {
-			out = append(out, result(l.LaunchID, compute.NoCapacity))
+			out = append(out, p.submission(l.LaunchID, compute.NoCapacity))
 			continue
 		}
 		// A fresh read failure is fallback-safe because no intent was dispatched.
 		inventory, e := p.Backend.List(ctx)
 		if e != nil {
-			out = append(out, result(l.LaunchID, compute.Unavailable))
+			p.observeError("admission inventory unavailable; later readiness/count/physical observations unknown", e)
+			out = append(out, p.submission(l.LaunchID, compute.Unavailable))
 			continue
 		}
 		if ctx.Err() != nil {
-			out = append(out, result(l.LaunchID, compute.Unavailable))
+			p.observeError("after admission inventory", ctx.Err())
+			out = append(out, p.submission(l.LaunchID, compute.Unavailable))
 			continue
 		}
 		slotID := ""
@@ -171,31 +201,36 @@ func (p *Provider) Submit(ctx context.Context, ls []compute.Launch) ([]compute.S
 			if status != compute.Accepted {
 				if status == compute.NoCapacity {
 					if e := p.requestJobRoom(ctx, l); e != nil {
+						p.observeError("room request", e)
 						status = compute.Unavailable
 					}
 				}
-				out = append(out, result(l.LaunchID, status))
+				out = append(out, p.submission(l.LaunchID, status))
 				continue
 			}
 		}
 		available, e := p.canReserveJobs(ctx, spec)
 		if e != nil {
-			out = append(out, result(l.LaunchID, compute.Unavailable))
+			p.observeError("reservation check", e)
+			out = append(out, p.submission(l.LaunchID, compute.Unavailable))
 			continue
 		}
 		if !available {
 			if e := p.requestJobRoom(ctx, l); e != nil {
-				out = append(out, result(l.LaunchID, compute.Unavailable))
+				p.observeError("room request", e)
+				out = append(out, p.submission(l.LaunchID, compute.Unavailable))
 				continue
 			}
-			out = append(out, result(l.LaunchID, compute.NoCapacity))
+			out = append(out, p.submission(l.LaunchID, compute.NoCapacity))
 			continue
 		}
 		r := &Record{LaunchID: l.LaunchID, Fingerprint: hash, NativeHash: p.Store.hash(spec), Name: spec.Name, Job: l.Job, Created: time.Now().UTC(), Outcome: compute.Unknown, Phase: "dispatch", SlotID: slotID}
 		p.Store.data.Records[l.LaunchID] = r
 		p.preferredGroup = ""
-		if p.Store.save() != nil {
-			out = append(out, result(l.LaunchID, compute.Unknown))
+		if e := p.Store.save(); e != nil {
+			p.observeError("save dispatch intent", e)
+			r.diagnostic = p.diagnosticText()
+			out = append(out, p.submission(l.LaunchID, compute.Unknown))
 			continue
 		}
 		v, e := p.Backend.Create(ctx, spec)
@@ -204,18 +239,31 @@ func (p *Provider) Submit(ctx context.Context, ls []compute.Launch) ([]compute.S
 			r.Outcome = compute.Accepted
 			r.Phase = "active"
 		}
+		if e != nil {
+			p.observeError("native create", e)
+		} else if r.Outcome != compute.Accepted {
+			p.observe("native create identity missing or mismatched")
+		} else {
+			p.observe("native create returned matching identity; result durability not yet confirmed")
+		}
 		// Even a non-2xx response can be generated by an intermediary after dispatch.
 		// Reconcile by unique name; never blindly retry POST.
-		if p.Store.save() != nil {
-			out = append(out, result(l.LaunchID, compute.Unknown))
+		if e := p.Store.save(); e != nil {
+			p.observeError("save native create result", e)
+			r.diagnostic = p.diagnosticText()
+			out = append(out, p.submission(l.LaunchID, compute.Unknown))
 			continue
 		}
-		out = append(out, result(l.LaunchID, r.Outcome))
+		if r.Outcome != compute.Accepted {
+			r.diagnostic = p.diagnosticText()
+		}
+		out = append(out, p.submission(l.LaunchID, r.Outcome))
 	}
 	return out, nil
 }
 func (p *Provider) plan(l compute.Launch) (backend.Spec, compute.Status) {
-	if l.TimeoutSeconds != 0 || l.StartBefore != nil || l.ScratchBytes != 0 {
+	if condition := unsupportedSemantics(l); condition != "" {
+		p.observe("%s", condition)
 		return backend.Spec{}, compute.Unsupported
 	}
 	cpu := (l.CPUMillis + 999) / 1000
@@ -225,7 +273,16 @@ func (p *Provider) plan(l compute.Launch) (backend.Spec, compute.Status) {
 			continue
 		}
 		b := p.base(g.Base)
-		if baseMatches(b, l) && g.CPU >= cpu && g.MemoryMiB >= memory {
+		if !p.baseFits(b, l) {
+			p.observe("group %s configured base/capability mismatch", g.Name)
+			continue
+		}
+		p.observe("group %s configured CPU request=%d limit=%d", g.Name, cpu, g.CPU)
+		if g.CPU < cpu {
+			continue
+		}
+		p.observe("group %s configured memory MiB request=%d limit=%d", g.Name, memory, g.MemoryMiB)
+		if g.MemoryMiB >= memory {
 			return backend.Spec{Name: "pulse-" + p.Config.Scope()[:12] + "-" + newID(), CPU: cpu, Memory: memory}, compute.Accepted
 		}
 	}
@@ -266,12 +323,13 @@ func (p *Provider) Reconcile(ctx context.Context) error {
 		return e
 	}
 	defer p.Store.mu.Unlock()
+	defer p.prunePreparation()
 	if p.Store.broken {
-		return ErrState
+		return p.Store.stateError()
 	}
 	vms, e := p.Backend.List(ctx)
 	if e != nil {
-		return ErrBackend
+		return backendError("Reconcile inventory", e)
 	}
 	byName := map[string]backend.VM{}
 	for _, v := range vms {
@@ -297,6 +355,7 @@ func (p *Provider) Reconcile(ctx context.Context) error {
 		}
 		r.UID = v.UID
 		r.Outcome = compute.Accepted
+		r.diagnostic = ""
 		if (v.Status == "failed" && v.Stopped()) || r.Phase == "deleting" {
 			r.Phase = "deleting"
 			if e = p.Store.save(); e != nil {
@@ -309,7 +368,7 @@ func (p *Provider) Reconcile(ctx context.Context) error {
 				continue
 			}
 			if e != nil {
-				return ErrBackend
+				return backendError("Reconcile verify deletion identity", e)
 			}
 			if !p.matches(r, current) {
 				r.Phase = "quarantine"
@@ -319,13 +378,13 @@ func (p *Provider) Reconcile(ctx context.Context) error {
 				continue
 			}
 			if e = p.Backend.Delete(ctx, r.Name); e != nil && !backend.IsStatus(e, 404) {
-				return ErrBackend
+				return backendError("Reconcile Delete", e)
 			}
 			_, e = p.Backend.Get(ctx, r.Name)
 			if backend.IsStatus(e, 404) {
 				r.Phase = "done"
 			} else if e != nil {
-				return ErrBackend
+				return backendError("Reconcile confirm deletion", e)
 			}
 		} else {
 			r.Phase = "active"
@@ -354,7 +413,7 @@ func (p *Provider) List(ctx context.Context, q compute.ListRequest) (compute.Lis
 	}
 	defer p.Store.mu.Unlock()
 	if p.Store.broken {
-		return compute.ListResponse{}, ErrState
+		return compute.ListResponse{}, p.Store.stateError()
 	}
 	after := ""
 	if q.PageToken != "" {
@@ -367,7 +426,7 @@ func (p *Provider) List(ctx context.Context, q compute.ListRequest) (compute.Lis
 	}
 	vs, e := p.Backend.List(ctx)
 	if e != nil {
-		return compute.ListResponse{}, ErrBackend
+		return compute.ListResponse{}, backendError("List inventory", e)
 	}
 	records := map[string]*Record{}
 	for _, r := range p.Store.data.Records {

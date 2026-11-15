@@ -19,7 +19,7 @@ import (
 func (p *Provider) vmReservations(ctx context.Context) (map[string]string, error) {
 	vms, err := p.Backend.List(ctx)
 	if err != nil {
-		return nil, ErrBackend
+		return nil, backendError("reservation inventory", err)
 	}
 	used := map[string]string{}
 	observed := map[string]backend.VM{}
@@ -88,9 +88,11 @@ func (p *Provider) jobReservations() map[string]string {
 }
 
 func (p *Provider) fitsJobCounts(used map[string]string, specs ...backend.Spec) bool {
+	additions := 0
 	for _, spec := range specs {
 		if spec.Name != "" {
 			used[spec.Name] = spec.OS
+			additions++
 		}
 	}
 	mac, linux := 0, 0
@@ -102,7 +104,20 @@ func (p *Provider) fitsJobCounts(used map[string]string, specs ...backend.Spec) 
 		}
 	}
 	limits, err := p.Config.VMCounts.Normalize()
-	return err == nil && mac <= *limits.MacOS && linux <= *limits.Linux && mac+linux <= *limits.Total
+	if err != nil {
+		p.observeError("configured VM count limits", err)
+		return false
+	}
+	p.observe("configured macOS count=%d limit=%d requested additions=%d", mac, *limits.MacOS, additions)
+	if mac > *limits.MacOS {
+		return false
+	}
+	p.observe("configured Linux count=%d limit=%d", linux, *limits.Linux)
+	if linux > *limits.Linux {
+		return false
+	}
+	p.observe("configured total count=%d limit=%d", mac+linux, *limits.Total)
+	return mac+linux <= *limits.Total
 }
 
 func (p *Provider) canStartVMs(ctx context.Context, specs ...backend.Spec) (bool, error) {
@@ -115,6 +130,13 @@ func (p *Provider) canStartVMs(ctx context.Context, specs ...backend.Spec) (bool
 			used[spec.Name] = spec.OS
 		}
 	}
+	unknown := 0
+	for _, os := range used {
+		if os != "linux" && os != "darwin" {
+			unknown++
+		}
+	}
+	p.observe("physical macOS ceiling count=%d limit=2 (includes builders, pending VMs and reservations; foreign OS unknown=%d counted conservatively)", macOSCount(used), unknown)
 	return macOSCount(used) <= 2, nil
 }
 
@@ -134,6 +156,12 @@ func macOSCount(used map[string]string) int {
 // Reclaim only an unused ready allocation; never retain the refused launch or
 // lease. Pulse must retry after reconciliation has prepared the requested pool.
 func (p *Provider) requestJobRoom(ctx context.Context, l api.Launch) error {
+	if p.diagnostic != nil {
+		old := p.diagnostic.operation
+		p.diagnostic.operation = "room request: "
+		defer func() { p.diagnostic.operation = old }()
+	}
+
 	for _, base := range p.Config.Bases {
 		for _, g := range p.Config.Slots {
 			if g.Base != base.Name || g.Count == 0 || !baseMatches(base, l) && !p.dockerMatch(g, l) {
@@ -168,7 +196,7 @@ func (p *Provider) requestJobRoom(ctx context.Context, l api.Launch) error {
 			}
 			used[spec.Name] = spec.OS
 			jobs := p.jobReservations()
-			if p.fitsJobCounts(maps.Clone(jobs), spec) && macOSCount(used) <= 2 {
+			if p.fitsJobCounts(maps.Clone(jobs), spec) && p.physicalFits(used) {
 				return nil
 			}
 			ids := make([]string, 0, len(p.Store.data.Pairs))
@@ -185,7 +213,7 @@ func (p *Provider) requestJobRoom(ctx context.Context, l api.Launch) error {
 				delete(remaining, pair.Primary.Name)
 				delete(physical, pair.Primary.Name)
 				delete(physical, pair.Engine.Name)
-				if p.fitsJobCounts(remaining, spec) && macOSCount(physical) <= 2 {
+				if p.fitsJobCounts(remaining, spec) && p.physicalFits(physical) {
 					pair.Phase = "reclaiming"
 					return p.Store.save()
 				}
@@ -201,4 +229,9 @@ func (p *Provider) canReserveJobs(ctx context.Context, primaries ...backend.Spec
 		return false, nil
 	}
 	return p.canStartVMs(ctx, primaries...)
+}
+
+func (p *Provider) physicalFits(used map[string]string) bool {
+	p.observe("physical macOS ceiling count=%d limit=2", macOSCount(used))
+	return macOSCount(used) <= 2
 }

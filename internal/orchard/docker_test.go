@@ -5,12 +5,14 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"github.com/colony-2/pulse-tart/internal/backend"
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/net/websocket"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -132,5 +134,26 @@ func TestManagementSSHUsesBinaryWebsocketAndStdin(t *testing.T) {
 	}
 	if <-received != "private stdin payload" {
 		t.Fatal("stdin changed")
+	}
+}
+
+func TestDiagnosticExecObservationAndInheritedKey(t *testing.T) {
+	raw := errors.New("adapter fixture\n\"original cause\"")
+	c := &Client{Base: "http://fixture.invalid", HTTP: &http.Client{Transport: diagnosticTransport(func(*http.Request) (*http.Response, error) { return nil, raw })}}
+	if _, e := c.Exec(t.Context(), "vm", "uid", []byte("PRIVATE-SCRIPT")); !errors.Is(e, raw) || !strings.Contains(e.Error(), "Exec Get") {
+		t.Fatal(e)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/vms/vm" {
+			json.NewEncoder(w).Encode(backend.VM{Spec: backend.Spec{Name: "vm", Image: "unproven"}, UID: "uid"})
+			return
+		}
+		w.WriteHeader(503)
+		io.WriteString(w, raw.Error())
+	}))
+	defer server.Close()
+	c = &Client{Base: server.URL, HTTP: server.Client(), GuestKeys: map[string][]byte{"raw": []byte("pinned")}}
+	if _, e := c.Exec(t.Context(), "vm", "uid", []byte("PRIVATE-SCRIPT")); !IsStatus(e, 503) || !strings.Contains(e.Error(), raw.Error()) || !strings.Contains(e.Error(), "inherited host key") {
+		t.Fatal(e)
 	}
 }

@@ -165,8 +165,8 @@ func TestMACCollisionAndAmbiguousCreateDoNotRetry(t *testing.T) {
 	t.Run("unknown clone", func(t *testing.T) {
 		b, m, s := fixture(t)
 		m.ambiguous = true
-		if _, e := b.Create(t.Context(), s); e != Err {
-			t.Fatal("unsanitized error", e)
+		if _, e := b.Create(t.Context(), s); !errors.Is(e, Err) || !strings.Contains(e.Error(), "sensitive command error") {
+			t.Fatal("missing original error", e)
 		}
 		if _, e := b.Create(t.Context(), s); e == nil {
 			t.Fatal("ambiguous create replayed")
