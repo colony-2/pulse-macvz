@@ -6,7 +6,10 @@ umask 077
 root=$(cd "$(dirname "$0")/.." && pwd)
 usage() {
   cat <<'HELP'
-Usage: update-macos-images.sh --owner NAME [options]
+Usage: update-macos-images.sh [--c2j VERSION] [--list]
+       update-macos-images.sh --owner NAME [options]
+  --discover         Discover existing pools (default when --owner is omitted)
+  --list             Print discovered update targets without changing anything
   --base NAME         OS catalog entry (default: macos-26-arm64)
   --group NAME        Config.SlotGroup.Name (default: standard)
   --slots COUNT       Number of suspended slots (default: 1)
@@ -24,26 +27,36 @@ TART_HOME. Set PULSE_IMAGE_SSH_PASSWORD for a custom guest password (default:
 admin). Requires Tart with clone --overwrite and set --random-serial,
 Python 3, curl, and OpenSSH.
 Existing job clones are never stopped, deleted, or modified.
+Discovery updates existing catalog-based macOS sources, excluding test pools.
+Use --discover --owner NAME or --base NAME to filter discovered sources.
 HELP
 }
+original_args=("$@")
 owner= base=macos-26-arm64 group=standard count=1 cpu=4 memory=8192 version=latest
 image= os_version= ssh_user=admin ensure=0 seconds=2700 docker_profile=
+discover=0 list_only=0 existing_targets=
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --help|-h) usage; exit 0 ;;
+    --discover) discover=1; shift; continue ;;
+    --list) list_only=1; shift; continue ;;
     --ensure) ensure=1; shift; continue ;;
-    --owner|--base|--group|--slots|--cpu|--memory|--docker-profile|--c2j|--image|--os-version|--ssh-user|--timeout)
+    --owner|--base|--group|--slots|--cpu|--memory|--docker-profile|--c2j|--image|--os-version|--ssh-user|--timeout|--existing-targets)
       [[ $# -ge 2 ]] || { usage >&2; exit 2; }
       case "$1" in
         --owner) owner=$2 ;; --base) base=$2 ;; --group) group=$2 ;;
         --slots) count=$2 ;; --cpu) cpu=$2 ;; --memory) memory=$2 ;;
         --docker-profile) docker_profile=$2 ;; --c2j) version=$2 ;; --image) image=$2 ;; --os-version) os_version=$2 ;;
         --ssh-user) ssh_user=$2 ;; --timeout) seconds=$2 ;;
+        --existing-targets) existing_targets=$2 ;;
       esac; shift 2 ;;
     *) usage >&2; exit 2 ;;
   esac
 done
 [[ $(uname -s) == Darwin && $(uname -m) == arm64 ]] || { echo 'Run on an Apple Silicon Mac.' >&2; exit 2; }
+if [[ -z $owner || $discover == 1 || $list_only == 1 ]]; then
+  exec python3 "$root/scripts/discover-macos-images.py" "${original_args[@]}"
+fi
 [[ $owner =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ && ${#owner} -le 64 && $group =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ && ${#group} -le 32 ]]
 [[ -z $docker_profile || ( $docker_profile =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ && ${#docker_profile} -le 128 ) ]]
 [[ $ssh_user =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]
@@ -97,6 +110,9 @@ trap 'exit 143' TERM
 state() { tart get "$1" --format json | python3 -c 'import json,sys;print(json.load(sys.stdin)["State"])'; }
 valid_source() {
   tart get "$1" --format json 2>/dev/null | python3 -c 'import json,sys;d=json.load(sys.stdin);sys.exit(not (d["State"]==sys.argv[1] and d["CPU"]==int(sys.argv[2]) and d["Memory"]==int(sys.argv[3])))' "$2" "$3" "$4" 2>/dev/null
+}
+selected_source() {
+  [[ -z $existing_targets ]] || python3 "$root/scripts/discover-macos-images.py" selected "$existing_targets" "$1"
 }
 export PULSE_IMAGE_SSH_PASSWORD=${PULSE_IMAGE_SSH_PASSWORD:-admin}
 cat > "$work/askpass" <<'ASKPASS'
@@ -152,6 +168,7 @@ ready=() targets=()
 if [[ $build_base == 1 ]]; then ready+=("$base_source"); targets+=("${names[0]}"); fi
 for ((i=1;i<=count;i++)); do
   target=${names[$i]}
+  if ! selected_source "$target"; then continue; fi
   if [[ $ensure == 1 ]] && valid_source "$target" suspended "$cpu" "$memory"; then continue; fi
   echo "Preparing suspended slot $i/$count: $target"
   name="pulse-build-$(date -u +%Y%m%dT%H%M%SZ)-$$-slot-$i"
@@ -172,8 +189,20 @@ done
 # overwrite takes Tart's global lock, also used by concurrent clone operations.
 for ((i=0;i<${#ready[@]};i++)); do
   aliases=()
-  while IFS= read -r alias; do aliases+=("$alias"); done < <(tart list --source local --format json | python3 "$root/scripts/image-names.py" aliases "${targets[$i]}")
+  if [[ -n $existing_targets ]]; then
+    python3 "$root/scripts/discover-macos-images.py" targets "$existing_targets" "${targets[$i]}" > "$work/publish-targets"
+    while IFS= read -r alias; do aliases+=("$alias"); done < "$work/publish-targets"
+  else
+    while IFS= read -r alias; do aliases+=("$alias"); done < <(tart list --source local --format json | python3 "$root/scripts/image-names.py" aliases "${targets[$i]}")
+  fi
   for alias in "${aliases[@]}"; do
+    if [[ -n $existing_targets ]]; then
+      # Discovery publishes only names observed in its plan. A source removed
+      # or changed while builders ran must not be recreated or overwritten.
+      desired=stopped; expected_cpu=4; expected_memory=8192
+      if [[ ${targets[$i]} != "${names[0]}" ]]; then desired=suspended; expected_cpu=$cpu; expected_memory=$memory; fi
+      valid_source "$alias" "$desired" "$expected_cpu" "$expected_memory" || { echo "Discovered source changed or disappeared: $alias" >&2; exit 1; }
+    fi
     if [[ $ensure == 1 ]] && tart get "$alias" --format json >/dev/null 2>&1; then continue; fi
     echo "Publishing: $alias"
     tart clone --overwrite "${ready[$i]}" "$alias"

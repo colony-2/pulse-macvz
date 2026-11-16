@@ -112,7 +112,20 @@ func exerciseImageUpdate(t *testing.T, ctx context.Context, r *Runtime, owner, s
 	}
 	updateCtx, cancel := context.WithTimeout(ctx, 30*time.Minute)
 	defer cancel()
-	cmd := exec.CommandContext(updateCtx, "bash", "scripts/update-macos-images.sh", "--owner", owner, "--base", base.Name, "--group", "standard", "--slots", "2", "--cpu", "4", "--memory", "8192", "--image", base.Image, "--os-version", base.OSVersion, "--ssh-user", base.SSHUsername, "--c2j", version)
+	args := []string{"scripts/update-macos-images.sh", "--owner", owner, "--base", base.Name, "--group", "standard", "--ssh-user", base.SSHUsername, "--c2j", version}
+	discover := false
+	for _, known := range DefaultBases() {
+		if known.Name == base.Name && known.Image == base.Image && known.OSVersion == base.OSVersion {
+			discover = true
+		}
+	}
+	if discover {
+		// Explicitly select this test owner; unfiltered discovery skips fixtures.
+		args = append(args, "--discover")
+	} else {
+		args = append(args, "--slots", "2", "--cpu", "4", "--memory", "8192", "--image", base.Image, "--os-version", base.OSVersion)
+	}
+	cmd := exec.CommandContext(updateCtx, "bash", args...)
 	cmd.Env = append(os.Environ(), "PULSE_IMAGE_PROFILE=integration", "PULSE_IMAGE_SSH_PASSWORD="+string(base.SSHPassword))
 	home := os.Getenv("PULSE_TEST_TART_HOME")
 	if home == "" {
@@ -144,7 +157,7 @@ func exerciseImageUpdate(t *testing.T, ctx context.Context, r *Runtime, owner, s
 		select {
 		case err := <-finished:
 			exited = true
-			report.write(t, "image-update.json", map[string]any{"output": output.String(), "passed": err == nil})
+			report.write(t, "image-update.json", map[string]any{"output": output.String(), "passed": err == nil, "discovery": discover})
 			if err != nil {
 				t.Fatalf("standalone image update failed: %v (see image-update.json)", err)
 			}

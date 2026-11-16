@@ -32,7 +32,7 @@ with open(str(state)+'.lock','w') as lock:
    if dst in vms and vms[dst]['State']=='running': code=1
    else:
     d['next']+=1
-    vm=copy.deepcopy(vms.get(src,{'CPU':2,'Memory':4096,'State':'stopped','MACAddress':'raw','Release':'raw'}))
+    vm=copy.deepcopy(vms.get(src,{'OS':'darwin','CPU':2,'Memory':4096,'State':'stopped','MACAddress':'raw','Release':'raw'}))
     vm.update(Name=dst,IP='192.0.2.'+str(d['next']));vms[dst]=vm
   elif cmd=='set':
    vm=vms[args[1]];vm.update(CPU=int(args[args.index('--cpu')+1]),Memory=int(args[args.index('--memory')+1]),MACAddress='fresh-'+vm['IP'])
@@ -55,6 +55,7 @@ with open(str(state)+'.lock','w') as lock:
   elif 'prepare-template.sh' in command:
    if os.environ.get('FAIL_SLOT') and vm['Name'].endswith('-slot-'+os.environ['FAIL_SLOT']): code=1
    else: result='PULSE_TEMPLATE_READY {}'
+   if os.environ.get('DELETE_ON_PREPARE'): vms.pop(os.environ['DELETE_ON_PREPARE'],None)
   else: code=1
  elif tool=='scp': pass
  else: code=1
@@ -76,7 +77,7 @@ class UpdateImages(unittest.TestCase):
         self.temp=TemporaryDirectory();self.addCleanup(self.temp.cleanup)
         self.root=Path(self.temp.name);binary=self.root/'bin';binary.mkdir()
         self.sources=names.names('test','macos-26-arm64','standard',4,8192,2)
-        vms={name:dict(Name=name,CPU=4,Memory=8192,State='stopped' if i==0 else 'suspended',MACAddress=f'old-{i}',MachineID='inherited',Release='old',IP=f'192.0.2.{i+1}') for i,name in enumerate(self.sources)}
+        vms={name:dict(Name=name,OS='darwin',CPU=4,Memory=8192,State='stopped' if i==0 else 'suspended',MACAddress=f'old-{i}',MachineID='inherited',Release='old',IP=f'192.0.2.{i+1}') for i,name in enumerate(self.sources)}
         # An already-running job clone must remain unchanged through publication.
         vms['old-job']=dict(vms[self.sources[1]],Name='old-job',State='running',IP='192.0.2.4')
         self.orchard='orchard-'+self.sources[1]+'-12345678-1234-1234-1234-123456789012-0'
