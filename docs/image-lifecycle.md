@@ -5,8 +5,8 @@ The library and standalone updater use the same guest preparation scripts. Both 
 ```mermaid
 flowchart TD
     OS[Digest-pinned macOS image] --> Base[Stopped base: Nix, c2j and tools installed]
-    Base --> Slot1[Slot 1: unique MAC, suspended]
-    Base --> Slot2[Slot 2: unique MAC, suspended]
+    Base --> Slot1[Slot 1: unique machine ID and MAC, suspended]
+    Base --> Slot2[Slot 2: unique machine ID and MAC, suspended]
     Slot1 --> Job1[Fresh job clone, then delete]
     Slot2 --> Job2[Fresh job clone, then delete]
 ```
@@ -16,6 +16,8 @@ flowchart TD
 The caller supplies bases, slot counts/sizes, an owner and durable state. Constructors perform no preparation; `Run`/`Reconcile` adopts existing named sources or prepares missing ones. The first install resolves `Config.C2JVersion` (`latest` by default) to a commit and uses Nix inside the guest to install c2j, the guest launcher, Git, Node/pnpm, uv and Python. Separate slots clone that shared prepared disk, configure their own CPU/memory/MAC, boot, verify tools/OS and suspend.
 
 The transferred setup archive contains scripts and build definitions, not binaries or a VM image. It is an internal delivery mechanism that lets an application use the library without a repository checkout. There is no public bundle configuration and no c2j version compiled into the library.
+
+Direct Tart and the standalone updater also assign each cold macOS builder a new Mac machine identifier with `tart set --random-serial` before boot. A different MAC alone is insufficient: the native probe reproduced concurrent restore failures for sequential snapshots sharing a machine identifier. Changing the identifier before boot eliminated those failures in both restore orders. Suspended clones retain their source's machine identifier; it cannot be changed after saving the snapshot. Orchard's automatic preparation is controlled by its worker; the local updater supplies independently identified templates for either backend.
 
 ## Job execution
 
@@ -33,6 +35,6 @@ Direct Tart permits replacement of these published source directories while reta
 
 ## Retention and recovery
 
-`Close` preserves native resources. `Drain` stops admissions and releases slots after active work completes, keeping images for reuse. `PurgeImages` explicitly removes known, stopped sources after draining. Images not recorded in the runtime's journal, including extra canonical aliases, are outside that operation.
+`Close` preserves native resources. `Drain` stops admissions and releases slots after active work completes, keeping images for reuse. `PurgeImages` explicitly removes known, stopped sources after draining. Images not recorded in the runtime's inventory, including extra canonical aliases, are outside that operation.
 
-The durable journal handles ownership, reservations, uncertain dispatches and duplicate launches. It is not a software release manifest. Never discard it to retry an uncertain launch. Failed builders remain inspectable; unknown dispatches retain reservations. There is no attempt to clean an executed VM for another job.
+Direct Tart keeps ownership, preparation and delivery properties in each VM's private `pulse.json`. Restart reconstructs the pool from existing VMs; deletion removes the reservation. Pulse submits each LaunchID once. Native operations are never replayed, and ambiguous creation without a VM leaves no permanent reservation. Orchard retains its durable ownership journal. Failed builders remain inspectable. There is no attempt to clean an executed VM for another job. See the README for legacy migration.

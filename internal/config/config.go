@@ -32,7 +32,7 @@ func (Secret) GoString() string { return "[REDACTED]" }
 // owns configuration loading. C2JVersion is used only to prepare missing images.
 type Config struct {
 	OwnerID          string
-	StateDir         string
+	StateDir         string      // Orchard journal; optional legacy migration directory for direct Tart.
 	Bases            []Base      // Most preferred first; nil selects the conventional macOS and Linux bases.
 	Slots            []SlotGroup // Nil selects conventional groups; explicit zero Count drains a group.
 	VMCounts         VMCounts    // Job VM limits; companions and image builders are excluded.
@@ -159,10 +159,12 @@ func BaseSelector(s string) bool {
 // Normalize validates and deep-copies all retained input. Defaults apply equally
 // to both backends. Explicit slot-group counts use zero to drain a group.
 func Normalize(c Config) (Config, error) {
-	if !Name(c.OwnerID) || len(c.OwnerID) > 64 || !filepath.IsAbs(c.StateDir) || len(c.Bases) == 0 || len(c.Slots) == 0 {
+	if !Name(c.OwnerID) || len(c.OwnerID) > 64 || (c.StateDir != "" && !filepath.IsAbs(c.StateDir)) || len(c.Bases) == 0 || len(c.Slots) == 0 {
 		return Config{}, Err
 	}
-	c.StateDir = filepath.Clean(c.StateDir)
+	if c.StateDir != "" {
+		c.StateDir = filepath.Clean(c.StateDir)
+	}
 	var err error
 	if c.VMCounts, err = c.VMCounts.Normalize(); err != nil {
 		return Config{}, err

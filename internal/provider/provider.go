@@ -112,6 +112,21 @@ func (p *Provider) Submit(ctx context.Context, ls []compute.Launch) ([]compute.S
 		return nil, e
 	}
 	defer p.Store.mu.Unlock()
+	if p.Store.properties != nil {
+		if err := p.Store.refresh(); err != nil {
+			return nil, err
+		}
+		if err := p.recoverPublishedSources(ctx); err != nil {
+			return nil, err
+		}
+		inventory, err := p.Backend.List(ctx)
+		if err != nil {
+			return nil, backendError("admission inventory", err)
+		}
+		if err = p.reconcileRecords(ctx, inventory); err != nil {
+			return nil, err
+		}
+	}
 	out := make([]compute.Submission, 0, len(ls))
 	defer func() { p.diagnostic = nil }()
 	for _, l := range ls {
@@ -136,6 +151,11 @@ func (p *Provider) Submit(ctx context.Context, ls []compute.Launch) ([]compute.S
 		l = copyLaunch(l)
 		hash := p.launchHash(l)
 		if old := p.Store.data.Records[l.LaunchID]; old != nil {
+			if p.Store.properties != nil {
+				p.observe("launch ID already belongs to an existing VM; Pulse must submit each launch only once")
+				out = append(out, p.submission(l.LaunchID, compute.Rejected))
+				continue
+			}
 			status := old.Outcome
 			if old.Fingerprint != hash {
 				status = compute.Rejected
@@ -327,10 +347,30 @@ func (p *Provider) Reconcile(ctx context.Context) error {
 	if p.Store.broken {
 		return p.Store.stateError()
 	}
+	if err := p.Store.refresh(); err != nil {
+		return err
+	}
 	vms, e := p.Backend.List(ctx)
 	if e != nil {
 		return backendError("Reconcile inventory", e)
 	}
+	if e = p.reconcileRecords(ctx, vms); e != nil {
+		return e
+	}
+
+	if e := p.reconcileImages(ctx); e != nil {
+		return e
+	}
+	if e := p.reconcileSlots(ctx); e != nil {
+		return e
+	}
+	return p.reconcilePairs(ctx)
+}
+
+// Rebuild job occupancy from current native observations. In VM-properties
+// mode deleted resources disappear from the index, including uncertain creates.
+func (p *Provider) reconcileRecords(ctx context.Context, vms []backend.VM) error {
+	var e error
 	byName := map[string]backend.VM{}
 	for _, v := range vms {
 		byName[v.Name] = v
@@ -393,13 +433,7 @@ func (p *Provider) Reconcile(ctx context.Context) error {
 	if e = p.Store.save(); e != nil {
 		return e
 	}
-	if e := p.reconcileImages(ctx); e != nil {
-		return e
-	}
-	if e := p.reconcileSlots(ctx); e != nil {
-		return e
-	}
-	return p.reconcilePairs(ctx)
+	return nil
 }
 func (p *Provider) List(ctx context.Context, q compute.ListRequest) (compute.ListResponse, error) {
 	if q.PageSize == 0 {
@@ -414,6 +448,9 @@ func (p *Provider) List(ctx context.Context, q compute.ListRequest) (compute.Lis
 	defer p.Store.mu.Unlock()
 	if p.Store.broken {
 		return compute.ListResponse{}, p.Store.stateError()
+	}
+	if err := p.Store.refresh(); err != nil {
+		return compute.ListResponse{}, err
 	}
 	after := ""
 	if q.PageToken != "" {

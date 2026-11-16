@@ -1,6 +1,6 @@
 # Prepare or update macOS images
 
-Run `scripts/update-macos-images.sh` on the Apple Silicon worker from a pulse-tart checkout. Use the same account and `TART_HOME` as the Tart/Orchard worker. The command needs Tart with `clone --overwrite` (reviewed against 2.41.1), Python 3, curl, shasum and OpenSSH. Nix runs inside the guest, not on the host.
+Run `scripts/update-macos-images.sh` on the Apple Silicon worker from a pulse-tart checkout. Use the same account and `TART_HOME` as the Tart/Orchard worker. The command needs Tart with `clone --overwrite` and `set --random-serial` (reviewed against 2.41.1), Python 3, curl, shasum and OpenSSH. Nix runs inside the guest, not on the host.
 
 ```sh
 ./scripts/update-macos-images.sh \
@@ -40,7 +40,9 @@ Orchard adds `orchard-` plus a UUID/restart suffix to its native image names. Th
 
 Every update starts from the configured raw OS image, installs the selected c2j once into a stopped base, then boots and suspends each requested slot with independent hardware identity. All replacements are prepared before publication. `tart clone --overwrite` takes Tart's storage lock for each replacement. A concurrent clone sees the source before or after that replacement.
 
-Existing ordinary job clones keep their own disk/configuration/saved state and continue unaffected. A clone already created before publication also keeps the old environment even if it starts afterward. New clones use the replacement. Each new slot template has a fresh MAC and boot UUID; job startup checks its own snapshot's saved identity rather than a cached identity from the provider.
+Existing ordinary job clones keep their own disk/configuration/saved state and continue unaffected. A clone already created before publication also keeps the old environment even if it starts afterward. New clones use the replacement. Each cold builder receives a fresh Mac machine identifier (`--random-serial`) and MAC before boot. Each new slot template therefore has an independent machine identity, MAC and boot UUID; job startup checks its own snapshot's saved identity rather than a cached identity from the provider. Publication and job clones preserve all saved hardware identity.
+
+Templates prepared by older versions may share their base's Mac machine identifier despite having different MAC addresses. On the November 15 macOS 26.7.2/Tart 2.41.1 probe, sequentially prepared snapshots with that shared identifier failed to restore together with VZErrorDomain Code=12, while sequential builders with distinct identifiers restored in both orders. Rebuild affected templates using this updater without `--ensure`. Restarting the provider does not rebuild existing sources, and changing the identifier on an already-suspended template is not a repair: the saved state must retain its original configuration.
 
 Publication is per image, not a transaction across the pool. Preparation failure leaves published sources untouched. Publication failure reports an error and can leave some sources updated; rerunning repairs the pool. Do not run suspended sources directly, use stacked clones, or modify job clones. The provider still permits only one active/unresolved job per configured slot.
 

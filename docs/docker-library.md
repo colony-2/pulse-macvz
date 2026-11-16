@@ -10,7 +10,7 @@ library integration has its own tests and remaining live qualification gates.
 ```go
 engine := tart.DefaultDockerEngine()
 cfg := tart.Config{
-    OwnerID: "mac-pool", StateDir: "/var/lib/pulse/mac-pool",
+    OwnerID: "mac-pool", // Orchard also requires a private absolute StateDir.
     Bases: []tart.Base{tart.DefaultBases()[0], tart.DefaultLinuxBase()},
     Docker: &tart.DockerConfig{Profiles: []tart.DockerEngineProfile{engine}},
     Slots: []tart.SlotGroup{
@@ -75,7 +75,7 @@ support VM endpoints with a single-port `workerPortRange`. Local Tart installs
 an allocation-owned launchd service with `LimitLoadToSessionType=Background`
 in the worker user's domain, using
 `/usr/bin/python3` (override `TartConfig.PythonBinary` if needed). Its script,
-plist and logs live under the private state directory. The service and VMs
+plist and logs live in `pulse-endpoint/` inside the engine VM directory. The service and VMs
 survive `Runtime.Close`; run reconciliation again to recover and clean them up.
 
 ## Preparation and jobs
@@ -114,12 +114,14 @@ verified allocation capabilities. The worker uses a native private workspace;
 
 ## Ownership and recovery
 
-The private journal records both native specs/UIDs, the slot, fixed endpoint port
-and provisioning/handoff phases before mutations. A lost create response is
-observed by exact identity, never retried blindly. Unknown create absence keeps
-its reservation; known partial resources can still be reclaimed. A handoff error
-returns `unknown`. Reopen observes the exact guest receipt rather than sending
-another lease. Duplicate LaunchIDs retain their original result/fingerprint.
+For direct Tart, private `pulse.json` properties on both pair members contain the
+native specs/UIDs, slot, endpoint port and provisioning/handoff phases. Either
+surviving member can recover ownership; revisions resolve a crash between member
+writes. Missing members are reclaimed without retaining an absent allocation.
+The endpoint helper is removed before deleting the last VM carrying its recovery
+properties. Orchard retains its private journal and uncertain-create reservations.
+A handoff error returns `unknown`; restart observes the exact guest receipt
+without sending another lease. Pulse must submit each LaunchID once.
 
 `List` returns both owned native resources with the same LaunchID and JobRef,
 including stopped resources pending cleanup. Capacity remains reserved until
@@ -156,7 +158,7 @@ macOS testing first checks launchd bootstrap, forwarding, Close/reopen, same-por
 restart and removal without creating any VMs. A failed preflight stops the run;
 its logs and endpoint diagnostics are included in the archive. Fresh
 Nix image builds can take several minutes; each platform has a 45-minute limit.
-The fixture checks a real JobDB lease, Docker work, renewal, reopen/replay,
+The fixture checks a real JobDB lease, Docker work, renewal, restart recovery,
 resource listing and cleanup. The older native prototype matrix remains useful
 for SDK and simultaneous-slot qualification, but does not certify this allocator.
 
@@ -186,7 +188,7 @@ The native qualification has one command, with no arguments:
 This runs the regression suite and three generations of two production macOS
 allocations. Each has its own Linux engine. It checks overlapping real c2j jobs,
 identical container/volume names and TCP ports, cross-allocation prune isolation,
-controller SIGKILL and replay, guest relay/worker endpoint SIGKILL, Docker daemon
+controller SIGKILL and recovery, guest relay/worker endpoint SIGKILL, Docker daemon
 restart, primary/engine VM loss, paired cleanup, and fresh jobs after faults.
 All six allocations must have distinct engine IDs and transport keys. Four jobs
 must complete with one claim each; the two jobs used for VM-loss injection are

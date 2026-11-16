@@ -87,3 +87,32 @@ func TestEndpointObservationFailureDoesNotBootstrapOrRelease(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestEndpointMovesExistingHelperBesideVM(t *testing.T) {
+	b, _, spec := fixture(t)
+	v, err := b.Create(t.Context(), spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls := []string{}
+	b.service = func(_ context.Context, args ...string) ([]byte, error) {
+		calls = append(calls, args[0])
+		if args[0] == "bootstrap" {
+			want := filepath.Join(b.path(spec.Name), "pulse-endpoint", "service.plist")
+			if args[2] != want {
+				t.Fatal("helper not moved into VM directory", args[2])
+			}
+		}
+		return nil, nil
+	}
+	ready, err := b.ensureEndpoint(t.Context(), v.UID, "127.0.0.1:2222", 45100)
+	if ready || err != nil || strings.Join(calls, ",") != "print,bootout,bootstrap" {
+		t.Fatal(ready, err, calls)
+	}
+	// A new helper with its plist present may still be starting; do not restart
+	// merely because it has not written readiness yet.
+	calls = nil
+	if _, err = b.ensureEndpoint(t.Context(), v.UID, "127.0.0.1:2222", 45100); err != nil || strings.Join(calls, ",") != "print" {
+		t.Fatal(err, calls)
+	}
+}

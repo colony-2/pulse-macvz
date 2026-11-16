@@ -21,7 +21,8 @@ Usage: update-macos-images.sh --owner NAME [options]
 
 Run on the Apple Silicon worker as the Tart/Orchard worker user, using its
 TART_HOME. Set PULSE_IMAGE_SSH_PASSWORD for a custom guest password (default:
-admin). Requires Tart with clone --overwrite, Python 3, curl, and OpenSSH.
+admin). Requires Tart with clone --overwrite and set --random-serial,
+Python 3, curl, and OpenSSH.
 Existing job clones are never stopped, deleted, or modified.
 HELP
 }
@@ -136,7 +137,7 @@ if [[ $build_base == 1 ]]; then
   base_source="pulse-build-$(date -u +%Y%m%dT%H%M%SZ)-$$-base"
   staged+=("$base_source")
   tart clone "$image" "$base_source"
-  tart set "$base_source" --cpu 4 --memory 8192 --random-mac
+  tart set "$base_source" --cpu 4 --memory 8192 --random-mac --random-serial
   start_guest "$base_source"
   remote_dir=$(ssh_run 'mktemp -d /tmp/pulse-image-setup.XXXXXX' </dev/null)
   [[ $remote_dir =~ ^/tmp/pulse-image-setup\.[A-Za-z0-9]+$ ]]
@@ -156,7 +157,10 @@ for ((i=1;i<=count;i++)); do
   name="pulse-build-$(date -u +%Y%m%dT%H%M%SZ)-$$-slot-$i"
   staged+=("$name")
   tart clone "$base_source" "$name"
-  tart set "$name" --cpu "$cpu" --memory "$memory" --random-mac
+  # Each cold builder needs its own Mac machine identity as well as its MAC.
+  # Sequential snapshots sharing an identity can fail to restore together.
+  # Publication and job clones preserve this identity after suspension.
+  tart set "$name" --cpu "$cpu" --memory "$memory" --random-mac --random-serial
   start_guest "$name"
   ssh_run "sudo /bin/bash /opt/pulse-tart-image/prepare-template.sh '$seconds' '$os_version' 'nix git node pnpm uv python'" </dev/null > "$work/slot-$i.log" 2>&1
   grep -q '^PULSE_TEMPLATE_READY ' "$work/slot-$i.log"

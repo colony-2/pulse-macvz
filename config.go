@@ -7,7 +7,8 @@ func VMCount(n int) *int { return &n }
 
 // ResolveConfig fills conventions, validates configuration and returns an
 // independent copy without contacting a backend or creating files or VMs.
-// Constructors call it automatically. OwnerID and StateDir remain required.
+// Constructors call it automatically. OwnerID is required. StateDir is required
+// for Orchard; direct Tart only uses it to import an existing legacy journal.
 // Omitted slots make every configured base usable at 4 vCPU / 8 GiB. Per-base
 // template pools share the OS and total job limits; they do not add concurrency.
 // Linux includes Docker; macOS Docker remains opt-in through Config.Docker.

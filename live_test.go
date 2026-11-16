@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -62,6 +63,7 @@ func TestLive(t *testing.T) {
 	c.C2JVersion = os.Getenv("PULSE_TEST_C2J_VERSION")
 	report := newLiveReport(t, password)
 	connect := OrchardConfig{URL: os.Getenv("PULSE_TEST_ORCHARD_URL"), Worker: os.Getenv("PULSE_TEST_ORCHARD_WORKER"), AllowInsecureHTTP: true}
+	tartBinary := ""
 	factory := func() (*Runtime, error) {
 		switch kind {
 		case "orchard":
@@ -71,7 +73,7 @@ func TestLive(t *testing.T) {
 			}
 			return r, err
 		case "tart":
-			r, err := NewTart(c, TartConfig{Home: os.Getenv("PULSE_TEST_TART_HOME")})
+			r, err := NewTart(c, TartConfig{Home: os.Getenv("PULSE_TEST_TART_HOME"), Binary: tartBinary})
 			if err == nil {
 				r.profile = "integration"
 			}
@@ -87,8 +89,8 @@ func TestLive(t *testing.T) {
 	defer func() { _ = r.Close() }()
 	ctx, cancel := context.WithTimeout(t.Context(), 45*time.Minute)
 	defer cancel()
-	t.Logf("state directory: %s", dir)
-	// Cleanup only this journal's exact identities. Drain never kills a valid job.
+	t.Logf("private test scratch: %s; owner: %s", dir, owner)
+	// Cleanup only this test owner's exact identities. Drain never kills a valid job.
 	defer func() {
 		clean, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 		defer cancel()
@@ -116,9 +118,10 @@ func TestLive(t *testing.T) {
 			}
 			time.Sleep(time.Second)
 		}
-		t.Errorf("cleanup incomplete; preserve journal at %s for recovery", dir)
+		t.Errorf("cleanup incomplete; preserve private test scratch %s and VM properties for owner %s", dir, owner)
 	}()
 	start := time.Now()
+	nextPreparationLog := time.Time{}
 	waitLive(t, ctx, "prepared suspended slots", 30*time.Minute, func(ctx context.Context) bool {
 		if e := r.Reconcile(ctx); e != nil {
 			t.Fatal(e)
@@ -145,6 +148,19 @@ func TestLive(t *testing.T) {
 				ready++
 			}
 		}
+		if ready != 2 && !time.Now().Before(nextPreparationLog) {
+			nextPreparationLog = time.Now().Add(30 * time.Second)
+			t.Logf("preparation images: %+v; slots: %+v", images, slots)
+			inventory, err := r.p.Backend.List(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, vm := range inventory {
+				if !vm.Stopped() {
+					t.Logf("active VM: name=%s os=%q power=%s status=%s", vm.Name, vm.OS, vm.PowerState, vm.Status)
+				}
+			}
+		}
 		return ready == 2
 	})
 	t.Logf("two templates ready in %s", time.Since(start).Round(time.Millisecond))
@@ -165,13 +181,29 @@ func TestLive(t *testing.T) {
 	if e = r.Close(); e != nil {
 		t.Fatal(e)
 	}
+	if kind == "tart" {
+		if _, err := os.Stat(filepath.Join(dir, "state.json")); !os.IsNotExist(err) {
+			t.Fatal("direct Tart unexpectedly needs a separate journal", err)
+		}
+		if err := os.RemoveAll(dir); err != nil {
+			t.Fatal(err)
+		}
+		c.StateDir = ""
+	}
 	r, e = factory()
 	if e != nil {
 		t.Fatal(e)
 	}
-	out, e = r.Submit(ctx, []api.Launch{a, b})
-	if e != nil || out[0].Status != api.Accepted || out[1].Status != api.Accepted {
-		t.Fatal("replay created conflicting admissions", out, e)
+	assertRecoveredLaunches(t, ctx, r, dir, []api.Launch{a, b})
+	if kind == "tart" {
+		if _, err := os.Stat(dir); !os.IsNotExist(err) {
+			t.Fatal("restart recreated the old state directory", err)
+		}
+		t.Log("VM_PROPERTIES_RECOVERY_PASS: existing launches recovered without StateDir")
+		// Auxiliary fixture intents stay private, outside the shareable archive.
+		if err := os.MkdirAll(dir, 0700); err != nil {
+			t.Fatal(err)
+		}
 	}
 	done := func(ls []api.Launch) {
 		t.Helper()
@@ -181,17 +213,9 @@ func TestLive(t *testing.T) {
 				if recoverer, ok := r.p.Backend.(interface{ Recover(context.Context) error }); ok {
 					_ = recoverer.Recover(ctx)
 				}
-				data, err := os.ReadFile(filepath.Join(dir, "state.json"))
+				journal, err := readLiveState(r, dir)
 				if err != nil {
 					t.Fatal(err)
-				}
-				var journal struct {
-					Records map[string]struct {
-						Name string `json:"name"`
-					} `json:"records"`
-				}
-				if json.Unmarshal(data, &journal) != nil {
-					t.Fatal("invalid test journal")
 				}
 				record := journal.Records[l.LaunchID].Name
 				events, e := r.p.Backend.(interface {
@@ -247,6 +271,77 @@ func TestLive(t *testing.T) {
 	if e = r.Reconcile(ctx); e != nil {
 		t.Fatal(e)
 	}
+	if kind == "tart" {
+		// Exercise the original failure with real suspended Tart clones. Only
+		// this runtime's run command is replaced; get/clone/delete use real Tart.
+		binary, err := exec.LookPath("tart")
+		if err != nil {
+			t.Fatal(err)
+		}
+		binary, err = filepath.Abs(binary)
+		if err != nil {
+			t.Fatal(err)
+		}
+		wrapper := filepath.Join(t.TempDir(), "tart-failed-restore")
+		script := "#!/bin/sh\nif [ \"$1\" = run ]; then echo 'injected snapshot restore failure' >&2; exit 1; fi\nexec '" + strings.ReplaceAll(binary, "'", "'\"'\"'") + "' \"$@\"\n"
+		if err = os.WriteFile(wrapper, []byte(script), 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err = r.Close(); err != nil {
+			t.Fatal(err)
+		}
+		tartBinary = wrapper
+		r, e = factory()
+		if e != nil {
+			t.Fatal(e)
+		}
+		failed := []api.Launch{launch("restore-failure-a"), launch("restore-failure-b")}
+		out, err := r.Submit(ctx, failed)
+		if err != nil || len(out) != 2 || out[0].Status != api.Accepted || out[1].Status != api.Accepted {
+			t.Fatal("failed-restore dispatch", out, err)
+		}
+		state, err := readLiveState(r, dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, l := range failed {
+			name := state.Records[l.LaunchID].Name
+			waitLive(t, ctx, "exited suspended restore: "+name, time.Minute, func(ctx context.Context) bool {
+				v, err := r.p.Backend.Get(ctx, name)
+				if err != nil {
+					t.Fatal(err)
+				}
+				return v.PowerState == "suspended" && v.Status == "failed" && v.Stopped()
+			})
+		}
+		report.capture(t, ctx, kind, connect, r, dir)
+		if err = r.Close(); err != nil {
+			t.Fatal(err)
+		}
+		tartBinary = ""
+		r, e = factory()
+		if e != nil {
+			t.Fatal(e)
+		}
+		if err = r.Reconcile(ctx); err != nil {
+			t.Fatal(err)
+		}
+		for _, l := range failed {
+			if _, err = r.p.Backend.Get(ctx, state.Records[l.LaunchID].Name); !backend.IsStatus(err, 404) {
+				t.Fatal("failed suspended clone retained", err)
+			}
+		}
+		slots, err := r.Slots()
+		if err != nil || len(slots) != 2 {
+			t.Fatal("lost reusable templates", err)
+		}
+		for _, slot := range slots {
+			if slot.Busy || slot.Phase != "ready" {
+				t.Fatal("failed restore stranded capacity", slot)
+			}
+		}
+		t.Log("FAILED_RESTORE_RECOVERY_PASS: both failed suspended clones removed; 2/2 slots available")
+	}
 	again := launch("reuse")
 	out, e = r.Submit(ctx, []api.Launch{again})
 	if e != nil || out[0].Status != api.Accepted {
@@ -269,7 +364,10 @@ func TestLive(t *testing.T) {
 		}
 	}
 	exerciseJobDB(t, ctx, kind, connect, r, owner, dir, report, done)
-	data, _ := os.ReadFile(filepath.Join(dir, "state.json"))
+	data, err := livePropertyData(r, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if strings.Contains(string(data), string(a.Lease)) {
 		t.Fatal("lease leaked to fingerprint journal")
 	}
@@ -305,4 +403,93 @@ func waitLive(t *testing.T, parent context.Context, label string, timeout time.D
 		}
 	}
 	t.Fatalf("timeout waiting for %s after %s", label, time.Since(start).Round(time.Second))
+}
+
+// Read only identities for live-test diagnostics; never export private specs.
+type liveIdentity struct{ Name, UID, LaunchID string }
+type livePairIdentity struct {
+	Primary, Engine       struct{ Name string }
+	PrimaryUID, EngineUID string
+}
+type liveState struct {
+	Records map[string]liveIdentity
+	Slots   map[string]liveIdentity
+	Images  map[string]liveIdentity
+	Pairs   map[string]livePairIdentity
+}
+
+func livePropertyData(r *Runtime, dir string) ([]byte, error) {
+	if b, ok := r.p.Backend.(interface {
+		ReadVMProperties() (map[string]json.RawMessage, error)
+	}); ok {
+		props, err := b.ReadVMProperties()
+		if err != nil {
+			return nil, err
+		}
+		return json.Marshal(props)
+	}
+	return os.ReadFile(filepath.Join(dir, "state.json"))
+}
+func readLiveState(r *Runtime, dir string) (liveState, error) {
+	state := liveState{Records: map[string]liveIdentity{}, Slots: map[string]liveIdentity{}, Images: map[string]liveIdentity{}, Pairs: map[string]livePairIdentity{}}
+	data, err := livePropertyData(r, dir)
+	if err != nil {
+		return state, err
+	}
+	if _, ok := r.p.Backend.(interface{ Home() string }); !ok {
+		err = json.Unmarshal(data, &state)
+		return state, err
+	}
+	var props map[string]struct {
+		Job *struct {
+			Name, UID string
+			LaunchID  string `json:"launch_id"`
+		}
+		Slot, Image *liveIdentity
+		Pair        *livePairIdentity
+	}
+	if err = json.Unmarshal(data, &props); err != nil {
+		return state, err
+	}
+	for name, p := range props {
+		if p.Job != nil {
+			state.Records[p.Job.LaunchID] = liveIdentity{p.Job.Name, p.Job.UID, p.Job.LaunchID}
+		}
+		if p.Slot != nil {
+			state.Slots[name] = *p.Slot
+		}
+		if p.Image != nil {
+			state.Images[name] = *p.Image
+		}
+		if p.Pair != nil {
+			state.Pairs[name] = *p.Pair
+		}
+	}
+	return state, nil
+}
+func assertRecoveredLaunches(t *testing.T, ctx context.Context, r *Runtime, dir string, launches []api.Launch) {
+	t.Helper()
+	if _, ok := r.p.Backend.(interface {
+		ReadVMProperties() (map[string]json.RawMessage, error)
+	}); ok {
+		state, err := readLiveState(r, dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, launch := range launches {
+			if state.Records[launch.LaunchID].Name == "" {
+				t.Fatal("restart lost launch properties", launch.LaunchID)
+			}
+		}
+		return
+	}
+	out, err := r.Submit(ctx, launches)
+	if err != nil || len(out) != len(launches) {
+		t.Fatal("Orchard replay", err)
+	}
+	for _, result := range out {
+		if result.Status != api.Accepted {
+			t.Fatal("Orchard replay", result)
+		}
+	}
 }

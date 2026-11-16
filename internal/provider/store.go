@@ -43,13 +43,15 @@ type state struct {
 	Images  map[string]*ImageRecord `json:"images,omitempty"`
 }
 type Store struct {
-	mu          ctxlock.Mutex
-	dir         string
-	lock        *os.File
-	data        state
-	broken      bool
-	brokenCause error
-	io          *journalIO
+	mu               ctxlock.Mutex
+	dir              string
+	lock             *os.File
+	data             state
+	broken           bool
+	brokenCause      error
+	io               *journalIO
+	properties       VMPropertyBackend
+	propertySnapshot map[string]json.RawMessage
 }
 
 func OpenStore(dir, scope string) (*Store, error) {
@@ -135,7 +137,12 @@ func OpenStore(dir, scope string) (*Store, error) {
 	}
 	return s, nil
 }
-func (s *Store) Close() error { return s.lock.Close() }
+func (s *Store) Close() error {
+	if s.lock != nil {
+		return s.lock.Close()
+	}
+	return nil
+}
 func (s *Store) hash(v any) string {
 	b, _ := json.Marshal(v)
 	h := hmac.New(sha256.New, s.data.Key)
@@ -143,6 +150,9 @@ func (s *Store) hash(v any) string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 func (s *Store) save() error {
+	if s.properties != nil {
+		return s.saveProperties()
+	}
 	if s.broken {
 		return s.stateError()
 	}

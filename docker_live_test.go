@@ -205,10 +205,7 @@ func TestLiveDockerLibrary(t *testing.T) {
 		Exec(context.Context, string, string, []byte) ([]byte, error)
 		Stop(context.Context, string, string) error
 	})
-	out, e = r.Submit(ctx, []api.Launch{launch})
-	if e != nil || out[0].Status != api.Accepted {
-		t.Fatal("reopened duplicate", out, e)
-	}
+	assertRecoveredLaunches(t, ctx, r, dir, []api.Launch{launch})
 	var status fixtureStatus
 	waitLive(t, ctx, "real Docker c2j job", 8*time.Minute, func(context.Context) bool {
 		if !fetch("status?case=valid", &status) {

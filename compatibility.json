@@ -1,6 +1,6 @@
 {
-  "validation_date": "2026-11-05",
-  "status": "Shared-base preparation and installed-worker execution passed the full Orchard suite; new standalone/native source-update flow awaits macOS live validation.",
+  "validation_date": "2026-11-15",
+  "status": "Direct Tart per-VM property recovery, failed-restore slot release, standalone image replacement with concurrent replacement clones, and all JobDB checks passed the full macOS race suite. Historical Orchard validation remains recorded separately.",
   "provider": {
     "module": "github.com/colony-2/pulse-tart",
     "api": "github.com/colony-2/pulse-provider-api",
@@ -87,8 +87,7 @@
     "not_run": [
       "hosted CI workflows",
       "production TLS/roles",
-      "Orchard controller/worker restart fault injection",
-      "Direct Tart with a release-selected guest bundle"
+      "Orchard controller/worker restart fault injection"
     ],
     "direct_tart_lifecycle": {
       "result": "passed",
@@ -440,8 +439,47 @@
     },
     "named_image_updates": {
       "deterministic": "Go/native replacement tests and mocked standalone updater cover running-clone preservation, fresh MACs, stable aliases, preparation failure and ensure mode.",
-      "macos": "Pending: run scripts/test-macos.sh on the Apple Silicon host. The suite now requires IMAGE_UPDATE_PASS in addition to every JobDB assertion.",
+      "macos": "Passed in test-results/20261115T230914Z-tart-51521.tar.gz: running old clone preserved, both replacement snapshots restored concurrently, and subsequent JobDB execution passed.",
       "orchard_worker_local_publication": "Alias discovery covered deterministically; replacing native images beneath live Orchard records has not yet been tested on a worker."
+    },
+    "direct_tart_properties_recovery_and_updates": {
+      "result": "passed",
+      "date": "2026-11-15",
+      "test": "TestLive",
+      "command": "./scripts/test-macos.sh tart",
+      "report": "test-results/20261115T230914Z-tart-51521.tar.gz",
+      "seconds": 735.95,
+      "template_preparation_seconds": 236.701,
+      "two_clone_handoff_and_exit_seconds": 19.643,
+      "standalone_update_seconds": 248,
+      "host_macos": "26.7.2",
+      "host_build": "25G332",
+      "tart_version": "2.41.1",
+      "go_version": "1.26.0",
+      "base": "macos-26-arm64",
+      "c2j_reported_version": "unstable-69c9d62",
+      "checks": [
+        "full Go race suite and 44 script tests",
+        "existing launches recovered without StateDir from per-VM properties",
+        "two failed suspended restores cleaned after restart; 2/2 slots available",
+        "slot reuse after failed restores",
+        "standalone source replacement preserves an existing running clone",
+        "both replacement snapshots restore concurrently with independent identities",
+        "job execution from updated templates",
+        "real JobDB completion, Nix hello, secret retrieval and lease renewal",
+        "completed and expired leases rejected without reacquisition",
+        "test cleanup completed without errors"
+      ],
+      "jobdb": {
+        "status": "COMPLETED",
+        "claims": 1,
+        "renewals_at_completion_check": 6,
+        "secret_calls": 1
+      },
+      "limitations": [
+        "Dedicated live Docker suites were intentionally skipped.",
+        "This run does not revalidate Orchard worker behavior."
+      ]
     }
   },
   "historical_measurements": {

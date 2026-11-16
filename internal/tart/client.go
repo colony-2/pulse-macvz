@@ -25,6 +25,7 @@ import (
 	"github.com/colony-2/pulse-tart/internal/config"
 	"github.com/colony-2/pulse-tart/internal/ctxlock"
 	"golang.org/x/crypto/ssh"
+	"golang.org/x/sys/unix"
 )
 
 var Err = errors.New("Tart operation failed")
@@ -32,19 +33,21 @@ var ErrPlatform = errors.New("direct Tart requires macOS ARM64")
 
 type command func(context.Context, ...string) ([]byte, error)
 type record struct {
-	Spec      backend.Spec `json:"spec"`
-	UID       string       `json:"uid"`
-	Phase     string       `json:"phase"`
-	PID       int          `json:"pid"`
-	Device    uint64       `json:"device"`
-	Inode     uint64       `json:"inode"`
-	MAC       string       `json:"mac"`
-	HostKey   []byte       `json:"host_key,omitempty"`
-	Created   time.Time    `json:"created"`
-	Delivered bool         `json:"delivered"`
-	Reusable  bool         `json:"reusable,omitempty"` // Published source; replacement under this name is intentional.
+	Spec             backend.Spec `json:"spec"`
+	UID              string       `json:"uid"`
+	Phase            string       `json:"phase"`
+	PID              int          `json:"pid"`
+	Device           uint64       `json:"device"`
+	Inode            uint64       `json:"inode"`
+	MAC              string       `json:"mac"`
+	HostKey          []byte       `json:"host_key,omitempty"`
+	Created          time.Time    `json:"created"`
+	Delivered        bool         `json:"delivered"`
+	Reusable         bool         `json:"reusable,omitempty"`          // Published source; replacement under this name is intentional.
+	SuspendRequested bool         `json:"suspend_requested,omitempty"` // Tart suspend signals asynchronously; never signal a save twice.
 }
 type hardware struct {
+	OS         string
 	CPU        int64
 	Memory     int64
 	MACAddress string
@@ -53,20 +56,25 @@ type hardware struct {
 	Name       string
 }
 type Client struct {
-	mu      ctxlock.Mutex
-	cfg     config.Tart
-	dir     string
-	bases   []config.Base
-	timeout time.Duration
-	command command
-	service command // launchctl; injectable for lifecycle tests
-	launch  func(string) (int, error)
-	records map[string]*record
-	ctx     context.Context
-	cancel  context.CancelFunc
-	workers map[string]bool
-	wg      sync.WaitGroup
-	closed  bool
+	mu         ctxlock.Mutex
+	cfg        config.Tart
+	dir        string
+	scope      string
+	legacyDir  string
+	locks      []*os.File
+	properties map[string]json.RawMessage
+	staged     map[string]json.RawMessage // Pre-create properties; never returned as inventory.
+	bases      []config.Base
+	timeout    time.Duration
+	command    command
+	service    command // launchctl; injectable for lifecycle tests
+	launch     func(string) (int, error)
+	records    map[string]*record
+	ctx        context.Context
+	cancel     context.CancelFunc
+	workers    map[string]bool
+	wg         sync.WaitGroup
+	closed     bool
 }
 
 func New(c config.Tart, common config.Config) (*Client, error) {
@@ -119,38 +127,15 @@ func open(c config.Tart, common config.Config) (*Client, error) {
 			common.Bases = append(append([]config.Base{}, common.Bases...), config.Base{Image: p.Image, SSHHostKey: p.SSHHostKey})
 		}
 	}
-	b := &Client{service: service, cfg: c, dir: filepath.Join(common.StateDir, "native"), bases: common.Bases, timeout: common.BootstrapTimeout, records: map[string]*record{}, workers: map[string]bool{}, ctx: ctx, cancel: cancel}
-	fail := func(cause error) (*Client, error) { cancel(); return nil, failure("open native records", cause) }
-	if e := os.MkdirAll(b.dir, 0700); e != nil {
-		return fail(e)
-	}
-	st, e := os.Lstat(b.dir)
-	if e != nil || !st.IsDir() || st.Mode().Perm()&0077 != 0 {
-		return fail(errors.Join(e, errors.New("native directory must be private and a directory")))
-	}
-	entries, e := os.ReadDir(b.dir)
-	if e != nil {
-		return fail(e)
-	}
-	for _, entry := range entries {
-		if !strings.HasSuffix(entry.Name(), ".json") {
-			continue
-		}
-		data, e := os.ReadFile(filepath.Join(b.dir, entry.Name()))
-		if e != nil {
-			return fail(e)
-		}
-		var r record
-		if e := json.Unmarshal(data, &r); e != nil {
-			return fail(e)
-		}
-		if !config.Name(r.Spec.Name) || entry.Name() != r.Spec.Name+".json" || r.UID == "" {
-			return fail(errors.New("invalid native record identity"))
-		}
-		b.records[r.Spec.Name] = &r
+	scope := (config.Settings{Config: common, Kind: "tart", Endpoint: c.Home}).Scope()
+	b := &Client{service: service, cfg: c, dir: filepath.Join(c.Home, ".pulse", scope), scope: scope, legacyDir: common.StateDir, bases: common.Bases, timeout: common.BootstrapTimeout, records: map[string]*record{}, properties: map[string]json.RawMessage{}, workers: map[string]bool{}, ctx: ctx, cancel: cancel}
+	if err := b.openProperties(); err != nil {
+		b.Close()
+		return nil, failure("open VM properties", err)
 	}
 	return b, nil
 }
+
 func (b *Client) Home() string { return b.cfg.Home }
 func (b *Client) env() []string {
 	out := []string{}
@@ -192,39 +177,7 @@ func (b *Client) execute(ctx context.Context, args ...string) ([]byte, error) {
 	}
 	return out.Bytes(), nil
 }
-func (b *Client) save(r *record) error {
-	data, e := json.Marshal(r)
-	if e != nil {
-		return failure("save native record", e)
-	}
-	f, e := os.CreateTemp(b.dir, ".pending-")
-	if e != nil {
-		return failure("save native record", e)
-	}
-	defer os.Remove(f.Name())
-	if _, e = f.Write(data); e == nil {
-		e = f.Sync()
-	}
-	ce := f.Close()
-	if e == nil {
-		e = ce
-	}
-	if e == nil {
-		e = os.Rename(f.Name(), filepath.Join(b.dir, r.Spec.Name+".json"))
-	}
-	if e == nil {
-		d, de := os.Open(b.dir)
-		if de != nil {
-			return failure("save native record", de)
-		}
-		e = d.Sync()
-		d.Close()
-	}
-	if e != nil {
-		return failure("save native record", e)
-	}
-	return nil
-}
+
 func (b *Client) path(name string) string { return filepath.Join(b.cfg.Home, "vms", name) }
 func (b *Client) binding(r *record, claim bool) error {
 	st, e := os.Lstat(b.path(r.Spec.Name))
@@ -272,8 +225,49 @@ func (b *Client) inspect(ctx context.Context, name string) (hardware, error) {
 }
 func (b *Client) Info(ctx context.Context) error { _, e := b.command(ctx, "--version"); return e }
 func (b *Client) runExited(r *record) bool {
-	_, err := os.Stat(filepath.Join(b.dir, r.Spec.Name+".exit"))
-	return err == nil || (r.PID > 0 && syscall.Kill(r.PID, 0) == syscall.ESRCH)
+	_, err := os.Stat(b.artifact(r.Spec.Name, "exit"))
+	if err == nil {
+		return true
+	}
+	// The detached shell inherits this flock. Unlike a saved PID it cannot be
+	// confused with PID reuse, and it covers the gap before Tart acquires its
+	// own running-VM lock. The file may remain; only the kernel lock matters.
+	f, err := os.OpenFile(b.artifact(r.Spec.Name, "run.lock"), os.O_RDWR, 0)
+	if err == nil {
+		defer f.Close()
+		if unix.Flock(int(f.Fd()), unix.LOCK_EX|unix.LOCK_NB) != nil {
+			return false
+		}
+		_ = unix.Flock(int(f.Fd()), unix.LOCK_UN)
+		return true
+	}
+	if !os.IsNotExist(err) {
+		return false
+	}
+	// Compatibility with already-running VMs whose old wrapper has no flock.
+	return (r.PID > 0 && syscall.Kill(r.PID, 0) == syscall.ESRCH) || (r.Phase == "starting" && r.PID == 0)
+}
+
+func (b *Client) terminalSuspension(r *record) bool {
+	if r.Reusable {
+		return false
+	}
+	if r.Phase == "creating" || r.Phase == "prepared" {
+		return true
+	}
+	if !b.runExited(r) {
+		return false
+	}
+	// Builders deliberately exit successfully when producing a snapshot. Jobs
+	// do not: an exited job clone must release its slot even if Tart retains
+	// the snapshot file. Failed builder restores are terminal too.
+	var props struct{ Slot, Image json.RawMessage }
+	_ = json.Unmarshal(b.properties[r.Spec.Name], &props)
+	if len(props.Slot) == 0 && len(props.Image) == 0 {
+		return true
+	}
+	exit, err := os.ReadFile(b.artifact(r.Spec.Name, "exit"))
+	return err == nil && strings.TrimSpace(string(exit)) != "0"
 }
 func (b *Client) get(ctx context.Context, name string) (backend.VM, error) {
 	r := b.records[name]
@@ -296,7 +290,7 @@ func (b *Client) get(ctx context.Context, name string) (backend.VM, error) {
 	if e != nil {
 		return backend.VM{}, failure("Get native instance", e)
 	}
-	if h.CPU != r.Spec.CPU || h.Memory != r.Spec.Memory || (!r.Reusable && h.MACAddress != r.MAC) {
+	if r.Phase != "creating" && (h.CPU != r.Spec.CPU || h.Memory != r.Spec.Memory || (!r.Reusable && h.MACAddress != r.MAC)) {
 		return backend.VM{}, failure("native identity, hardware or state mismatch", nil)
 	}
 	v := backend.VM{Spec: r.Spec, UID: r.UID, Worker: "local", LocalName: name, CreatedAt: r.Created, PowerState: h.State, Generation: 1, ObservedGeneration: 1, Status: "pending"}
@@ -307,8 +301,13 @@ func (b *Client) get(ctx context.Context, name string) (backend.VM, error) {
 		running = "true"
 	case "suspended":
 		v.Status = "running"
+		// A reusable template is intentionally suspended. An ordinary clone
+		// whose run finished (including failed restore) is terminal.
+		if b.terminalSuspension(r) {
+			v.Status = "failed"
+		}
 	case "stopped":
-		if r.Reusable || b.runExited(r) || r.Phase == "prepared" {
+		if r.Reusable || b.runExited(r) || r.Phase == "prepared" || r.Phase == "creating" {
 			v.Status = "failed"
 		} else {
 			running = "true"
@@ -353,7 +352,21 @@ func (b *Client) List(ctx context.Context) ([]backend.VM, error) {
 			if !h.Running && (h.State == "stopped" || h.State == "suspended") {
 				running = "false"
 			}
-			out = append(out, backend.VM{Spec: backend.Spec{Name: h.Name}, UID: "foreign:" + h.Name,
+			if running == "true" {
+				// Tart's list output omits OS. Inspect active foreign VMs so Linux
+				// workers do not consume the two physical macOS positions. This
+				// observation never adopts the VM or permits lifecycle mutations.
+				data, err := b.command(ctx, "get", h.Name, "--format", "json")
+				if err != nil {
+					return nil, failure("inspect foreign VM OS", err)
+				}
+				var details hardware
+				if err = json.Unmarshal(data, &details); err != nil {
+					return nil, failure("decode foreign VM OS", err)
+				}
+				h.OS = details.OS
+			}
+			out = append(out, backend.VM{Spec: backend.Spec{Name: h.Name, OS: h.OS}, UID: "foreign:" + h.Name,
 				PowerState: h.State, Conditions: []backend.Condition{{Type: "running", State: running}}})
 			continue
 		}
@@ -446,15 +459,43 @@ func (b *Client) Create(ctx context.Context, s backend.Spec) (backend.VM, error)
 		return backend.VM{}, failure("create native clone", e)
 	}
 	r := &record{Spec: s, UID: hex.EncodeToString(uid[:]), Phase: "creating", Created: time.Now().UTC(), HostKey: key}
+	b.properties[s.Name] = bytes.Clone(b.staged[s.Name])
+	delete(b.staged, s.Name)
 	b.records[s.Name] = r
 	if e := b.save(r); e != nil {
 		return backend.VM{}, e
 	}
 	if _, e := b.command(ctx, "clone", s.Image, s.Name); e != nil {
+		// A command may fail after creating its destination. Attach the known
+		// creation properties while this process still knows the operation, so
+		// restart can clean the partial VM without retrying clone or run.
+		if _, statErr := os.Lstat(b.path(s.Name)); statErr == nil {
+			if bindErr := b.binding(r, true); bindErr != nil {
+				return backend.VM{}, errors.Join(e, bindErr)
+			}
+			if saveErr := b.save(r); saveErr != nil {
+				return backend.VM{}, errors.Join(e, saveErr)
+			}
+		} else if os.IsNotExist(statErr) {
+			delete(b.records, s.Name)
+		}
 		return backend.VM{}, failure("create native clone", e)
 	}
+	if e := b.binding(r, true); e != nil {
+		return backend.VM{}, e
+	}
+	if e := b.save(r); e != nil {
+		return backend.VM{}, e
+	}
 	if cold {
-		if _, e := b.command(ctx, "set", s.Name, "--cpu", strconv.FormatInt(s.CPU, 10), "--memory", strconv.FormatInt(s.Memory, 10), "--random-mac"); e != nil {
+		args := []string{"set", s.Name, "--cpu", strconv.FormatInt(s.CPU, 10), "--memory", strconv.FormatInt(s.Memory, 10), "--random-mac"}
+		if s.OS == "darwin" {
+			// Separate macOS builders must not inherit the base's machine ID:
+			// sequential snapshots with that shared identity can fail to restore
+			// together. Change it before boot, never on a suspended clone.
+			args = append(args, "--random-serial")
+		}
+		if _, e := b.command(ctx, args...); e != nil {
 			return backend.VM{}, failure("create native clone", e)
 		}
 	}
@@ -516,7 +557,15 @@ func (b *Client) Create(ctx context.Context, s backend.Spec) (backend.VM, error)
 // The detached wrapper writes a durable exit observation even if the Go host
 // exits. Neither argv nor inherited environment contains the launch payload.
 func (b *Client) start(name string) (int, error) {
-	f, e := os.OpenFile(filepath.Join(b.dir, name+".run.log"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
+	lock, e := os.OpenFile(b.artifact(name, "run.lock"), os.O_CREATE|os.O_RDWR, 0600)
+	if e != nil {
+		return 0, failure("open native run lock", e)
+	}
+	defer lock.Close()
+	if e = unix.Flock(int(lock.Fd()), unix.LOCK_EX|unix.LOCK_NB); e != nil {
+		return 0, failure("lock native run", e)
+	}
+	f, e := os.OpenFile(b.artifact(name, "run.log"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
 	if e != nil {
 		return 0, failure("start detached Tart run", e)
 	}
@@ -529,8 +578,9 @@ code=$?
 umask 077
 printf '%s\n' "$code" > "$3.tmp"
 mv "$3.tmp" "$3"
-`, "pulse-tart-run", b.cfg.Binary, name, filepath.Join(b.dir, name+".exit"), strconv.FormatBool(suspendable))
+`, "pulse-tart-run", b.cfg.Binary, name, b.artifact(name, "exit"), strconv.FormatBool(suspendable))
 	cmd.Env = b.env()
+	cmd.ExtraFiles = []*os.File{lock}
 	cmd.Stdout = f
 	cmd.Stderr = f
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
@@ -560,6 +610,19 @@ func (b *Client) Suspend(ctx context.Context, name, uid string) error {
 	if v.PowerState != "running" {
 		return failure("native ownership/state condition failed", nil)
 	}
+	r := b.records[name]
+	if r.SuspendRequested {
+		return nil // Poll native state; another signal can abort an in-progress save.
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	// Keep the request with the VM before signalling. After interruption the
+	// outcome may be uncertain, but replaying SIGUSR1 can corrupt a snapshot.
+	r.SuspendRequested = true
+	if err := b.save(r); err != nil {
+		return failure("save suspend request", err)
+	}
 	_, e = b.command(ctx, "suspend", name)
 	return e
 }
@@ -584,13 +647,8 @@ func (b *Client) Delete(ctx context.Context, name string) error {
 	if _, e = os.Lstat(b.path(name)); !os.IsNotExist(e) {
 		return failure("delete destination still exists or cannot be observed", e)
 	}
-	if e := os.Remove(filepath.Join(b.dir, name+".json")); e != nil {
-		return failure("remove native record", e)
-	}
 	delete(b.records, name)
-	for _, suffix := range []string{".run.log", ".events", ".exit"} {
-		_ = os.Remove(filepath.Join(b.dir, name+suffix))
-	}
+	delete(b.properties, name)
 	return nil
 }
 func (b *Client) Events(ctx context.Context, name string) ([]backend.Event, error) {
@@ -604,7 +662,7 @@ func (b *Client) Events(ctx context.Context, name string) ([]backend.Event, erro
 	if b.records[name] == nil {
 		return nil, failure("native events require an owned record", nil)
 	}
-	f, e := os.Open(filepath.Join(b.dir, name+".events"))
+	f, e := os.Open(b.artifact(name, "events"))
 	if os.IsNotExist(e) {
 		return []backend.Event{}, nil
 	}
@@ -637,8 +695,11 @@ func (b *Client) Recover(ctx context.Context) error {
 	if b.closed {
 		return failure("recover native delivery: client closed", nil)
 	}
+	if err := b.readProperties(); err != nil {
+		return err
+	}
 	for name, r := range b.records {
-		if r.Phase != "started" || r.Delivered || b.workers[name] {
+		if (r.Phase != "started" && r.Phase != "starting") || r.Delivered || b.workers[name] {
 			continue
 		}
 		v, e := b.get(ctx, name)
@@ -649,6 +710,12 @@ func (b *Client) Recover(ctx context.Context) error {
 			return e
 		}
 		if v.PowerState == "running" || v.Status == "pending" || (v.PowerState == "suspended" && !b.runExited(r)) {
+			if r.Phase == "starting" {
+				r.Phase = "started"
+				if err := b.save(r); err != nil {
+					return err
+				}
+			}
 			b.deliver(r)
 		}
 	}
@@ -685,7 +752,7 @@ func (b *Client) deliver(r *record) {
 				ip := strings.TrimSpace(string(data))
 				if e == nil && net.ParseIP(ip) != nil {
 					e = b.send(ctx, ip, spec, key)
-					events, _ := os.ReadFile(filepath.Join(b.dir, name+".events"))
+					events, _ := os.ReadFile(b.artifact(name, "events"))
 					if e == nil || bytes.Contains(events, []byte("PULSE_HANDOFF_OK")) || bytes.Contains(events, []byte("PULSE_BASE_READY")) || bytes.Contains(events, []byte("PULSE_TEMPLATE_READY")) {
 						b.mu.Lock()
 						r.Delivered = true
@@ -738,7 +805,7 @@ func (b *Client) sendAddress(ctx context.Context, address string, spec backend.S
 		return failure("delivery SSH", e)
 	}
 	defer session.Close()
-	f, e := os.OpenFile(filepath.Join(b.dir, spec.Name+".events"), os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0600)
+	f, e := os.OpenFile(b.artifact(spec.Name, "events"), os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0600)
 	if e != nil {
 		return failure("delivery SSH", e)
 	}
@@ -753,10 +820,18 @@ func (b *Client) sendAddress(ctx context.Context, address string, spec backend.S
 }
 func (b *Client) Close() error {
 	b.mu.Lock()
+	if b.closed {
+		b.mu.Unlock()
+		return nil
+	}
 	b.closed = true
 	b.cancel()
 	b.mu.Unlock()
 	b.wg.Wait()
+	for _, f := range b.locks {
+		_ = f.Close()
+	}
+	b.locks = nil
 	return nil
 }
 

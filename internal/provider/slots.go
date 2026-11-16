@@ -156,6 +156,26 @@ func templateIdentity(events []backend.Event) (mac, boot string, ok bool) {
 	return "", "", false
 }
 
+func (p *Provider) adoptSlot(ctx context.Context, id string, t slotTarget) (bool, error) {
+	existing, err := p.adopt(ctx, t.spec, p.base(t.image))
+	if backend.IsStatus(err, 404) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if !suspended(existing) || existing.Worker != t.worker || existing.CPU != t.spec.CPU || existing.Memory != t.spec.Memory {
+		return false, fmt.Errorf("slot source %s is not suspended or has incompatible hardware", t.spec.Name)
+	}
+	if err := p.retain(ctx, existing.Name, existing.UID); err != nil {
+		return false, err
+	}
+	s := &SlotRecord{ID: id, Name: existing.Name, UID: existing.UID, NativeHash: p.Store.hash(normalized(existing.Spec)), ConfigHash: t.hash, Phase: "ready", Worker: t.worker, LocalName: existing.LocalName, Created: time.Now().UTC()}
+	p.Store.data.Slots[id] = s
+	p.cacheSlot(s)
+	return true, p.Store.save()
+}
+
 // Called with the journal lock held. Never waits for guest preparation or resume.
 func (p *Provider) reconcileSlots(ctx context.Context) error {
 	if len(p.Config.Slots) == 0 && len(p.Store.data.Slots) == 0 {
@@ -326,24 +346,12 @@ func (p *Provider) reconcileSlots(ctx context.Context) error {
 		t := targets[id]
 		// Reuse the published source by name, even when it was built by the
 		// standalone script or replaced since this journal last observed it.
-		existing, err := p.adopt(ctx, t.spec, p.base(t.image))
-		if err == nil {
-			if !suspended(existing) || existing.Worker != t.worker || existing.CPU != t.spec.CPU || existing.Memory != t.spec.Memory {
-				return fmt.Errorf("slot source %s is not suspended or has incompatible hardware", t.spec.Name)
-			}
-			if err := p.retain(ctx, existing.Name, existing.UID); err != nil {
-				return err
-			}
-			s := &SlotRecord{ID: id, Name: existing.Name, UID: existing.UID, NativeHash: p.Store.hash(normalized(existing.Spec)), ConfigHash: t.hash, Phase: "ready", Worker: t.worker, LocalName: existing.LocalName, Created: time.Now().UTC()}
-			p.Store.data.Slots[id] = s
-			p.cacheSlot(s)
-			if err := p.Store.save(); err != nil {
-				return err
-			}
-			continue
-		}
-		if !backend.IsStatus(err, 404) {
+		adopted, err := p.adoptSlot(ctx, id, t)
+		if err != nil {
 			return err
+		}
+		if adopted {
+			continue
 		}
 		if t.spec.Image == "" {
 			continue
@@ -527,6 +535,9 @@ func (p *Provider) Slots() ([]SlotStatus, error) {
 	defer p.Store.mu.Unlock()
 	if p.Store.broken {
 		return nil, p.Store.stateError()
+	}
+	if err := p.Store.refresh(); err != nil {
+		return nil, err
 	}
 	statuses := []SlotStatus{}
 	for _, s := range p.Store.data.Slots {

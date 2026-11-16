@@ -12,6 +12,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -103,7 +104,7 @@ func fixture(t *testing.T) (*Client, *mockNative, backend.Spec) {
 		mock.vms[name] = h
 		return os.Getpid(), nil
 	}
-	return b, mock, backend.Spec{Name: "template", Image: common.Bases[0].Image, CPU: 4, Memory: 8192, Username: "admin", Password: "ssh-password", Suspendable: true, StartupScript: backend.Script{Content: "private opaque lease payload"}}
+	return b, mock, backend.Spec{Name: "template", OS: "darwin", Image: common.Bases[0].Image, CPU: 4, Memory: 8192, Username: "admin", Password: "ssh-password", Suspendable: true, StartupScript: backend.Script{Content: "private opaque lease payload"}}
 }
 func TestTemplateAndSuspendedCloneKeepHardware(t *testing.T) {
 	b, m, s := fixture(t)
@@ -128,6 +129,9 @@ func TestTemplateAndSuspendedCloneKeepHardware(t *testing.T) {
 			if args[1] != "template" {
 				t.Fatal("resumed clone resized")
 			}
+			if !slices.Contains(args, "--random-serial") {
+				t.Fatal("cold macOS builder inherited its source's machine identity")
+			}
 		}
 		if strings.Contains(strings.Join(args, " "), "opaque lease") {
 			t.Fatal("lease in command argv")
@@ -135,6 +139,50 @@ func TestTemplateAndSuspendedCloneKeepHardware(t *testing.T) {
 	}
 	if sets != 1 || m.vms["job"].MACAddress != m.vms["template"].MACAddress {
 		t.Fatal("snapshot identity changed")
+	}
+}
+
+func TestColdCloneMachineIdentityConfiguredBeforeBoot(t *testing.T) {
+	for _, osname := range []string{"darwin", "linux"} {
+		for _, sourceKind := range []string{"digest", "prepared-base"} {
+			t.Run(osname+"/"+sourceKind, func(t *testing.T) {
+				b, m, s := fixture(t)
+				s.OS = osname
+				if sourceKind == "prepared-base" {
+					source := s
+					source.Name = "prepared-base"
+					m.vms[source.Name] = hardware{Name: source.Name, CPU: s.CPU, Memory: s.Memory, State: "stopped", MACAddress: "02:00:00:00:00:31"}
+					if err := os.MkdirAll(b.path(source.Name), 0700); err != nil {
+						t.Fatal(err)
+					}
+					if _, err := b.AdoptSource(t.Context(), source, nil); err != nil {
+						t.Fatal(err)
+					}
+					s.Image = source.Name
+				}
+				launch := b.launch
+				b.launch = func(name string) (int, error) {
+					m.mu.Lock()
+					sets := 0
+					for _, args := range m.calls {
+						if args[0] == "set" && args[1] == name {
+							sets++
+							if slices.Contains(args, "--random-serial") != (osname == "darwin") {
+								t.Errorf("wrong platform identity configuration before boot: %v", args)
+							}
+						}
+					}
+					m.mu.Unlock()
+					if sets != 1 {
+						t.Errorf("expected one configuration before boot, got %d", sets)
+					}
+					return launch(name)
+				}
+				if _, err := b.Create(t.Context(), s); err != nil {
+					t.Fatal(err)
+				}
+			})
+		}
 	}
 }
 func TestMACCollisionAndAmbiguousCreateDoNotRetry(t *testing.T) {
@@ -246,6 +294,9 @@ func TestDetachedRunSurvivesClose(t *testing.T) {
 		t.Fatal(e)
 	}
 	b.cfg.Binary = binary
+	if e := os.MkdirAll(b.path("detached"), 0700); e != nil {
+		t.Fatal(e)
+	}
 	if _, e := b.start("detached"); e != nil {
 		t.Fatal(e)
 	}
@@ -255,7 +306,7 @@ func TestDetachedRunSurvivesClose(t *testing.T) {
 		t.Fatal("Close waited for VM")
 	}
 	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); {
-		data, e := os.ReadFile(filepath.Join(b.dir, "detached.exit"))
+		data, e := os.ReadFile(b.artifact("detached", "exit"))
 		if e == nil {
 			if strings.TrimSpace(string(data)) != "0" {
 				t.Fatal("detached run failed")
@@ -269,6 +320,9 @@ func TestDetachedRunSurvivesClose(t *testing.T) {
 
 func TestSSHDeliveryUsesOnlyStdinAndPinsHostKey(t *testing.T) {
 	b, _, spec := fixture(t)
+	if err := os.MkdirAll(b.path(spec.Name), 0700); err != nil {
+		t.Fatal(err)
+	}
 	_, private, e := ed25519.GenerateKey(nil)
 	if e != nil {
 		t.Fatal(e)
@@ -346,7 +400,7 @@ func TestSSHDeliveryUsesOnlyStdinAndPinsHostKey(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatal("no SSH stdin")
 	}
-	data, e := os.ReadFile(filepath.Join(b.dir, spec.Name+".events"))
+	data, e := os.ReadFile(b.artifact(spec.Name, "events"))
 	if e != nil || strings.Contains(string(data), "opaque lease") {
 		t.Fatal("lease leaked to startup events")
 	}
@@ -439,7 +493,7 @@ func TestDeliveryWaitsForSuspendedCloneToResume(t *testing.T) {
 	if err = b.Suspend(t.Context(), s.Name, v.UID); err != nil {
 		t.Fatal(err)
 	}
-	if err = os.WriteFile(filepath.Join(b.dir, "job.exit"), []byte("0\n"), 0600); err != nil {
+	if err = os.WriteFile(b.artifact("job", "exit"), []byte("0\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	deadline := time.Now().Add(3 * time.Second)
@@ -498,8 +552,14 @@ func TestPublishedSourceReplacementDoesNotChangeExistingClone(t *testing.T) {
 	replacement.MACAddress = "02:00:00:00:00:99"
 	m.vms[s.Name] = replacement
 	m.mu.Unlock()
-	if _, err = b.Get(t.Context(), s.Name); err != nil {
-		t.Fatal("published source rejected after replacement", err)
+	if _, err = b.ReadVMProperties(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = b.Get(t.Context(), s.Name); !backend.IsStatus(err, 404) {
+		t.Fatal("replaced directory retained old metadata", err)
+	}
+	if _, err = b.AdoptSource(t.Context(), s, nil); err != nil {
+		t.Fatal("published source not recovered after replacement", err)
 	}
 	next := old
 	next.Name = "new-job"
@@ -581,11 +641,14 @@ func TestLinuxDetachedRunDoesNotRequestUnsupportedSuspension(t *testing.T) {
 	}
 	b.cfg.Binary = binary
 	b.records["linux"] = &record{Spec: backend.Spec{OS: "linux"}}
+	if e := os.MkdirAll(b.path("linux"), 0700); e != nil {
+		t.Fatal(e)
+	}
 	if _, e := b.start("linux"); e != nil {
 		t.Fatal(e)
 	}
 	for deadline := time.Now().Add(3 * time.Second); time.Now().Before(deadline); {
-		data, e := os.ReadFile(filepath.Join(b.dir, "linux.exit"))
+		data, e := os.ReadFile(b.artifact("linux", "exit"))
 		if e == nil {
 			if strings.TrimSpace(string(data)) != "0" {
 				t.Fatal("Linux requested suspension")
@@ -645,8 +708,55 @@ func TestForeignInventoryPreservesPowerWithoutTakingOwnership(t *testing.T) {
 		t.Fatal("inventory adopted foreign VMs")
 	}
 	for _, call := range m.calls {
-		if call[0] != "list" {
+		if call[0] != "list" && call[0] != "get" {
 			t.Fatalf("foreign inventory mutated native resources: %v", call)
 		}
+	}
+}
+
+func TestForeignRunningLinuxInventoryRetainsOS(t *testing.T) {
+	b, m, _ := fixture(t)
+	for _, name := range []string{"linux-1", "linux-2", "linux-3", "linux-4"} {
+		m.vms[name] = hardware{Name: name, State: "running", Running: true, OS: "linux"}
+	}
+	m.vms["mac"] = hardware{Name: "mac", State: "running", Running: true, OS: "darwin"}
+	b.command = func(ctx context.Context, args ...string) ([]byte, error) {
+		data, err := m.run(ctx, args...)
+		if err == nil && args[0] == "list" {
+			var list []hardware
+			if err := json.Unmarshal(data, &list); err != nil {
+				return nil, err
+			}
+			for i := range list {
+				list[i].OS = ""
+			} // Actual Tart list omits OS.
+			return json.Marshal(list)
+		}
+		return data, err
+	}
+	list, err := b.List(t.Context())
+	if err != nil || len(list) != 5 {
+		t.Fatal(list, err)
+	}
+	mac := 0
+	for _, vm := range list {
+		if vm.Stopped() || vm.OS == "" {
+			t.Fatal("lost active VM OS", vm.Name)
+		}
+		if vm.OS != "linux" {
+			mac++
+		}
+	}
+	if mac != 1 || len(b.records) != 0 {
+		t.Fatal("Linux workers consumed macOS capacity or were adopted", mac)
+	}
+	b.command = func(ctx context.Context, args ...string) ([]byte, error) {
+		if args[0] == "get" {
+			return nil, errors.New("inspect unavailable")
+		}
+		return m.run(ctx, args...)
+	}
+	if _, err = b.List(t.Context()); err == nil {
+		t.Fatal("failed OS observation returned successful inventory")
 	}
 }

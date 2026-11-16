@@ -20,6 +20,17 @@ import (
 var endpointScript []byte
 
 func (b *Client) endpointLabel(uid string) string { return "dev.pulse-tart.engine." + uid }
+
+// Production endpoints live with their engine VM. The fallback supports the
+// VM-free launchd preflight only; it contains no pool or allocation state.
+func (b *Client) endpointDir(uid string) string {
+	for name, r := range b.records {
+		if r.UID == uid {
+			return filepath.Join(b.path(name), "pulse-endpoint")
+		}
+	}
+	return filepath.Join(b.dir, "endpoints", uid)
+}
 func service(ctx context.Context, args ...string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
@@ -65,11 +76,12 @@ func (b *Client) Endpoint(ctx context.Context, name, uid string, port int) (bool
 // The caller has verified VM ownership. This supervisor also has a VM-free Mac
 // preflight so launchd failures are caught before expensive image preparation.
 func (b *Client) ensureEndpoint(ctx context.Context, uid, target string, port int) (bool, error) {
-	dir := filepath.Join(b.dir, "endpoints", uid)
+	dir := b.endpointDir(uid)
 	if e := os.MkdirAll(dir, 0700); e != nil {
 		return false, e
 	}
 	ready := filepath.Join(dir, "ready.json")
+	plist := filepath.Join(dir, "service.plist")
 	var state struct {
 		Port   int
 		Target string
@@ -87,7 +99,10 @@ func (b *Client) ensureEndpoint(ctx context.Context, uid, target string, port in
 		}
 		// Restart the owned helper when DHCP changes its target. Missing readiness
 		// alone can mean launchd is still starting it; do not restart that case.
-		if err != nil || state.Target == "" || state.Target == target {
+		// An existing helper with no plist at this location belongs to the old
+		// state-directory layout (or lost its files). Recreate it beside the VM.
+		_, plistErr := os.Stat(plist)
+		if !os.IsNotExist(plistErr) && (err != nil || state.Target == "" || state.Target == target) {
 			return false, nil
 		}
 		if output, e = b.service(ctx, "bootout", domain+"/"+label); e != nil {
@@ -103,7 +118,6 @@ func (b *Client) ensureEndpoint(ctx context.Context, uid, target string, port in
 		return false, failure("Docker endpoint Python path must be absolute", nil)
 	}
 	script := filepath.Join(dir, "bridge.py")
-	plist := filepath.Join(dir, "service.plist")
 	if e = os.WriteFile(script, endpointScript, 0600); e != nil {
 		return false, e
 	}
@@ -125,9 +139,11 @@ func xmlEscape(s string) string {
 	return strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;", "\"", "&quot;", "'", "&apos;").Replace(s)
 }
 func (b *Client) RemoveEndpoint(ctx context.Context, name, uid string) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
 	domain := "user/" + strconv.Itoa(os.Getuid())
 	label := b.endpointLabel(uid)
-	dir := filepath.Join(b.dir, "endpoints", uid)
+	dir := b.endpointDir(uid)
 	output, err := b.service(ctx, "print", domain+"/"+label)
 	if err == nil {
 		if output, err = b.service(ctx, "bootout", domain+"/"+label); err != nil {
@@ -136,25 +152,32 @@ func (b *Client) RemoveEndpoint(ctx context.Context, name, uid string) error {
 	} else if !serviceAbsent(err) {
 		return endpointFailure(dir, "inspect before removal", output, err)
 	}
-	return os.RemoveAll(filepath.Join(b.dir, "endpoints", uid))
+	return os.RemoveAll(dir)
 }
 
 // EndpointDiagnostics contains only endpoint configuration and bounded helper
 // logs. Never include allocation journals, SSH keys or inherited environments.
 func (b *Client) EndpointDiagnostics(ctx context.Context) (map[string]map[string]string, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
 	result := map[string]map[string]string{}
-	entries, err := os.ReadDir(filepath.Join(b.dir, "endpoints"))
-	if os.IsNotExist(err) {
-		return result, nil
+	paths := map[string]string{}
+	for _, r := range b.records {
+		dir := b.endpointDir(r.UID)
+		if _, err := os.Stat(dir); err == nil {
+			paths[r.UID] = dir
+		}
 	}
-	if err != nil {
+	entries, err := os.ReadDir(filepath.Join(b.dir, "endpoints"))
+	if err != nil && !os.IsNotExist(err) {
 		return nil, err
 	}
 	for _, entry := range entries {
-		if !entry.IsDir() {
-			continue
+		if entry.IsDir() {
+			paths[entry.Name()] = filepath.Join(b.dir, "endpoints", entry.Name())
 		}
-		dir := filepath.Join(b.dir, "endpoints", entry.Name())
+	}
+	for uid, dir := range paths {
 		files := map[string]string{}
 		for _, name := range []string{"service.plist", "ready.json", "service.log", "last-error.log"} {
 			f, err := os.Open(filepath.Join(dir, name))
@@ -168,7 +191,7 @@ func (b *Client) EndpointDiagnostics(ctx context.Context) (map[string]map[string
 			f.Close()
 			files[name] = string(content)
 		}
-		output, err := b.service(ctx, "print", "user/"+strconv.Itoa(os.Getuid())+"/"+b.endpointLabel(entry.Name()))
+		output, err := b.service(ctx, "print", "user/"+strconv.Itoa(os.Getuid())+"/"+b.endpointLabel(uid))
 		if err != nil {
 			files["launchctl-status"] = fmt.Sprint(err)
 		}
@@ -186,7 +209,7 @@ func (b *Client) EndpointDiagnostics(ctx context.Context) (map[string]map[string
 				}
 			}
 		}
-		result[entry.Name()] = files
+		result[uid] = files
 	}
 	return result, nil
 }

@@ -43,12 +43,13 @@ var ErrConfig = config.Err
 var ErrClosed = errors.New("provider closed")
 var _ api.Provider = (*Runtime)(nil)
 
-// Runtime owns one state directory exclusively. Run or Reconcile prepares slots
+// Runtime owns one backend/owner scope exclusively. Run or Reconcile prepares slots
 // and cleans up completed instances. GetCapabilities, Submit and List implement
 // the shared API.
 // Close releases local resources; running VMs survive it. A new Runtime using
-// the same state directory recovers the journal. Never share a directory across
-// backends, owners, or simultaneously running hosts.
+// the same Tart home and owner recovers properties from existing VM directories.
+// Orchard instead recovers its private StateDir journal. Never run two hosts for
+// the same backend/owner scope.
 type Runtime struct {
 	mu      sync.RWMutex
 	p       *engine.Provider
@@ -83,6 +84,9 @@ func newRuntime(p *engine.Provider, c Config) *Runtime {
 	return r
 }
 func NewOrchard(c Config, connection OrchardConfig) (*Runtime, error) {
+	if !filepath.IsAbs(c.StateDir) {
+		return nil, ErrConfig
+	}
 	c, e := prepare(c)
 	if e != nil {
 		return nil, e
@@ -141,13 +145,13 @@ func NewTart(c Config, options TartConfig) (*Runtime, error) {
 		}
 	}
 	settings := config.Settings{Config: c, Kind: "tart", Endpoint: options.Home, Worker: "local", DockerEndpoint: options.DockerEndpoint}
-	store, e := engine.OpenStore(c.StateDir, settings.Scope())
+	b, e := local.New(options, c)
 	if e != nil {
 		return nil, e
 	}
-	b, e := local.New(options, c)
+	store, e := engine.OpenVMStore(c.StateDir, settings.Scope(), b)
 	if e != nil {
-		store.Close()
+		b.Close()
 		return nil, e
 	}
 	return newRuntime(engine.Attach(settings, b, store), c), nil
@@ -274,7 +278,7 @@ func (r *Runtime) Close() error {
 	return r.p.Close()
 }
 
-// PurgeImages removes this journal's inactive prepared sources after Drain.
+// PurgeImages removes this owner's inactive prepared sources after Drain.
 // Normal reconciliation, Close, and Drain leave published images available.
 func (r *Runtime) PurgeImages(ctx context.Context) error {
 	r.mu.Lock()

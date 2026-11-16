@@ -40,6 +40,9 @@ func (p *Provider) Images() ([]ImageStatus, error) {
 	if p.Store.broken {
 		return nil, p.Store.stateError()
 	}
+	if err := p.Store.refresh(); err != nil {
+		return nil, err
+	}
 	out := []ImageStatus{}
 	for _, r := range p.Store.data.Images {
 		out = append(out, ImageStatus{UID: r.UID, Name: r.Name, Kind: r.Kind, Phase: r.Phase, Worker: r.Worker, LocalName: r.LocalName})
@@ -87,6 +90,58 @@ func (p *Provider) adopt(ctx context.Context, spec backend.Spec, base config.Bas
 		return b.AdoptSource(ctx, spec, base.SSHHostKey)
 	}
 	return p.Backend.Get(ctx, spec.Name)
+}
+
+// Recover configured published sources after an external update replaces their
+// directories (including pulse.json). This only adopts existing ready sources;
+// admission must never build images or start VMs while holding a job lease.
+func (p *Provider) recoverPublishedSources(ctx context.Context) error {
+	for _, g := range p.Config.Slots {
+		if g.Count == 0 {
+			continue
+		}
+		base := p.base(g.Base)
+		name := p.baseImageName(base.Name)
+		if p.Store.data.Images[name] != nil {
+			continue
+		}
+		spec := p.sourceSpec(base, config.DefaultCPU, config.DefaultMemoryMiB)
+		spec.Name = name
+		if _, err := p.adoptBase(ctx, spec, base); err != nil {
+			return err
+		}
+	}
+	targets, err := p.slotTargets()
+	if err != nil {
+		return err
+	}
+	for id, target := range targets {
+		if p.Store.data.Slots[id] != nil {
+			continue
+		}
+		if _, err := p.adoptSlot(ctx, id, target); err != nil {
+			return err
+		}
+	}
+	return p.Store.save()
+}
+
+func (p *Provider) adoptBase(ctx context.Context, spec backend.Spec, base config.Base) (bool, error) {
+	existing, err := p.adopt(ctx, spec, base)
+	if backend.IsStatus(err, 404) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if !sourceStopped(existing) || existing.Worker != p.Config.Worker || existing.CPU != spec.CPU || existing.Memory != spec.Memory {
+		return false, fmt.Errorf("prepared base %s is not stopped or has incompatible hardware", spec.Name)
+	}
+	if err := p.retain(ctx, spec.Name, existing.UID); err != nil {
+		return false, err
+	}
+	p.Store.data.Images[spec.Name] = &ImageRecord{Name: spec.Name, UID: existing.UID, NativeHash: p.Store.hash(normalized(existing.Spec)), Phase: "ready", LocalName: existing.LocalName, Worker: p.Config.Worker, Kind: "base", OS: base.OS, Created: time.Now().UTC()}
+	return true, nil
 }
 func sourceStopped(v backend.VM) bool {
 	// Orchard powerState is desired state and can remain "running" after a
@@ -191,19 +246,12 @@ func (p *Provider) reconcileImages(ctx context.Context) error {
 		spec.Name = name
 		probe := p.probesSources() && r == nil && base.OS != "linux"
 		if r == nil {
-			existing, err := p.adopt(ctx, spec, base)
-			if err == nil {
-				if !sourceStopped(existing) || existing.Worker != p.Config.Worker || existing.CPU != spec.CPU || existing.Memory != spec.Memory {
-					return fmt.Errorf("prepared base %s is not stopped or has incompatible hardware", name)
-				}
-				if err := p.retain(ctx, name, existing.UID); err != nil {
-					return err
-				}
-				p.Store.data.Images[name] = &ImageRecord{Name: name, UID: existing.UID, NativeHash: p.Store.hash(normalized(existing.Spec)), Phase: "ready", LocalName: existing.LocalName, Worker: p.Config.Worker, Kind: "base", OS: base.OS, Created: time.Now().UTC()}
-				continue
-			}
-			if !backend.IsStatus(err, 404) {
+			adopted, err := p.adoptBase(ctx, spec, base)
+			if err != nil {
 				return err
+			}
+			if adopted {
+				continue
 			}
 		}
 		available, err := p.canStartVMs(ctx, spec)

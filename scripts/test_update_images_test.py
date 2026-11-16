@@ -36,6 +36,7 @@ with open(str(state)+'.lock','w') as lock:
     vm.update(Name=dst,IP='192.0.2.'+str(d['next']));vms[dst]=vm
   elif cmd=='set':
    vm=vms[args[1]];vm.update(CPU=int(args[args.index('--cpu')+1]),Memory=int(args[args.index('--memory')+1]),MACAddress='fresh-'+vm['IP'])
+   if '--random-serial' in args: vm['MachineID']='machine-'+vm['IP']
   elif cmd=='run':
    waiting=args[-1];vms[waiting]['State']='running'
   elif cmd=='ip': result=vms[args[1]]['IP']
@@ -75,7 +76,7 @@ class UpdateImages(unittest.TestCase):
         self.temp=TemporaryDirectory();self.addCleanup(self.temp.cleanup)
         self.root=Path(self.temp.name);binary=self.root/'bin';binary.mkdir()
         self.sources=names.names('test','macos-26-arm64','standard',4,8192,2)
-        vms={name:dict(Name=name,CPU=4,Memory=8192,State='stopped' if i==0 else 'suspended',MACAddress=f'old-{i}',Release='old',IP=f'192.0.2.{i+1}') for i,name in enumerate(self.sources)}
+        vms={name:dict(Name=name,CPU=4,Memory=8192,State='stopped' if i==0 else 'suspended',MACAddress=f'old-{i}',MachineID='inherited',Release='old',IP=f'192.0.2.{i+1}') for i,name in enumerate(self.sources)}
         # An already-running job clone must remain unchanged through publication.
         vms['old-job']=dict(vms[self.sources[1]],Name='old-job',State='running',IP='192.0.2.4')
         self.orchard='orchard-'+self.sources[1]+'-12345678-1234-1234-1234-123456789012-0'
@@ -97,6 +98,11 @@ class UpdateImages(unittest.TestCase):
         for name in [*self.sources,self.orchard]: self.assertEqual(state['vms'][name]['Release'],'new')
         self.assertEqual(state['vms'][self.sources[1]]['MACAddress'],state['vms'][self.orchard]['MACAddress'])
         self.assertNotEqual(state['vms'][self.sources[1]]['MACAddress'],state['vms'][self.sources[2]]['MACAddress'])
+        machine_ids = [state['vms'][name].get('MachineID') for name in self.sources]
+        self.assertEqual(len(set(machine_ids)), len(self.sources), 'Base and slots must have independent machine identities')
+        self.assertNotIn(None, machine_ids)
+        self.assertNotIn('inherited', machine_ids)
+        self.assertEqual(state['vms'][self.sources[1]]['MachineID'], state['vms'][self.orchard]['MachineID'], 'Publication must preserve the saved machine identity')
         self.assertFalse(any(n.startswith('pulse-build-') for n in state['vms']))
         publishes=[i for i,c in enumerate(state['calls']) if c[:3]==['tart','clone','--overwrite']]
         suspends=[i for i,c in enumerate(state['calls']) if c[:2]==['tart','suspend']]

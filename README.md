@@ -19,10 +19,9 @@ Image names are stable and contain **no c2j version**. Existing images are reuse
 ```go
 cfg := tart.Config{
     OwnerID: "mac-pool",
-    StateDir: "/var/lib/pulse/macos", // private, durable, absolute path
 }
 runtime, err := tart.NewTart(cfg, tart.TartConfig{})
-// Or use the same cfg with Orchard:
+// For Orchard, also set cfg.StateDir to a private absolute directory.
 // runtime, err := tart.NewOrchard(cfg, tart.OrchardConfig{
 //     URL: "https://orchard.example.test", Worker: "mac-worker",
 //     Username: "pulse", Token: tart.Secret(controllerToken),
@@ -33,7 +32,7 @@ defer runtime.Close()
 return runtime.Run(ctx)
 ```
 
-Import `tart "github.com/colony-2/pulse-tart"`. Constructors validate/copy configuration and lock the journal; they create no VMs. Drive `Run(ctx)` or call `Reconcile(ctx)` periodically. `Run` returns on cancellation or a reconciliation error; the application owns its retry policy. `Slots()` reports preparation and occupancy; `Images()` reports known prepared sources.
+Import `tart "github.com/colony-2/pulse-tart"`. Constructors validate/copy configuration and lock the owner scope; they create no VMs. Drive `Run(ctx)` or call `Reconcile(ctx)` periodically. `Run` returns on cancellation or a reconciliation error; the application owns its retry policy. `Slots()` reports preparation and occupancy; `Images()` reports known prepared sources.
 
 Omitted configuration selects **two macOS job VMs and four Linux job VMs**, each
 with **4 vCPU / 8 GiB**. The bases are Tahoe (`macos-26-arm64`), Sequoia
@@ -124,11 +123,17 @@ The library starts `c2j run with-lease --lease-file -`, passing the opaque lease
 
 `Close` leaves VMs and images intact. `Drain(ctx)` disables admissions and retires slot reservations as jobs finish; continue reconciling until `Slots()` is empty. Prepared images remain reusable. For explicit removal, call `PurgeImages(ctx)` after draining and completing all jobs. It removes only sources recorded by that runtime, not other worker images or unregistered aliases.
 
-Keep the durable journal for the owner scope's lifetime and reopen it with the same backend and owner. One runtime owns each state directory; use a distinct owner for each independent pool. Lost create responses retain reservations and are never blindly retried. Failed preparation remains inspectable through `Images()`/`Slots()` and backend events. Drain and purge known stopped sources before rebuilding a failed base. Identity mismatches are quarantined; never discard state to retry an uncertain launch.
+Direct Tart stores private properties in `$TART_HOME/vms/<name>/pulse.json` (default home: `~/.tart`), beside Tart's own files. These include the owner, launch/job identity, slot or pair association, preparation phase and native delivery details. Restart with the same Tart home and `OwnerID`; the library reconstructs its in-memory index from existing VM directories and observes Tart's current state. Deleting a VM removes its properties and reservation. An exited job restore is terminal even when Tart still reports `suspended`; reconciliation removes that clone and releases its slot. Intentionally suspended templates remain reusable.
+
+Direct Tart needs no `StateDir` for new pools. To upgrade an existing pool, stop the old runtime and keep its original `StateDir` configured for the first new start. The library imports matching properties for VMs that still exist, leaving the old files unchanged. After migration, `StateDir` can be omitted. No new `state.json` is written. Per-VM `pulse.run.log`, `pulse.exit`, `pulse.events` and the kernel-held `pulse.run.lock` support diagnostics and restart recovery. `$TART_HOME/.pulse/<scope>/lock` excludes concurrent owners; its file contents are not an inventory.
+
+Pulse must submit each LaunchID only once. Native launch operations are never retried on restart; only idempotent guest delivery can resume. There is no terminal launch ledger for direct Tart, and an ambiguous create with no VM does not reserve capacity indefinitely. Keep submission errors in the host logs. A partially created VM with attached properties is recoverable for cleanup; an untagged partial directory is left untouched.
+
+Orchard still requires its private, durable `StateDir` journal because its REST API does not expose the host-side VM property files. It retains its existing duplicate/uncertain-dispatch behavior. Use a distinct owner for each independent pool. Failed preparation remains inspectable through `Images()`/`Slots()` and backend events; identity mismatches are quarantined.
 
 The updater may replace published source images. Job clones retain strict ownership checks and must not be modified externally. Never run a suspended source directly. VM age alone does not authorize cleanup of a zero-timeout worker. Linux guests use the integrated Docker environment, configured automatically by the defaults. Positive runtime caps, start-before constraints, scratch reservations and shared host Nix volumes remain unsupported. Guest-local Nix stores benefit from Tart/APFS disk cloning without sharing a writable store.
 
-Orchard requires configuration-preserving suspended clones and power-state updates. Use verified HTTPS and Basic auth; `CACert` accepts a custom CA and `AllowInsecureHTTP` enables lab HTTP. Guests require SSH and passwordless sudo. Direct Tart optionally pins `Base.SSHHostKey`; otherwise it trusts the managed guest endpoint. Protect the state directory and controller access: native delivery records contain leases even though public listings and fingerprint journals do not.
+Orchard requires configuration-preserving suspended clones and power-state updates. Use verified HTTPS and Basic auth; `CACert` accepts a custom CA and `AllowInsecureHTTP` enables lab HTTP. Guests require SSH and passwordless sudo. Direct Tart optionally pins `Base.SSHHostKey`; otherwise it trusts the managed guest endpoint. Protect the VM directories, legacy state directory and controller access: `pulse.json` contains private delivery credentials and leases. Public listings exclude them.
 
 ## Docker capability
 
@@ -163,8 +168,9 @@ daemon termination and physical host power loss were not tested.
 Run deterministic checks with `make test vet build`. For the complete race suite, VM lifecycle and real JobDB execution:
 
 ```sh
-# On an Apple Silicon Mac with Tart installed:
-./scripts/test-macos.sh
+# On an Apple Silicon Mac with Tart, Go and Python 3 installed.
+# Pause Pulse and other VM workloads: this suite uses both macOS VM slots.
+./scripts/test-macos.sh tart
 
 # Or, against an Orchard worker:
 PULSE_TEST_ORCHARD_URL=http://192.168.1.195:6120 \
@@ -172,10 +178,14 @@ PULSE_TEST_ORCHARD_WORKER=jnmac25.local \
 ./scripts/test-macos.sh orchard
 ```
 
-Both modes test preparation, concurrent clones, reopen/replay, cleanup and actual JobDB completion: Nix execution, secret retrieval, renewal, and completed/expired lease rejection. **Tart mode also runs the standalone updater while an old clone stays running**, verifies replacement snapshot identities, and executes subsequent jobs from the new templates. That native update test still needs a real Mac validation run; the new initial-preparation flow and JobDB suite passed on Orchard.
+Both modes test preparation, concurrent clones, restart recovery, cleanup and actual JobDB completion: Nix execution, secret retrieval, renewal, and completed/expired lease rejection. Tart mode explicitly removes the old state directory and verifies recovery from VM properties, then injects failed restores into two real suspended clones and checks that restart releases both slots. These assertions are required for a passing report. **Tart mode also runs the standalone updater while an old clone stays running**, verifies replacement snapshot identities, and executes subsequent jobs from the new templates. The complete revised Tart race suite passed on November 15 (`20261115T230914Z-tart-51521.tar.gz`), including recovery, both replacement snapshots running concurrently, all JobDB checks and cleanup. The live test took 735.95 seconds. Dedicated Docker live suites are separate and were skipped in that run. The initial-preparation flow and JobDB suite previously passed on Orchard.
 
-The script prints progress and writes a Git-ignored `test-results/<timestamp>-<backend>-<pid>.tar.gz` archive containing a frozen source snapshot, full test logs and redacted diagnostics. Send that archive for debugging. Private journals and leases are excluded. Image preparation can take several minutes; native update testing builds the environment a second time. Each preparation phase allows 30 minutes within the 45-minute live-test deadline. Missing live, JobDB or required native-update assertions fail the script.
+The script prints progress and writes a Git-ignored `test-results/<timestamp>-<backend>-<pid>.tar.gz` archive containing a frozen source snapshot, full test logs and redacted diagnostics. Send the archive printed on the final `Send:` line, whether the run passes or fails. Preflight and build failures also produce an archive once the reporting prerequisites are available. Private journals, VM property files and leases are excluded. Image preparation can take several minutes; native update testing builds the environment a second time. Each preparation phase allows 30 minutes within the 45-minute live-test deadline. Missing live, JobDB or required native-update assertions fail the script.
 
-Overrides: `PULSE_TEST_BASE=macos-15-arm64`, `PULSE_TEST_C2J_VERSION=<tag-or-commit>`, `PULSE_TEST_TART_HOME`, `PULSE_TEST_SSH_PASSWORD`, or `PULSE_TEST_IMAGE` with `PULSE_TEST_OS_VERSION`. Outbound GitHub/Nix access is required. The JobDB fixture uses synthetic credentials and SSH tunnels; no existing JobDB or exposed host port is needed.
+Overrides: `PULSE_TEST_BASE=macos-15-arm64`, `PULSE_TEST_C2J_VERSION=<tag-or-commit>`, `PULSE_TEST_TART_HOME` (defaults to `TART_HOME`, then `~/.tart`), `PULSE_TEST_SSH_PASSWORD`, or `PULSE_TEST_IMAGE` with `PULSE_TEST_OS_VERSION`. Outbound GitHub/Nix access is required. The JobDB fixture uses synthetic credentials and SSH tunnels; no existing JobDB or exposed host port is needed.
+
+To isolate native restore failures without rebuilding images, pause macOS VM workloads and run `python3 scripts/probe-tart-restore.py TEMPLATE1 TEMPLATE2` with two existing suspended macOS templates that have different MAC addresses. It restores disposable clones of the first template alone, then alongside a clone of the second, twice by default (`--rounds N` changes this). It uses the same Tart home overrides and leaves the source templates unchanged. The printed archive contains native logs, hardware observations and file sizes/configuration hashes; it excludes VM disks, snapshots and Pulse property files. This probe checks native restore only, not guest readiness or JobDB execution. A passing probe does not exclude an intermittent failure.
+
+If a pair fails to restore together, append `--compare-preparation STOPPED_BASE` to compare both restore orders, an isolated restore after failure, and three fresh snapshot pairs made from disposable clones of that base: sequential preparation, preparation with both builders running, and sequential preparation with distinct machine serials. This diagnostic mode runs once by default, keeps failures in its summary while continuing independent cases, and downloads/installs nothing. It never changes an existing source or retries a failed VM. Its cold boots are explicitly separate preparation experiments; they do not constitute a fallback for failed job restores. The November 15 comparison reproduced the failure for sequential builders sharing a Mac machine identifier; concurrent builders and sequential builders with distinct machine identifiers both restored in either order. Direct Tart preparation and the updater now assign each cold macOS builder a new identifier with `--random-serial`. This remedy passed the native probe and the complete Tart integration suite, including both replacement snapshots running concurrently and real JobDB execution. Existing affected templates require an explicit rebuild without `--ensure`; never change the identity of a saved snapshot.
 
 See [image lifecycle details](docs/image-lifecycle.md), [snapshot measurements](docs/suspended-templates.md), [specification](SPEC.md), and [validation records](compatibility.json).

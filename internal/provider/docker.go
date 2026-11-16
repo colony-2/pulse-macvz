@@ -294,6 +294,17 @@ assert r('sudo','-n','-u','pulseworker','/opt/pulse-tart/bin/docker','--host','u
 }
 func (p *Provider) reclaimPair(ctx context.Context, pair *PairRecord) error {
 	b := p.Backend.(dockerBackend)
+	// In properties mode the last VM deletion also removes the recovery data.
+	// Stop the host helper first so a crash cannot leave it without an owner.
+	if p.Store.properties != nil && pair.EngineUID != "" {
+		if endpoint, ok := p.Backend.(interface {
+			RemoveEndpoint(context.Context, string, string) error
+		}); ok {
+			if err := endpoint.RemoveEndpoint(ctx, pair.Engine.Name, pair.EngineUID); err != nil {
+				return err
+			}
+		}
+	}
 	uncertainMissing := false
 	// No new allocation can reuse this slot or port until BOTH deletions confirm.
 	for _, primary := range []bool{true, false} {
@@ -314,7 +325,7 @@ func (p *Provider) reclaimPair(ctx context.Context, pair *PairRecord) error {
 				if !primary {
 					dispatched = pair.EngineDispatched
 				}
-				if dispatched {
+				if dispatched && p.Store.properties == nil {
 					uncertainMissing = true
 				}
 			}
@@ -332,7 +343,7 @@ func (p *Provider) reclaimPair(ctx context.Context, pair *PairRecord) error {
 			return nil
 		}
 	}
-	if pair.EngineUID != "" {
+	if p.Store.properties == nil && pair.EngineUID != "" {
 		if b, ok := p.Backend.(interface {
 			RemoveEndpoint(context.Context, string, string) error
 		}); ok {
@@ -449,7 +460,7 @@ func (p *Provider) reconcilePairs(ctx context.Context) error {
 		if e != nil {
 			return e
 		}
-		if pair.PrimaryDispatched && ((!hasPrimary && pair.PrimaryUID != "") || (hasPrimary && primary.Stopped() && primary.PowerState != "suspended" && (primary.Status == "failed" || pair.Phase == "ready" || pair.Phase == "running" || pair.Phase == "handoff-intent"))) {
+		if pair.PrimaryDispatched && ((!hasPrimary && (pair.PrimaryUID != "" || p.Store.properties != nil)) || (hasPrimary && primary.Stopped() && (primary.Status == "failed" || primary.PowerState != "suspended" && (pair.Phase == "ready" || pair.Phase == "running" || pair.Phase == "handoff-intent")))) {
 			pair.Phase = "reclaiming"
 			if e = p.Store.save(); e != nil {
 				return e
@@ -462,7 +473,7 @@ func (p *Provider) reconcilePairs(ctx context.Context) error {
 				return e
 			}
 			if !exists || (engine.Stopped() && engine.Status == "failed") {
-				if pair.LaunchID == "" && pair.EngineUID != "" {
+				if pair.LaunchID == "" && (pair.EngineUID != "" || p.Store.properties != nil) {
 					pair.Phase = "reclaiming"
 					if e = p.Store.save(); e != nil {
 						return e
@@ -863,6 +874,9 @@ func (p *Provider) DockerAllocations() ([]DockerStatus, error) {
 	defer p.Store.mu.Unlock()
 	if p.Store.broken {
 		return nil, p.Store.stateError()
+	}
+	if err := p.Store.refresh(); err != nil {
+		return nil, err
 	}
 	out := []DockerStatus{}
 	for _, pair := range p.Store.data.Pairs {

@@ -249,17 +249,10 @@ func (r *liveReport) capture(t *testing.T, ctx context.Context, kind string, con
 		}
 		r.write(t, fmt.Sprintf("endpoint-diagnostics-%d.json", time.Now().UnixNano()), data)
 	}
-	var journal struct {
-		Records map[string]struct{ Name, UID string } `json:"records"`
-		Slots   map[string]struct{ Name, UID string } `json:"slots"`
-		Images  map[string]struct{ Name, UID string } `json:"images"`
-		Pairs   map[string]struct {
-			Primary, Engine       struct{ Name string }
-			PrimaryUID, EngineUID string
-		} `json:"pairs"`
+	journal, err := readLiveState(runtime, stateDir)
+	if err != nil {
+		t.Logf("VM properties diagnostics: %v", err)
 	}
-	data, _ := os.ReadFile(filepath.Join(stateDir, "state.json"))
-	_ = json.Unmarshal(data, &journal)
 	owned := map[string]string{}
 	for _, v := range journal.Records {
 		owned[v.Name] = v.UID
@@ -306,7 +299,7 @@ func (r *liveReport) capture(t *testing.T, ctx context.Context, kind string, con
 			continue
 		}
 		if kind == "tart" && config.Name(name) {
-			f, e := os.Open(filepath.Join(stateDir, "native", name+".run.log"))
+			f, e := os.Open(filepath.Join(runtime.p.Backend.(interface{ Home() string }).Home(), "vms", name, "pulse.run.log"))
 			if e == nil {
 				if st, e := f.Stat(); e == nil && st.Size() > 64000 {
 					_, _ = f.Seek(-64000, io.SeekEnd)
@@ -462,9 +455,9 @@ func exerciseJobDB(t *testing.T, ctx context.Context, kind string, connection Or
 			t.Fatal(e)
 		}
 		t.Logf("connecting JobDB SSH tunnel for %s", l.LaunchID)
-		tunnel, err := attachFixtureTunnel(ctx, kind, connection, coordinator, worker)
+		tunnel, err := attachFixtureTunnel(ctx, kind, connection, coordinator, worker, r.p.Backend.Get)
 		if err != nil {
-			t.Fatal("fixture SSH tunnel unavailable")
+			t.Fatalf("fixture SSH tunnel unavailable: %v (see vm-diagnostics-*.json for native run logs)", err)
 		}
 		defer tunnel()
 		done([]api.Launch{l})
@@ -571,11 +564,29 @@ func openFixtureSSH(ctx context.Context, kind string, connection OrchardConfig, 
 	_ = conn.SetDeadline(time.Time{})
 	return ssh.NewClient(cc, ch, req), nil
 }
-func attachFixtureTunnel(ctx context.Context, kind string, connection OrchardConfig, coordinator, worker backend.VM) (func(), error) {
+func fixtureWorkerAlive(ctx context.Context, worker backend.VM, get func(context.Context, string) (backend.VM, error)) error {
+	current, err := get(ctx, worker.Name)
+	if err != nil {
+		return fmt.Errorf("worker %s native observation unavailable", worker.Name)
+	}
+	if current.UID != worker.UID {
+		return fmt.Errorf("worker %s identity changed", worker.Name)
+	}
+	if current.Status == "failed" {
+		return fmt.Errorf("worker %s terminated before SSH became available (power=%s)", worker.Name, current.PowerState)
+	}
+	return nil
+}
+
+func attachFixtureTunnel(ctx context.Context, kind string, connection OrchardConfig, coordinator, worker backend.VM, get func(context.Context, string) (backend.VM, error)) (func(), error) {
 	ctx, cancel := context.WithCancel(ctx)
 	var workerSSH *ssh.Client
 	deadline := time.Now().Add(time.Minute)
 	for time.Now().Before(deadline) && ctx.Err() == nil {
+		if err := fixtureWorkerAlive(ctx, worker, get); err != nil {
+			cancel()
+			return nil, err
+		}
 		c, e := openFixtureSSH(ctx, kind, connection, worker)
 		if e == nil {
 			workerSSH = c

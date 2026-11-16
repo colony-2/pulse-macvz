@@ -14,7 +14,8 @@ import (
 )
 
 // Keep one pre-update clone running while the standalone script replaces all
-// sources. At most two guests run: that clone plus one builder/new clone.
+// sources, then verify that both replacement snapshots can run together.
+// At most two guests run throughout the test.
 func exerciseImageUpdate(t *testing.T, ctx context.Context, r *Runtime, owner, stateDir string, base Base, version string, report *liveReport) {
 	t.Helper()
 	slots, err := r.Slots()
@@ -25,7 +26,11 @@ func exerciseImageUpdate(t *testing.T, ctx context.Context, r *Runtime, owner, s
 	if err != nil {
 		t.Fatal(err)
 	}
-	clone := func(suffix string) backend.VM {
+	secondSource, err := r.p.Backend.Get(ctx, slots[1].Template)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clone := func(source backend.VM, suffix string) backend.VM {
 		t.Helper()
 		spec := source.Spec
 		spec.Name = "pulse-update-" + owner + "-" + suffix
@@ -41,39 +46,40 @@ func exerciseImageUpdate(t *testing.T, ctx context.Context, r *Runtime, owner, s
 		return created
 	}
 	probes := []backend.VM{}
+	removeProbe := func(clean context.Context, probe backend.VM) bool {
+		for clean.Err() == nil {
+			v, err := r.p.Backend.Get(clean, probe.Name)
+			if backend.IsStatus(err, 404) {
+				return true
+			}
+			if err != nil || (probe.UID != "" && probe.UID != v.UID) || !bytes.Equal(fixtureSpecBytes(probe.Spec), fixtureSpecBytes(v.Spec)) {
+				t.Error("image update probe cleanup ownership check failed")
+				return false
+			}
+			if !v.Stopped() {
+				_ = r.p.Backend.(interface {
+					Suspend(context.Context, string, string) error
+				}).Suspend(clean, v.Name, v.UID)
+			} else {
+				_ = r.p.Backend.Delete(clean, v.Name)
+			}
+			time.Sleep(time.Second)
+		}
+		return false
+	}
 	defer func() {
 		clean, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer cancel()
 		report.capture(t, clean, "tart", OrchardConfig{}, r, stateDir)
 		for _, probe := range probes {
-			removed := false
-			for clean.Err() == nil {
-				v, err := r.p.Backend.Get(clean, probe.Name)
-				if backend.IsStatus(err, 404) {
-					removed = true
-					break
-				}
-				if err != nil || (probe.UID != "" && probe.UID != v.UID) || !bytes.Equal(fixtureSpecBytes(probe.Spec), fixtureSpecBytes(v.Spec)) {
-					t.Error("image update probe cleanup ownership check failed")
-					break
-				}
-				if !v.Stopped() {
-					_ = r.p.Backend.(interface {
-						Suspend(context.Context, string, string) error
-					}).Suspend(clean, v.Name, v.UID)
-				} else {
-					_ = r.p.Backend.Delete(clean, v.Name)
-				}
-				time.Sleep(time.Second)
-			}
-			if !removed {
+			if !removeProbe(clean, probe) {
 				t.Error("image update probe cleanup incomplete; preserve private intent")
 			}
 		}
 	}()
-	start := func(suffix string) backend.VM {
+	start := func(source backend.VM, suffix string) backend.VM {
 		t.Helper()
-		probe := clone(suffix)
+		probe := clone(source, suffix)
 		probes = append(probes, probe) // Save intent even when dispatch is uncertain.
 		created, err := r.p.Backend.Create(ctx, probe.Spec)
 		if err != nil {
@@ -87,6 +93,9 @@ func exerciseImageUpdate(t *testing.T, ctx context.Context, r *Runtime, owner, s
 		t.Helper()
 		var identity string
 		waitLive(t, ctx, "image update probe identity: "+v.Name, 3*time.Minute, func(ctx context.Context) bool {
+			if err := fixtureWorkerAlive(ctx, v, r.p.Backend.Get); err != nil {
+				t.Fatalf("image update restore failed: %v (see vm-diagnostics-*.json)", err)
+			}
 			out, err := testGuestExec(ctx, "tart", OrchardConfig{}, v, "/usr/sbin/sysctl -n kern.bootsessionuuid; /sbin/ifconfig en0 | /usr/bin/awk '/ether / {print $2}'; /opt/pulse-tart/bin/c2j version")
 			if err != nil || len(strings.Split(strings.TrimSpace(string(out)), "\n")) < 3 {
 				return false
@@ -96,7 +105,7 @@ func exerciseImageUpdate(t *testing.T, ctx context.Context, r *Runtime, owner, s
 		})
 		return identity
 	}
-	old := start("old")
+	old := start(source, "old")
 	before := identity(old)
 	if version == "" {
 		version = "latest"
@@ -147,7 +156,7 @@ func exerciseImageUpdate(t *testing.T, ctx context.Context, r *Runtime, owner, s
 	if after := identity(old); before != after {
 		t.Fatal("updating the source changed the running clone's boot identity or c2j version")
 	}
-	fresh := start("new")
+	fresh := start(source, "new")
 	after := identity(fresh)
 	oldLines, newLines := strings.Split(before, "\n"), strings.Split(after, "\n")
 	if oldLines[0] == newLines[0] || oldLines[1] == newLines[1] {
@@ -159,6 +168,24 @@ func exerciseImageUpdate(t *testing.T, ctx context.Context, r *Runtime, owner, s
 	if err != nil || !strings.Contains(string(out), newLines[0]) || !strings.Contains(string(out), newLines[1]) {
 		t.Fatal("replacement clone did not restore its template identity")
 	}
-	report.write(t, "image-update-identities.json", map[string]string{"old": before, "replacement": after})
-	t.Log("IMAGE_UPDATE_PASS: standalone publication preserved running clone; new clone restored replacement with fresh boot UUID and MAC")
+	// Free the old clone's host capacity before restoring the other replacement.
+	// An old/new pair passing does not establish that two new snapshots coexist.
+	clean, stopClean := context.WithTimeout(ctx, time.Minute)
+	removed := removeProbe(clean, old)
+	stopClean()
+	if !removed {
+		t.Fatal("could not release old clone before testing both replacement snapshots")
+	}
+	second := start(secondSource, "new-second")
+	secondIdentity := identity(second)
+	secondLines := strings.Split(secondIdentity, "\n")
+	out, err = testGuestExec(ctx, "tart", OrchardConfig{}, second, "sudo cat /var/db/pulse-tart-template/ready")
+	if err != nil || !strings.Contains(string(out), secondLines[0]) || !strings.Contains(string(out), secondLines[1]) {
+		t.Fatal("second replacement clone did not restore its template identity")
+	}
+	if secondLines[1] == newLines[1] || identity(fresh) != after {
+		t.Fatal("replacement snapshots did not retain independent identities while running together")
+	}
+	report.write(t, "image-update-identities.json", map[string]string{"old": before, "replacement": after, "second_replacement": secondIdentity})
+	t.Log("IMAGE_UPDATE_PASS: standalone publication preserved running clone; both replacement snapshots restored concurrently with independent identities")
 }

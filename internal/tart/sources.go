@@ -7,7 +7,6 @@ import (
 	"github.com/colony-2/pulse-tart/internal/backend"
 	"github.com/colony-2/pulse-tart/internal/config"
 	"os"
-	"path/filepath"
 	"time"
 )
 
@@ -26,12 +25,9 @@ func (b *Client) AdoptSource(ctx context.Context, s backend.Spec, hostKey []byte
 		if _, err := os.Lstat(b.path(s.Name)); os.IsNotExist(err) && existing.Reusable {
 			// A deliberately deleted published source may be prepared again.
 			// This exception never applies to an uncertain job creation.
-			for _, suffix := range []string{".json", ".run.log", ".events", ".exit"} {
-				if err := os.Remove(filepath.Join(b.dir, s.Name+suffix)); err != nil && !os.IsNotExist(err) {
-					return backend.VM{}, err
-				}
-			}
+
 			delete(b.records, s.Name)
+			delete(b.properties, s.Name)
 			return backend.VM{}, &backend.Error{Code: 404}
 		}
 		return b.get(ctx, s.Name)

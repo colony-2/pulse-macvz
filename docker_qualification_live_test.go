@@ -349,7 +349,7 @@ func (q *qualification) overlap(pairs []DockerStatus) {
 }
 
 // This helper owns the actual Runtime in a separate process. SIGKILL exercises
-// journal/file-lock recovery, not just Runtime.Close in the test process.
+// VM-property/file-lock recovery, not just Runtime.Close in the test process.
 func TestDockerQualificationController(t *testing.T) {
 	path := os.Getenv("PULSE_QUALIFICATION_CONTROLLER")
 	if path == "" {
@@ -374,7 +374,7 @@ func TestDockerQualificationController(t *testing.T) {
 	if err = os.WriteFile(path+".ready", []byte("ready"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	// Intentionally no deferred journal close is reached after SIGKILL.
+	// Intentionally no deferred runtime close is reached after SIGKILL.
 	<-t.Context().Done()
 }
 func (q *qualification) controllerCrash(launches []api.Launch) {
@@ -413,7 +413,7 @@ func (q *qualification) controllerCrash(launches []api.Launch) {
 			q.open()
 		}
 	}()
-	waitLive(q.t, q.ctx, "separate controller owns journal", time.Minute, func(context.Context) bool { _, err := os.Stat(path + ".ready"); return err == nil })
+	waitLive(q.t, q.ctx, "separate controller owns pool", time.Minute, func(context.Context) bool { _, err := os.Stat(path + ".ready"); return err == nil })
 	if err := cmd.Process.Kill(); err != nil {
 		q.t.Fatal(err)
 	}
@@ -421,12 +421,7 @@ func (q *qualification) controllerCrash(launches []api.Launch) {
 		q.t.Fatal("controller did not die abruptly")
 	}
 	q.open()
-	for _, launch := range launches {
-		out, err := q.r.Submit(q.ctx, []api.Launch{launch})
-		if err != nil || len(out) != 1 || out[0].Status != api.Accepted {
-			q.t.Fatal("crash replay failed", err)
-		}
-	}
+	assertRecoveredLaunches(q.t, q.ctx, q.r, q.cfg.StateDir, launches)
 	q.checkpoint("controller_sigkill_replay")
 }
 func (q *qualification) pressure(p, peer DockerStatus, engine bool, script, name string) {
@@ -506,7 +501,7 @@ func (q *qualification) assertGone(pairs []DockerStatus) {
 	}
 	// Native helper must be booted out and its allocation directory removed.
 	for _, p := range pairs {
-		if _, err := os.Stat(filepath.Join(q.cfg.StateDir, "native", "endpoints", p.EngineUID)); !os.IsNotExist(err) {
+		if _, err := os.Stat(filepath.Join(q.r.p.Backend.(interface{ Home() string }).Home(), "vms", p.Engine, "pulse-endpoint")); !os.IsNotExist(err) {
 			q.t.Fatal("endpoint not removed", p.ID, err)
 		}
 	}

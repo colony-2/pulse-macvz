@@ -8,6 +8,7 @@ import sys
 
 ROOT_PACKAGE = "github.com/colony-2/pulse-tart"
 MARKERS = ("JOBDB_VALID_PASS:", "JOBDB_REPLAY_PASS:", "JOBDB_EXPIRED_PASS:")
+NATIVE_MARKERS = ("IMAGE_UPDATE_PASS:", "VM_PROPERTIES_RECOVERY_PASS:", "FAILED_RESTORE_RECOVERY_PASS:")
 
 
 def source_files(root):
@@ -41,7 +42,7 @@ def snapshot(root, destination):
 
 
 def summarize(events, backend, exit_code):
-    markers = MARKERS + (("IMAGE_UPDATE_PASS:",) if backend == "tart" else ())
+    markers = MARKERS + (NATIVE_MARKERS if backend == "tart" else ())
     live_passed = False
     checks = {marker.removesuffix(":"): False for marker in markers}
     failures, skipped, packages = [], [], {}
@@ -61,6 +62,7 @@ def summarize(events, backend, exit_code):
     return {"result": "passed" if passed else "failed", "backend": backend,
             "command_exit_code": exit_code, "live_test_passed": live_passed,
             "jobdb_checks": {k:v for k,v in checks.items() if k.startswith("JOBDB_")},
+            "native_recovery_checks": {k:v for k,v in checks.items() if k in ("VM_PROPERTIES_RECOVERY_PASS", "FAILED_RESTORE_RECOVERY_PASS")},
             "image_update_passed": checks.get("IMAGE_UPDATE_PASS"), "failures": failures, "skipped_tests": skipped,
             "packages": packages}
 
@@ -84,7 +86,7 @@ def main():
         (path / "summary.json").write_text(json.dumps(result, indent=2) + "\n")
         print("Full suite and JobDB:", result["result"])
         if result["result"] != "passed":
-            print("Required live execution, completion, renewal, secret, replay, expiry, or native image update checks did not all pass.")
+            print("Required live execution, JobDB, native image update, or VM-property/failed-restore recovery checks did not all pass.")
         return 0 if result["result"] == "passed" else 1
     else:
         raise ValueError("unknown report mode")
