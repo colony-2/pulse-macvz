@@ -92,9 +92,11 @@ positions, or one job can run on each version.
 
 `GetCapabilities` advertises all configured bases in order, independent of current capacity. Selectors such as `macos-26*` or `macos-*arm64` match concrete names; `*` matches any sequence, other characters are literal, and matching is case-sensitive. All requested capabilities must match. Admission chooses the first configured base with an available slot. With omitted slots, adding a base automatically creates its group; the two-macOS limit applies across all versions.
 
-The provider supports ARM64 guests only. `ubuntu-24.04-amd64` is not an available
-Tart base. Intel binary translation inside an ARM Linux guest is a separate
-feature and is not configured or qualified here; see
+The default images are ARM64. Explicit Linux bases also support `Arch: "amd64"`
+on Intel Macs; macOS guests remain ARM64. Ubuntu 26.04 image builds for both
+architectures are described in [Docker library setup](docs/docker-library.md).
+Intel binary translation inside an ARM Linux guest is a separate feature and
+is not configured or qualified here; see
 [Apple's Linux translation documentation](https://developer.apple.com/documentation/virtualization/running-intel-binaries-in-linux-vms).
 
 ## Update images independently of Pulse

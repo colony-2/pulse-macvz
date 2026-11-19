@@ -3,9 +3,9 @@
 set -euo pipefail
 set +x
 umask 077
-[[ $EUID == 0 && $(uname -m) == aarch64 ]]
+[[ $EUID == 0 && ( $(uname -m) == aarch64 || $(uname -m) == x86_64 ) ]]
 . /etc/os-release
-[[ $ID == ubuntu && $VERSION_ID == 24.04 ]]
+[[ $ID == ubuntu && ( $VERSION_ID == 24.04 || $VERSION_ID == 26.04 ) ]]
 root=/var/lib/pulse-docker
 version=$1
 disk=$2

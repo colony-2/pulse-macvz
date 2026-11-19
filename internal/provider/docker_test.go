@@ -238,17 +238,23 @@ func TestDockerZeroTimeoutAndForeignIdentityAreNotReaped(t *testing.T) {
 	}
 }
 func TestDockerLinuxOwnsOnlyPrimary(t *testing.T) {
-	p, f := dockerFixture(t, true)
-	pair := readyDocker(t, p)
-	if pair.Engine.Name != "" || pair.Port != 0 || pair.Primary.Suspendable {
-		t.Fatal("Linux got a companion or suspension")
-	}
-	out, e := p.Submit(t.Context(), []api.Launch{dockerLaunch()})
-	if e != nil || out[0].Status != api.Accepted {
-		t.Fatal(out, e)
-	}
-	if !strings.Contains(strings.Join(f.payload.Process.Args, " "), "linux/arm64") || f.payload.Process.WorkingDir != "/home/pulseworker" {
-		t.Fatal("wrong guest process")
+	for _, arch := range []string{"arm64", "amd64"} {
+		t.Run(arch, func(t *testing.T) {
+			p, f := dockerFixture(t, true)
+			p.Config.Bases[0].Arch = arch
+			p.Config.Bases[0].OSVersion = "26.04"
+			pair := readyDocker(t, p)
+			if pair.Engine.Name != "" || pair.Port != 0 || pair.Primary.Suspendable || pair.Primary.Arch != arch {
+				t.Fatal("Linux got a companion or suspension")
+			}
+			out, e := p.Submit(t.Context(), []api.Launch{dockerLaunch()})
+			if e != nil || out[0].Status != api.Accepted {
+				t.Fatal(out, e)
+			}
+			if !strings.Contains(strings.Join(f.payload.Process.Args, " "), "linux/"+arch) || f.payload.Process.WorkingDir != "/home/pulseworker" {
+				t.Fatal("wrong guest process")
+			}
+		})
 	}
 }
 

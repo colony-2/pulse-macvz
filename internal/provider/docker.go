@@ -259,10 +259,14 @@ func (p *Provider) primaryReadyDetail(ctx context.Context, pair *PairRecord) err
 	// Both the OS/resource facts and the exact engine identity must be observed.
 	code := fmt.Sprintf(`import json,os,platform,subprocess
 r=lambda *a:subprocess.check_output(a,text=True).strip()
-assert platform.machine() in ('arm64','aarch64')
 assert r('/opt/pulse-tart/bin/c2j','version')
 assert r('sudo','-n','-u','pulseworker','/opt/pulse-tart/bin/docker','--host','unix:///var/run/docker.sock','info','--format','{{.ID}}') == %s
 `, strconv.Quote(pair.EngineID))
+	if b.Architecture() == "amd64" {
+		code += "assert platform.machine() == 'x86_64'\n"
+	} else {
+		code += "assert platform.machine() in ('arm64','aarch64')\n"
+	}
 	if b.OS == "linux" {
 		code += fmt.Sprintf("assert platform.system() == 'Linux'\nassert os.cpu_count() >= %d\nassert int(next(l.split()[1] for l in open('/proc/meminfo') if l.startswith('MemTotal:')))*1024 >= %d\nassert 'VERSION_ID=\"%s\"' in open('/etc/os-release').read()\n", g.CPU, (g.MemoryMiB-512)*(1<<20), b.OSVersion)
 	} else {

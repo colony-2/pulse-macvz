@@ -53,3 +53,49 @@ func TestSharedImageHostPinsCannotConflictOrDisappear(t *testing.T) {
 		t.Fatal("image pin silently dropped")
 	}
 }
+
+func TestLinuxDockerVersions(t *testing.T) {
+	for _, version := range []string{"24.04", "26.04", "22.04", "26.10"} {
+		t.Run(version, func(t *testing.T) {
+			c := dockerConfig()
+			c.Bases[0].Name = "ubuntu-" + version + "-arm64"
+			c.Bases[0].OS, c.Bases[0].OSVersion = "linux", version
+			c.Slots[0].Base = c.Bases[0].Name
+			n, err := Normalize(c)
+			if version != "24.04" && version != "26.04" {
+				if err == nil {
+					t.Fatal("unsupported Ubuntu version accepted")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Join(n.BaseCapabilities(c.Bases[0].Name), ",") != "docker,git" {
+				t.Fatal("Linux Docker capability missing")
+			}
+		})
+	}
+}
+
+func TestBaseArchitectures(t *testing.T) {
+	for _, tc := range []struct {
+		os, arch string
+		valid    bool
+	}{
+		{"darwin", "", true}, {"darwin", "arm64", true}, {"darwin", "amd64", false},
+		{"linux", "arm64", true}, {"linux", "amd64", true}, {"linux", "386", false},
+	} {
+		t.Run(tc.os+"/"+tc.arch, func(t *testing.T) {
+			c := dockerConfig()
+			c.Bases[0].OS, c.Bases[0].Arch = tc.os, tc.arch
+			if tc.os == "linux" {
+				c.Bases[0].OSVersion = "26.04"
+			}
+			_, err := Normalize(c)
+			if (err == nil) != tc.valid {
+				t.Fatalf("Normalize error = %v, valid = %v", err, tc.valid)
+			}
+		})
+	}
+}

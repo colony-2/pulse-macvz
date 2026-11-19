@@ -149,7 +149,7 @@ func (p *Provider) launchHash(l compute.Launch) string {
 
 func executionPlatform(b config.Base) string {
 	if b.OS == "linux" {
-		return "linux/arm64"
+		return "linux/" + b.Architecture()
 	}
 	return "darwin/arm64"
 }

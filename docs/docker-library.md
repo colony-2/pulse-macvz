@@ -41,8 +41,34 @@ a backend `DockerEndpoint`. Linux-only Docker needs no worker endpoint.
 Explicit empty `SlotGroup.DockerProfile` preserves ordinary macOS behavior.
 Profiles add `docker` to discovery for their configured bases,
 including busy/warming/drained groups. Ordinary groups retain their original
-execution facts. Linux currently requires an Ubuntu 24.04 ARM64 base and a Docker
+execution facts. Linux requires an Ubuntu 24.04 or 26.04 ARM64 or AMD64 base and a Docker
 profile. No shared Provider API fields or dependencies change.
+
+Ubuntu 26.04 VM builds use `scripts/build-linux-image.sh` with an explicit
+architecture, local Ubuntu cloud disk and its published SHA256:
+
+```sh
+./scripts/build-linux-image.sh arm64 ubuntu-26.04-arm64 ubuntu-26.04-server-cloudimg-arm64.img "$ARM64_SHA256"
+./scripts/build-linux-image.sh amd64 ubuntu-26.04-amd64 ubuntu-26.04-server-cloudimg-amd64.img "$AMD64_SHA256"
+```
+
+Run each build on a matching Mac: Apple Silicon for ARM64, Intel for AMD64.
+Install Tart, Packer, Ansible, QEMU, cdrtools and Git first. The manual
+`Ubuntu 26.04 VM images` workflow builds both on self-hosted macOS runners
+labelled `ARM64` and `X64`, and exports separate `.tvm` artifacts. The builder
+uses a pinned revision of Cirrus's Linux image templates, verifies the input
+checksum before creating a VM, and checks the guest OS and architecture before
+and after provisioning. Build failures retain the new VM and logs for diagnosis.
+
+Publish and qualify each image before selecting its immutable registry digest
+in `Config.Bases`. Use `OS: "linux"`, `OSVersion: "26.04"`, `Arch: "arm64"` or
+`"amd64"`, and `Name: "ubuntu-26.04-<arch>"`. An omitted `Arch` means ARM64.
+Local Tart requires native guest architecture; Orchard receives the configured
+architecture in the VM request. The Linux worker bundle supports both architectures.
+The default remains the existing Ubuntu 24.04 ARM64 image until qualified 26.04
+images have been published; a container image such as `base2` cannot replace a
+bootable Tart disk. VM builds and Docker-engine qualification must run on real
+workers before the new defaults can be pinned.
 
 The default companion uses four CPUs, 8 GiB RAM, and a 32 GiB private ext4 Docker
 filesystem, with Engine 29.1.3 checked before admission. CPU/memory reservations

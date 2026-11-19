@@ -55,3 +55,10 @@ func TestStandaloneImageUpdater(t *testing.T) {
 		t.Fatalf("image updater: %v\n%s", err, out)
 	}
 }
+
+func TestLinuxImageBuilder(t *testing.T) {
+	cmd := exec.CommandContext(t.Context(), "python3", "-B", "-m", "unittest", "scripts/test_build_linux_image_test.py", "scripts/test_docker_engine_test.py")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("Linux image preparation: %v\n%s", err, out)
+	}
+}

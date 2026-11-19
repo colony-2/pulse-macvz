@@ -9,6 +9,18 @@ ROOT = Path(__file__).resolve().parent.parent
 
 
 class EngineVersionSelection(unittest.TestCase):
+    def test_supported_guest_releases(self):
+        guard = next(line for line in (ROOT / 'scripts/docker-engine.sh').read_text().splitlines()
+                     if line.startswith('[[ $ID =='))
+        for distro, version, accepted in [('ubuntu', '24.04', True), ('ubuntu', '26.04', True),
+                                          ('ubuntu', '22.04', False), ('ubuntu', '26.10', False),
+                                          ('debian', '26.04', False)]:
+            with self.subTest(distro=distro, version=version):
+                result = subprocess.run(['bash', '-c', guard],
+                                        env=dict(os.environ, ID=distro, VERSION_ID=version),
+                                        capture_output=True, text=True)
+                self.assertEqual(result.returncode == 0, accepted, result.stderr)
+
     def test_large_package_inventory_does_not_sigpipe(self):
         line = next(line.strip() for line in (ROOT / 'scripts/docker-engine.sh').read_text().splitlines()
                     if line.strip().startswith('selected=$(apt-cache'))

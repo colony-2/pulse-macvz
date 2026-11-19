@@ -29,7 +29,7 @@ import (
 )
 
 var Err = errors.New("Tart operation failed")
-var ErrPlatform = errors.New("direct Tart requires macOS ARM64")
+var ErrPlatform = errors.New("direct Tart requires macOS with native guest architecture")
 
 type command func(context.Context, ...string) ([]byte, error)
 type record struct {
@@ -78,8 +78,13 @@ type Client struct {
 }
 
 func New(c config.Tart, common config.Config) (*Client, error) {
-	if runtime.GOOS != "darwin" || runtime.GOARCH != "arm64" {
+	if runtime.GOOS != "darwin" || (runtime.GOARCH != "arm64" && runtime.GOARCH != "amd64") {
 		return nil, ErrPlatform
+	}
+	for _, b := range common.Bases {
+		if b.Architecture() != runtime.GOARCH {
+			return nil, fmt.Errorf("%w: base %s requires %s, host is %s", ErrPlatform, b.Name, b.Architecture(), runtime.GOARCH)
+		}
 	}
 	if c.Binary == "" {
 		c.Binary = "tart"

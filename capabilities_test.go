@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -16,6 +17,30 @@ import (
 
 	api "github.com/colony-2/pulse-provider-api"
 )
+
+func TestUbuntu2604DockerDiscovery(t *testing.T) {
+	for _, arch := range []string{"arm64", "amd64"} {
+		t.Run(arch, func(t *testing.T) {
+			c := testConfig(t)
+			c.Bases[0].Name = "ubuntu-26.04-" + arch
+			c.Bases[0].OS, c.Bases[0].OSVersion = "linux", "26.04"
+			c.Bases[0].Arch = arch
+			c.Slots = nil // Linux conventions must supply Docker without macOS opt-in.
+			r, err := NewOrchard(c, OrchardConfig{URL: "https://orchard.example.test", Worker: "worker"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer r.Close()
+			caps, err := r.GetCapabilities(t.Context())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !caps.BasesComplete || len(caps.Bases) != 1 || caps.Bases[0].Name != "ubuntu-26.04-"+arch || !slices.Contains(caps.Bases[0].Capabilities, "docker") {
+				t.Fatalf("missing Ubuntu 26.04 Docker support: %+v", caps)
+			}
+		})
+	}
+}
 
 func TestGetCapabilities(t *testing.T) {
 	var calls atomic.Int32

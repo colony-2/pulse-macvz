@@ -9,7 +9,8 @@ import (
 )
 
 // Docker enables isolated engines on explicitly selected slot groups.
-// The image must be an ARM64 Ubuntu 24.04 Tart disk, never a container image.
+// The companion image must be an ARM64 Ubuntu 24.04 or 26.04 Tart disk, never a
+// container image. Linux primaries use their own base image and architecture.
 type Docker struct {
 	Profiles     []EngineProfile
 	ReadyTimeout time.Duration
@@ -113,7 +114,7 @@ func normalizeDocker(c *Config) error {
 			return Err
 		}
 		for _, b := range c.Bases {
-			if b.Name == g.Base && b.OS == "linux" && (g.DockerProfile == "" || b.OSVersion != "24.04") {
+			if b.Name == g.Base && b.OS == "linux" && (g.DockerProfile == "" || (b.OSVersion != "24.04" && b.OSVersion != "26.04")) {
 				return Err
 			}
 		}

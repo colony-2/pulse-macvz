@@ -1,8 +1,8 @@
 #!/bin/bash
-# Disposable ARM64 Ubuntu worker image builder. No leases or runtime credentials.
+# Disposable Ubuntu worker image builder. No leases or runtime credentials.
 set -euo pipefail
 set +x
-[[ $(uname -s) == Linux && $(uname -m) == aarch64 && $EUID == 0 ]]
+[[ $(uname -s) == Linux && ( $(uname -m) == aarch64 || $(uname -m) == x86_64 ) && $EUID == 0 ]]
 bundle=$1
 expected=$3
 . /etc/os-release

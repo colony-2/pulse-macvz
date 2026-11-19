@@ -75,11 +75,12 @@ func (v VMCounts) Normalize() (VMCounts, error) {
 	return v, nil
 }
 
-// Base names a concrete ARM64 environment. Image must be a digest-pinned
+// Base names a concrete environment. Image must be a digest-pinned
 // Tart OCI reference. OSVersion is checked inside the template before readiness.
 type Base struct {
 	Name        string
-	OS          string // darwin (default) or linux; ARM64 only.
+	OS          string // darwin (default) or linux.
+	Arch        string `json:",omitempty"` // arm64 (default); Linux also supports amd64.
 	Image       string
 	OSVersion   string
 	SSHUsername string
@@ -88,6 +89,13 @@ type Base struct {
 	SSHHostKey []byte
 	// Capabilities are restricted to built-in probes: nix, git, node, pnpm, uv, python.
 	Capabilities []string
+}
+
+func (b Base) Architecture() string {
+	if b.Arch == "" {
+		return "arm64"
+	}
+	return b.Arch
 }
 
 type SlotGroup struct {
@@ -193,6 +201,9 @@ func Normalize(c Config) (Config, error) {
 			b.OS = "darwin"
 		}
 		if b.OS != "darwin" && b.OS != "linux" {
+			return Config{}, Err
+		}
+		if arch := b.Architecture(); (arch != "arm64" && arch != "amd64") || (b.OS == "darwin" && arch != "arm64") {
 			return Config{}, Err
 		}
 		if !BaseSelector(b.Name) || strings.Contains(b.Name, "*") || seen[b.Name] || !digestImage.MatchString(b.Image) || !osVersion.MatchString(b.OSVersion) || b.SSHPassword == "" {

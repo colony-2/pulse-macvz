@@ -1,5 +1,6 @@
-// Package tart provides macOS ARM64 concurrency slots through Orchard or local
-// Tart. It implements the Pulse provider API as an in-process Go library.
+// Package tart provides macOS ARM64 and Linux ARM64/AMD64 concurrency slots
+// through Orchard or local Tart. It implements the Pulse provider API as an
+// in-process Go library.
 package tart
 
 import (
