@@ -339,3 +339,22 @@ func TestOpaqueLeaseFingerprint(t *testing.T) {
 type processForTest struct {
 	StdinBytes []byte `json:"stdin_bytes"`
 }
+
+type unhealthyBackend struct{ *fake }
+
+func (f unhealthyBackend) AdmissionHealth(context.Context) error {
+	return errors.New("guest delivery unavailable")
+}
+func TestDeliveryHealthPreventsNewDispatchWithoutReservingSlots(t *testing.T) {
+	p, f := slotsFixture(t, 2)
+	warmSlots(t, p)
+	p.Backend = unhealthyBackend{f}
+	before := f.creates
+	results, err := p.Submit(t.Context(), []compute.Launch{launch("blocked-delivery")})
+	if err != nil || len(results) != 1 || results[0].Status != compute.Unavailable {
+		t.Fatal(results, err)
+	}
+	if f.creates != before || len(p.Store.data.Records) != 0 {
+		t.Fatal("unhealthy backend dispatched or reserved work")
+	}
+}

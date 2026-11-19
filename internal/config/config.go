@@ -122,12 +122,13 @@ type Orchard struct {
 
 type Tart struct {
 	// Binary defaults to tart on PATH. Home defaults to ~/.tart.
-	Binary         string
-	Home           string
-	CommandTimeout time.Duration
-	SSHTimeout     time.Duration
-	DockerEndpoint Endpoint
-	PythonBinary   string // Worker-local bridge supervisor; defaults to /usr/bin/python3.
+	Binary          string
+	Home            string
+	CommandTimeout  time.Duration
+	SSHTimeout      time.Duration
+	DeliveryTimeout time.Duration // Pre-exec delivery deadline; defaults to two minutes. Never limits an executing job.
+	DockerEndpoint  Endpoint
+	PythonBinary    string // Worker-local bridge supervisor; defaults to /usr/bin/python3.
 }
 
 // Settings is implementation-only: the public Config has no transport mode.

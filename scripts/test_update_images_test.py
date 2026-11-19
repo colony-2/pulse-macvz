@@ -1,6 +1,7 @@
 import importlib.util
 import json
 import os
+import shutil
 from pathlib import Path
 import subprocess
 import sys
@@ -12,7 +13,7 @@ spec = importlib.util.spec_from_file_location('names', ROOT/'scripts/image-names
 names = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(names)
 
-FAKE = r'''import copy,fcntl,json,os,sys,time
+FAKE = r'''import copy,fcntl,hashlib,json,os,shutil,sys,time
 from pathlib import Path
 state=Path(os.environ['FAKE_TART_STATE'])
 args=sys.argv[1:]
@@ -29,11 +30,17 @@ with open(str(state)+'.lock','w') as lock:
   elif cmd=='list': result=json.dumps(list(vms.values()))
   elif cmd=='clone':
    rest=[a for a in args[1:] if a!='--overwrite'];src,dst=rest
-   if dst in vms and vms[dst]['State']=='running': code=1
+   if '--overwrite' in args and os.environ.get('FAIL_PUBLISH')==dst:
+    if os.environ.get('REMOVE_FAILED_DESTINATION'): vms.pop(dst,None)
+    result='simulated publication failure';code=1
+   elif dst in vms and vms[dst]['State']=='running': code=1
    else:
     d['next']+=1
     vm=copy.deepcopy(vms.get(src,{'OS':'darwin','CPU':2,'Memory':4096,'State':'stopped','MACAddress':'raw','Release':'raw'}))
     vm.update(Name=dst,IP='192.0.2.'+str(d['next']));vms[dst]=vm
+    if '--overwrite' in args and os.environ.get('FAIL_AFTER_PUBLISH') in (dst,'*'):
+     result='simulated native error after replacing the destination';code=1
+     if os.environ.get('CORRUPT_AFTER_PUBLISH'): vm['Release']='corrupt'
   elif cmd=='set':
    vm=vms[args[1]];vm.update(CPU=int(args[args.index('--cpu')+1]),Memory=int(args[args.index('--memory')+1]),MACAddress='fresh-'+vm['IP'])
    if '--random-serial' in args: vm['MachineID']='machine-'+vm['IP']
@@ -59,6 +66,24 @@ with open(str(state)+'.lock','w') as lock:
   else: code=1
  elif tool=='scp': pass
  else: code=1
+ if os.environ.get('FAKE_VM_FILES'):
+  def put(path,data):
+   if not path.exists() or path.read_text()!=data: path.write_text(data)
+  directory=Path(os.environ['TART_HOME'])/'vms';directory.mkdir(parents=True,exist_ok=True)
+  for child in directory.iterdir():
+   if child.name not in vms: shutil.rmtree(child)
+  for name,vm in vms.items():
+   if not all(k in vm for k in ('MACAddress','CPU','Memory','Release')): continue
+   path=directory/name;path.mkdir(exist_ok=True)
+   digest=hashlib.sha256(vm['MACAddress'].encode()).hexdigest()[:10]
+   mac='02:'+':'.join(digest[i:i+2] for i in range(0,10,2))
+   config=dict(cpuCount=vm['CPU'],memorySize=vm['Memory'],macAddress=mac,ecid=vm.get('MachineID','original'))
+   put(path/'config.json',json.dumps(config))
+   put(path/'disk.img','disk:'+vm['Release'])
+   put(path/'nvram.bin','nvram:'+vm.get('MachineID','original'))
+   saved=path/'state.vzvmsave'
+   if vm['State']=='suspended': put(saved,'saved:'+vm.get('MachineID','original'))
+   elif saved.exists(): saved.unlink()
  state.write_text(json.dumps(d))
 print(result)
 if waiting:
@@ -87,7 +112,7 @@ class UpdateImages(unittest.TestCase):
         for tool in ('tart','ssh','scp'):
             path=binary/tool;path.write_text('#!'+sys.executable+'\n'+FAKE);path.chmod(0o755)
         uname=binary/'uname';uname.write_text('#!/bin/bash\nif [[ $1 == -s ]]; then echo Darwin; else echo arm64; fi\n');uname.chmod(0o755)
-        self.env=dict(os.environ,PATH=str(binary)+os.pathsep+os.environ['PATH'],FAKE_TART_STATE=str(self.state),TART_HOME=str(self.root/'tart'),PULSE_IMAGE_LOG_DIR=str(self.root/'logs'))
+        self.env=dict(os.environ,PATH=str(binary)+os.pathsep+os.environ['PATH'],FAKE_TART_STATE=str(self.state),FAKE_VM_FILES='1',TART_HOME=str(self.root/'tart'),PULSE_IMAGE_LOG_DIR=str(self.root/'logs'))
 
     def run_update(self,*args):
         return subprocess.run(['bash',str(ROOT/'scripts/update-macos-images.sh'),'--owner','test','--slots','2','--c2j','a'*40,*args],env=self.env,capture_output=True,text=True,timeout=60)
@@ -122,9 +147,138 @@ class UpdateImages(unittest.TestCase):
         self.assertEqual(state['vms'],self.before)
         self.assertFalse(any(c[0]=='ssh' or (c[:2]==['tart','clone'] and '--help' not in c) for c in state['calls']))
 
+    def test_failed_publication_retains_prepared_sources_and_observes_changed_destination(self):
+        self.env.update(FAIL_PUBLISH=self.sources[0], REMOVE_FAILED_DESTINATION='1')
+        result=self.run_update()
+        self.assertNotEqual(result.returncode,0)
+        state=json.loads(self.state.read_text())
+        builders={name:vm for name,vm in state['vms'].items() if name.startswith('pulse-build-')}
+        self.assertEqual(len(builders),3)
+        self.assertEqual(sorted(vm['State'] for vm in builders.values()),['stopped','suspended','suspended'])
+        self.assertNotIn(self.sources[0],state['vms'])
+        for name in [*self.sources[1:],'old-job',self.orchard]:
+            self.assertEqual(state['vms'][name],self.before[name])
+        self.assertIn('confirmed publications: 0',result.stderr)
+        self.assertNotIn('Preparation failed;',result.stderr)
+        self.assertTrue(all(name in result.stderr for name in builders))
+        work=Path(next(line.removeprefix('Preparation logs: ') for line in result.stdout.splitlines() if line.startswith('Preparation logs: ')))
+        self.addCleanup(shutil.rmtree,work)
+        plan=json.loads((work/'prepared-sources.json').read_text())
+        self.assertEqual({entry['prepared'] for entry in plan},set(builders))
+        self.assertEqual(json.loads((work/'publication-0-target-before.json').read_text())['Name'],self.sources[0])
+        after=json.loads((work/'publication-inventory.json').read_text())
+        self.assertNotIn(self.sources[0],{vm['Name'] for vm in after})
+        self.assertEqual((work/'publication-0.exit').read_text().strip(),'1')
+        self.assertFalse(any(c[:2]==['tart','delete'] for c in state['calls']))
+
+    def test_partial_publication_does_not_rollback_or_delete_running_jobs(self):
+        self.env['FAIL_PUBLISH']=self.sources[1]
+        result=self.run_update()
+        self.assertNotEqual(result.returncode,0)
+        state=json.loads(self.state.read_text())
+        self.assertEqual(state['vms'][self.sources[0]]['Release'],'new')
+        self.assertEqual(state['vms'][self.sources[1]],self.before[self.sources[1]])
+        self.assertEqual(state['vms']['old-job'],self.before['old-job'])
+        self.assertIn('confirmed publications: 1',result.stderr)
+        work=Path(next(line.removeprefix('Preparation logs: ') for line in result.stdout.splitlines() if line.startswith('Preparation logs: ')))
+        self.addCleanup(shutil.rmtree,work)
+
+    def test_native_errors_after_complete_replacement_are_verified_and_update_continues(self):
+        self.env.update(FAKE_VM_FILES='1', FAIL_AFTER_PUBLISH='*')
+        result=self.run_update()
+        self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+        state=json.loads(self.state.read_text())
+        for name in [*self.sources,self.orchard]: self.assertEqual(state['vms'][name]['Release'],'new')
+        self.assertEqual(state['vms']['old-job'],self.before['old-job'])
+        self.assertFalse(any(name.startswith('pulse-build-') for name in state['vms']))
+        self.assertIn('Verified complete publication despite Tart exit 1',result.stderr)
+        work=Path(next(line.removeprefix('Preparation logs: ') for line in result.stdout.splitlines() if line.startswith('Preparation logs: ')))
+        self.addCleanup(shutil.rmtree,work)
+        reports=list(work.glob('publication-*-verification.json'))
+        self.assertEqual(len(reports),4)
+        for report in reports: self.assertEqual(json.loads(report.read_text())['outcome'],'verified')
+
+    def test_matching_hardware_with_corrupt_disk_never_counts_as_publication_success(self):
+        self.env.update(FAKE_VM_FILES='1', FAIL_AFTER_PUBLISH=self.sources[0], CORRUPT_AFTER_PUBLISH='1')
+        result=self.run_update()
+        self.assertNotEqual(result.returncode,0)
+        state=json.loads(self.state.read_text())
+        self.assertEqual(len([name for name in state['vms'] if name.startswith('pulse-build-')]),3)
+        self.assertEqual(state['vms']['old-job'],self.before['old-job'])
+        self.assertIn('Publication could not be verified',result.stderr)
+        work=Path(next(line.removeprefix('Preparation logs: ') for line in result.stdout.splitlines() if line.startswith('Preparation logs: ')))
+        self.addCleanup(shutil.rmtree,work)
+        self.assertEqual(json.loads((work/'publication-0-verification.json').read_text())['outcome'],'unverified')
+
+    def test_ensure_builds_missing_second_slot_using_existing_base(self):
+        state=json.loads(self.state.read_text())
+        del state['vms'][self.sources[2]]
+        self.state.write_text(json.dumps(state))
+        before=state['vms']
+        result=self.run_update('--ensure');self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+        state=json.loads(self.state.read_text())
+        for name,vm in before.items(): self.assertEqual(state['vms'][name],vm)
+        new=state['vms'][self.sources[2]]
+        self.assertEqual(new['State'],'suspended')
+        self.assertNotEqual(new['MachineID'],state['vms'][self.sources[1]]['MachineID'])
+        self.assertFalse(any(c[0]=='ssh' and 'prepare-base.sh' in c[-1] for c in state['calls']))
+        self.assertEqual([c[-1] for c in state['calls'] if c[:3]==['tart','clone','--overwrite']],[self.sources[2]])
+
     def test_alias_matching_does_not_select_jobs_or_other_pools(self):
         inventory=[{'Name':self.orchard},{'Name':'old-job'},{'Name':self.orchard+'-extra'},{'Name':self.orchard.replace('pulse-test-','pulse-other-')}]
         self.assertEqual(names.aliases(self.sources[1],inventory),[self.sources[1],self.orchard])
+
+    def retained_update(self):
+        self.env['FAIL_PUBLISH']=self.sources[1]
+        result=self.run_update()
+        self.assertNotEqual(result.returncode,0,result.stdout+result.stderr)
+        work=Path(next(line.removeprefix('Preparation logs: ') for line in result.stdout.splitlines() if line.startswith('Preparation logs: ')))
+        self.addCleanup(shutil.rmtree,work)
+        del self.env['FAIL_PUBLISH']
+        return work
+
+    def resume(self, work):
+        return subprocess.run(['bash',str(ROOT/'scripts/update-macos-images.sh'),'--resume',str(work)],
+                              env=self.env,capture_output=True,text=True,timeout=60)
+
+    def test_resume_partial_publication_without_repreparing_or_touching_jobs(self):
+        work=self.retained_update()
+        before=json.loads(self.state.read_text());calls=len(before['calls'])
+        result=self.resume(work)
+        self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+        after=json.loads(self.state.read_text())
+        self.assertEqual(after['vms']['old-job'],self.before['old-job'])
+        self.assertFalse(any(call[0]=='ssh' or call[:2]==['tart','run'] for call in after['calls'][calls:]))
+        self.assertFalse(any(name.startswith('pulse-build-') for name in after['vms']))
+        self.assertTrue(json.loads((work/'publication-plan.json').read_text())['complete'])
+        for name in [*self.sources,self.orchard]: self.assertEqual(after['vms'][name]['Release'],'new')
+        self.assertEqual(self.resume(work).returncode,0)
+
+    def test_resume_refuses_changed_builder_before_any_publication(self):
+        work=self.retained_update()
+        plan=json.loads((work/'publication-plan.json').read_text())
+        source=plan['items'][-1]['source']
+        (Path(self.env['TART_HOME'])/'vms'/source/'disk.img').write_text('changed')
+        before=json.loads(self.state.read_text())['calls']
+        result=self.resume(work)
+        self.assertNotEqual(result.returncode,0)
+        self.assertIn('Prepared source changed',result.stderr)
+        self.assertEqual(json.loads(self.state.read_text())['calls'],before)
+
+    def test_resume_refuses_job_target_and_preserves_other_updater_lock(self):
+        work=self.retained_update()
+        lock=Path(self.env['TART_HOME'])/('.'+self.sources[0]+'.update-lock')
+        lock.mkdir()
+        result=self.resume(work)
+        self.assertNotEqual(result.returncode,0)
+        self.assertTrue(lock.is_dir())
+        lock.rmdir()
+        path=Path(self.env['TART_HOME'])/'vms'/self.sources[1]/'pulse.json'
+        path.write_text(json.dumps({'native':{'reusable':True},'properties':{'job':{'id':'private'}}}))
+        result=self.resume(work)
+        self.assertNotEqual(result.returncode,0)
+        self.assertIn('Refusing publication over a job',result.stderr)
+        self.assertNotIn('private',result.stderr)
 
 
 class DockerImageNames(unittest.TestCase):

@@ -20,6 +20,7 @@ Usage: update-macos-images.sh [--c2j VERSION] [--list]
   --image REFERENCE --os-version VERSION  Custom digest-pinned macOS image
   --ssh-user USER     Guest SSH login (default: admin)
   --ensure            Prepare only missing sources; do not update existing ones
+  --resume DIRECTORY  Resume publication from retained prepared builders
   --timeout SECONDS   Per-VM preparation limit (default: 2700)
 
 Run on the Apple Silicon worker as the Tart/Orchard worker user, using its
@@ -31,24 +32,28 @@ Discovery updates existing catalog-based macOS sources, excluding test pools.
 Use --discover --owner NAME or --base NAME to filter discovered sources.
 HELP
 }
+if [[ ${1:-} == --resume ]]; then
+  [[ $# == 2 ]] || { echo 'Usage: update-macos-images.sh --resume LOG_DIRECTORY' >&2; exit 2; }
+  exec python3 "$root/scripts/image-publication.py" resume "$2"
+fi
 original_args=("$@")
 owner= base=macos-26-arm64 group=standard count=1 cpu=4 memory=8192 version=latest
 image= os_version= ssh_user=admin ensure=0 seconds=2700 docker_profile=
-discover=0 list_only=0 existing_targets=
+discover=0 list_only=0 existing_targets= repair_plan=
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --help|-h) usage; exit 0 ;;
     --discover) discover=1; shift; continue ;;
     --list) list_only=1; shift; continue ;;
     --ensure) ensure=1; shift; continue ;;
-    --owner|--base|--group|--slots|--cpu|--memory|--docker-profile|--c2j|--image|--os-version|--ssh-user|--timeout|--existing-targets)
+    --owner|--base|--group|--slots|--cpu|--memory|--docker-profile|--c2j|--image|--os-version|--ssh-user|--timeout|--existing-targets|--repair-plan)
       [[ $# -ge 2 ]] || { usage >&2; exit 2; }
       case "$1" in
         --owner) owner=$2 ;; --base) base=$2 ;; --group) group=$2 ;;
         --slots) count=$2 ;; --cpu) cpu=$2 ;; --memory) memory=$2 ;;
         --docker-profile) docker_profile=$2 ;; --c2j) version=$2 ;; --image) image=$2 ;; --os-version) os_version=$2 ;;
         --ssh-user) ssh_user=$2 ;; --timeout) seconds=$2 ;;
-        --existing-targets) existing_targets=$2 ;;
+        --existing-targets) existing_targets=$2 ;; --repair-plan) repair_plan=$2 ;;
       esac; shift 2 ;;
     *) usage >&2; exit 2 ;;
   esac
@@ -85,23 +90,44 @@ echo "Preparation logs: $work"
 # lock serializes publication with clone commands from either backend.
 lock="${TART_HOME:-$HOME/.tart}/.${names[0]}.update-lock"
 mkdir -p "$(dirname "$lock")"
-mkdir "$lock" || { echo "An updater is already running (lock: $lock)." >&2; exit 1; }
-staged=() pids=() published=0
+owns_lock=1
+if [[ -n $repair_plan && ${PULSE_IMAGE_UPDATE_LOCK:-} == "$lock" && -d $lock ]]; then
+  owns_lock=0 # The offline repair parent holds this through publication.
+else
+  mkdir "$lock" || { echo "An updater is already running (lock: $lock)." >&2; exit 1; }
+fi
+staged=() pids=() published=0 publication_phase=0 verified_publish_error=0
 cleanup() {
   code=$?
+  if [[ -f $work/confirmed-count ]]; then published=$(cat "$work/confirmed-count"); fi
+  if [[ -f $work/verified-publication-error ]]; then verified_publish_error=1; fi
   trap - EXIT INT TERM
   for name in "${staged[@]}"; do
     state=$(tart get "$name" --format json 2>/dev/null | python3 -c 'import json,sys;print(json.load(sys.stdin)["State"])' 2>/dev/null) || continue
     if [[ $state == running ]]; then tart stop "$name" >/dev/null 2>&1 || continue; fi
+    if [[ $code != 0 && $publication_phase == 1 ]]; then
+      echo "Retained prepared VM: $name" >&2
+      continue
+    fi
     tart delete "$name" >/dev/null 2>&1 || true
   done
   for pid in "${pids[@]}"; do wait "$pid" 2>/dev/null || true; done
-  rmdir "$lock" 2>/dev/null || true
+  if [[ $owns_lock == 1 ]]; then rmdir "$lock" 2>/dev/null || true; fi
   if [[ -n ${PULSE_IMAGE_LOG_DIR:-} ]]; then
     mkdir -p "$PULSE_IMAGE_LOG_DIR"
     for log in "$work/"*.log; do [[ ! -f $log ]] || cp "$log" "$PULSE_IMAGE_LOG_DIR/"; done
   fi
-  if [[ $code == 0 ]]; then rm -rf "$work"; else echo "Preparation failed; logs retained in $work (published sources: $published)." >&2; fi
+  if [[ $code == 0 && $verified_publish_error == 0 ]]; then
+    rm -rf "$work"
+  elif [[ $code == 0 ]]; then
+    echo "Update completed with verified Tart publication errors; evidence retained in $work." >&2
+  elif [[ $publication_phase == 1 ]]; then
+    echo "Publication failed; logs retained in $work (confirmed publications: $published)." >&2
+    echo 'Prepared VMs listed above were retained in Tart.' >&2
+    echo "Resume verified publication with: $root/scripts/update-macos-images.sh --resume $work" >&2
+  else
+    echo "Preparation failed; logs retained in $work (published sources: $published)." >&2
+  fi
   exit "$code"
 }
 trap cleanup EXIT
@@ -187,27 +213,17 @@ for ((i=1;i<=count;i++)); do
 done
 # Nothing is published until every requested replacement is prepared. Each
 # overwrite takes Tart's global lock, also used by concurrent clone operations.
-for ((i=0;i<${#ready[@]};i++)); do
-  aliases=()
-  if [[ -n $existing_targets ]]; then
-    python3 "$root/scripts/discover-macos-images.py" targets "$existing_targets" "${targets[$i]}" > "$work/publish-targets"
-    while IFS= read -r alias; do aliases+=("$alias"); done < "$work/publish-targets"
-  else
-    while IFS= read -r alias; do aliases+=("$alias"); done < <(tart list --source local --format json | python3 "$root/scripts/image-names.py" aliases "${targets[$i]}")
-  fi
-  for alias in "${aliases[@]}"; do
-    if [[ -n $existing_targets ]]; then
-      # Discovery publishes only names observed in its plan. A source removed
-      # or changed while builders ran must not be recreated or overwritten.
-      desired=stopped; expected_cpu=4; expected_memory=8192
-      if [[ ${targets[$i]} != "${names[0]}" ]]; then desired=suspended; expected_cpu=$cpu; expected_memory=$memory; fi
-      valid_source "$alias" "$desired" "$expected_cpu" "$expected_memory" || { echo "Discovered source changed or disappeared: $alias" >&2; exit 1; }
-    fi
-    if [[ $ensure == 1 ]] && tart get "$alias" --format json >/dev/null 2>&1; then continue; fi
-    echo "Publishing: $alias"
-    tart clone --overwrite "${ready[$i]}" "$alias"
-    published=$((published+1))
-    echo "Ready: $alias"
-  done
-done
+python3 - "$work/prepared-sources.json" "${#ready[@]}" "${ready[@]}" "${targets[@]}" <<'PY'
+import json,sys
+count=int(sys.argv[2]); args=sys.argv[3:]
+with open(sys.argv[1], 'w') as stream:
+    json.dump([{'prepared':src, 'target':dst} for src,dst in zip(args[:count],args[count:])], stream, indent=2)
+PY
+publication_phase=1
+plan_args=(plan "$work" --base "${names[0]}")
+if [[ -n $existing_targets ]]; then plan_args+=(--existing-targets "$existing_targets"); fi
+if [[ -n $repair_plan ]]; then plan_args+=(--repair-plan "$repair_plan"); fi
+if [[ $ensure == 1 ]]; then plan_args+=(--ensure); fi
+python3 "$root/scripts/image-publication.py" "${plan_args[@]}"
+python3 "$root/scripts/image-publication.py" publish "$work"
 echo "Prepared sources ready. Existing job clones were left running."

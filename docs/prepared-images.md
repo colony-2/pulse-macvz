@@ -10,9 +10,11 @@ Run `scripts/update-macos-images.sh` on the Apple Silicon worker from a pulse-ta
 ./scripts/update-macos-images.sh --list
 ```
 
-Without `--owner`, the updater discovers existing catalog-based macOS sources from their stable names and verifies their native state and hardware. It checks attached `pulse.json` properties when present and also supports older named sources without those properties. It infers owner, base, group, CPU, memory and slot indices; gaps stay gaps, and an Orchard alias does not cause a missing canonical name to be created. Jobs, Linux VMs, integration-test pools and temporary builders are excluded. A retained ordinary base can be updated even when it has no slots. All selected sources are checked before the first build, and sources removed or changed in state/size during preparation fail publication. `main` or `latest` is resolved once per invocation so every pool receives the same c2j commit.
+Without `--owner`, the updater discovers existing catalog-based macOS sources from their stable names and verifies their native state and hardware. It checks attached `pulse.json` properties when present and also supports older named sources without those properties. It infers owner, base, group, CPU, memory and slot indices. Standard 4 CPU/8192 MiB pools are completed to two slots; custom groups and larger sparse pools retain their existing indices unless `--slots COUNT` is supplied. An Orchard alias does not cause its missing canonical name to be created. Jobs, Linux VMs, integration-test pools and temporary builders are excluded. A retained ordinary base can be updated and its standard slots created even when it has no slots. All selected sources are checked before the first build. Publication rejects a disappeared discovered source or a target whose state no longer matches the planned state; retained publication plans also reject changed file identities on resume. `main` or `latest` is resolved once per invocation so every pool receives the same c2j commit.
 
 Use `--base macos-26-arm64` to limit discovery to one base, or `--discover --owner OWNER` to limit it to one owner. An explicitly selected owner may include an integration-test pool. Recognizable Docker groups retain their profile; custom base names and ambiguous hashed Docker groups require explicit options. SSH still uses the catalog user (or `--ssh-user`) and `PULSE_IMAGE_SSH_PASSWORD`. Keep one macOS VM position free throughout the update.
+
+When discovery finds missing sources or unfinished provider builders, stop Pulse before updating. Offline repair holds the provider and updater locks, checks builder ownership and hardware, and moves unfinished builders into private backups under `TART_HOME/.pulse-image-repairs/` before rebuilding. It refuses job/pair targets and ambiguous legacy state. `--list` only reports the repair targets.
 
 To create a new pool, or specify its recipe explicitly:
 
@@ -33,12 +35,14 @@ Options:
 | `--docker-profile NAME` | Prepare the Docker base and slots matching `SlotGroup.DockerProfile` |
 | `--c2j latest` | Default: resolve the latest published c2j release when preparing |
 | `--c2j <tag-or-commit>` | Build that selection; branches also work |
-| `--ensure` | With explicit configuration, prepare only missing sources; discovery already selects existing sources, so this is a no-op there |
+| `--ensure` | Fill missing sources while retaining ready existing sources, including discovered Orchard aliases |
+| `--slots COUNT` | Explicit slot count; in discovery, fill missing indices up to this count without deleting existing sources |
+| `--resume DIRECTORY` | Resume a retained publication plan without rebuilding or running guests |
 | `--image <digest-reference> --os-version <version>` | Override the catalog image and exact guest OS check together |
 | `--ssh-user <user>` | Default `admin`; password from `PULSE_IMAGE_SSH_PASSWORD`, default `admin` |
 | `--timeout <seconds>` | Per-VM preparation limit, default 2700 |
 
-The guest must support SSH/passwordless sudo and reach GitHub/Nix. The script prints its temporary log directory and each preparation/publication phase. On failure it retains logs there. `PULSE_IMAGE_LOG_DIR=/path` additionally copies build/run logs to a chosen directory. It cleans up only its own staging VMs. An interrupted process that cannot run cleanup may leave a per-pool update lock; remove that lock only after verifying no updater remains active.
+The guest must support SSH/passwordless sudo and reach GitHub/Nix. The script prints its temporary log directory and each preparation/publication phase. On failure it retains logs there. `PULSE_IMAGE_LOG_DIR=/path` additionally copies build/run logs to a chosen directory. Preparation failure cleans up only its own staging VMs; publication failure retains the prepared VMs for investigation and recovery. An interrupted process that cannot run cleanup may leave a per-pool update lock; remove that lock only after verifying no updater remains active.
 
 ## Names and publication
 
@@ -60,7 +64,49 @@ Existing ordinary job clones keep their own disk/configuration/saved state and c
 
 Templates prepared by older versions may share their base's Mac machine identifier despite having different MAC addresses. On the November 15 macOS 26.7.2/Tart 2.41.1 probe, sequentially prepared snapshots with that shared identifier failed to restore together with VZErrorDomain Code=12, while sequential builders with distinct identifiers restored in both orders. Rebuild affected templates using this updater without `--ensure`. Restarting the provider does not rebuild existing sources, and changing the identifier on an already-suspended template is not a repair: the saved state must retain its original configuration.
 
-Publication is per image, not a transaction across the pool. Preparation failure leaves published sources untouched. Publication failure reports an error and can leave some sources updated; rerunning repairs the pool. Do not run suspended sources directly, use stacked clones, or modify job clones. The provider still permits only one active/unresolved job per configured slot.
+Publication is per image, not a transaction across the pool. Preparation failure leaves published sources untouched. Publication failure can leave some sources updated, and even the command that failed may have changed its destination. The publication counter includes successful commands and replacements independently verified after an error. Do not run suspended sources directly, use stacked clones, or modify job clones. The provider still permits only one active/unresolved job per configured slot.
+
+If Tart returns an error from `clone --overwrite`, the updater checks whether the
+replacement nevertheless completed. `verify-image-publication.py` holds Tart's
+global storage lock and the source/destination config PID locks while comparing
+the complete disk, NVRAM, configuration, and (for suspended slots) saved-state
+contents. A stopped base may have the new MAC that Tart normally assigns during
+cloning; all other config fields must match. Suspended snapshots must also retain
+the same MAC. Missing files, content differences, active VM locks, unsupported
+layouts, or a five-minute verification timeout leave publication unverified and
+stop the update. No retries, deletion, or replacement are performed by this check.
+
+When the destination matches completely, the updater reports
+`Verified complete publication despite Tart exit ...` and continues. It preserves
+the native error and comparison result in the log directory even if the overall
+update succeeds. Full disk comparison can take several minutes; it is only used
+after a native publication error. The normal successful command path is unchanged.
+
+On publication failure, the temporary log directory contains `prepared-sources.json`
+(prepared VM names and intended targets), `publication-plan.json`, the failing
+command's stdout/stderr and exit code, source/target observations before and after
+the failure, and a fresh native inventory. Prepared stopped/suspended staging VMs
+are retained and named in the error output if publication cannot be verified;
+successful updates still remove them. There is no automatic resume or rollback. To resume a retained plan explicitly:
+
+```sh
+./scripts/update-macos-images.sh --resume /absolute/path/to/pulse-image-update.XXXXXX
+```
+
+Resume requires the same `TART_HOME` and unchanged prepared builders. It verifies already-published destinations by comparing complete VM files, then publishes the remaining unchanged targets. Changed, missing, or job-owned destinations are refused; no guest preparation or execution is repeated. Successful resume removes retained staging VMs and keeps the evidence directory. Older log directories without `publication-plan.json` cannot be resumed.
+Verification recognizes an already complete replacement; it does not repair an
+incomplete one or change Tart's overwrite implementation.
+
+For a native publication error such as “The file … doesn’t exist”, collect current
+state before another update:
+
+```sh
+./scripts/diagnose-tart.sh --samples 1 --skip-guest
+```
+
+Send the resulting diagnostic archive. Keep the updater's log directory. Older
+updater versions deleted staged VMs on all failures, so retained logs alone do not
+imply that a completed preparation can be resumed.
 
 ## Version selection and inspection
 

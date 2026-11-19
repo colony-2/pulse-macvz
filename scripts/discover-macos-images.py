@@ -26,7 +26,7 @@ def tart(*args):
     return json.loads(result.stdout)
 
 
-def source_role(home, name):
+def source_role(home, name, repair=False):
     """Use attached properties when available; never print their private fields."""
     path = home / 'vms' / name / 'pulse.json'
     if not path.exists():
@@ -39,13 +39,15 @@ def source_role(home, name):
         if properties.get('job') or properties.get('pair'):
             return 'job'
         if not native.get('reusable'):
+            if repair and (properties.get('slot') or properties.get('image')):
+                return 'builder'
             raise ValueError()
         return 'source'
     except (ValueError, KeyError, TypeError):
         raise ValueError(f'Cannot identify a reusable source from VM properties: {name}') from None
 
 
-def discover(inventory, catalog, get, home, owner=None, base=None, group=None):
+def discover(inventory, catalog, get, home, owner=None, base=None, group=None, repair=False, slots_count=None):
     canonical = {}
     for item in inventory:
         name = item['Name']
@@ -55,7 +57,7 @@ def discover(inventory, catalog, get, home, owner=None, base=None, group=None):
         key = match[1] if match else name
         if key.startswith('pulse-'):
             canonical.setdefault(key, []).append(name)
-    sources, slots, bases, ignored = {}, [], [], []
+    sources, slots, bases, ignored, builders = {}, [], [], [], {}
     catalog = [entry for entry in catalog if entry['Name'].startswith('macos-')]
     for name in sorted(canonical):
         match = None
@@ -90,12 +92,16 @@ def discover(inventory, catalog, get, home, owner=None, base=None, group=None):
             raise ValueError(f'Unsupported hardware in source name: {name}')
         aliases = []
         for alias in sorted(canonical[name]):
-            if source_role(home, alias) == 'job':
+            role = source_role(home, alias, repair)
+            if role == 'job':
                 continue
             vm = get(alias)
-            if (vm.get('OS') != 'darwin' or vm.get('State') != ('suspended' if slot else 'stopped')
+            if (vm.get('OS') != 'darwin' or (role != 'builder' and vm.get('State') != ('suspended' if slot else 'stopped'))
                     or (vm.get('CPU'), vm.get('Memory')) != expected):
                 raise ValueError(f'Source is not ready or its hardware disagrees with its name: {alias}')
+            if role == 'builder':
+                data = json.loads((home / 'vms' / alias / 'pulse.json').read_text())
+                builders[alias] = data['native']['uid']
             aliases.append(alias)
         if not aliases:
             continue
@@ -137,11 +143,26 @@ def discover(inventory, catalog, get, home, owner=None, base=None, group=None):
         if name not in used and not group:
             # A retained base without slots can be updated too. The target map
             # prevents the explicit updater's default slot from being created.
-            key = (pool_owner, entry['Name'], 'standard', 4, 8192, '')
-            pools[key] = dict(owner=pool_owner, base=entry['Name'], group='standard', cpu=4,
+            base_group = ('standard' if entry['Name'] == catalog[0]['Name'] else 'mac-' + image_names.token(entry['Name'])) if repair else 'standard'
+            key = (pool_owner, entry['Name'], base_group, 4, 8192, '')
+            pools[key] = dict(owner=pool_owner, base=entry['Name'], group=base_group, cpu=4,
                               memory=8192, profile='', count=1, targets={name: sources[name]},
                               ssh_user=entry.get('SSHUsername', 'admin'))
-    return [pools[key] for key in sorted(pools)]
+    result = [pools[key] for key in sorted(pools)]
+    if repair:
+        for pool in result:
+            default_group = 'standard' if pool['base'] == catalog[0]['Name'] else 'mac-' + image_names.token(pool['base'])
+            # Recognize the standard two-slot recipe. Custom counts/groups are
+            # preserved unless --slots explicitly supplies the desired count.
+            standard = not pool['profile'] and pool['cpu'] == 4 and pool['memory'] == 8192 and pool['group'] == default_group and pool['count'] <= 2
+            if slots_count is not None or standard:
+                pool['count'] = slots_count if slots_count is not None else 2
+                for name in image_names.names(pool['owner'], pool['base'], pool['group'], pool['cpu'], pool['memory'], pool['count'], pool['profile']):
+                    if name not in canonical or name in sources:
+                        pool['targets'].setdefault(name, sources.get(name, [name]))
+            pool['missing'] = [alias for aliases in pool['targets'].values() for alias in aliases if alias not in {v['Name'] for v in inventory}]
+            pool['builders'] = {alias: builders[alias] for aliases in pool['targets'].values() for alias in aliases if alias in builders}
+    return result
 
 
 def main():
@@ -163,15 +184,18 @@ def main():
     parser.add_argument('--ssh-user')
     parser.add_argument('--timeout', type=int, default=2700)
     parser.add_argument('--ensure', action='store_true')
+    parser.add_argument('--slots', type=int, help='Explicit desired count for discovered pools')
     args = parser.parse_args()
     if not 60 <= args.timeout <= 7200:
         parser.error('--timeout must be between 60 and 7200 seconds')
+    if args.slots is not None and not 1 <= args.slots <= 1000:
+        parser.error('--slots must be between 1 and 1000')
     home = Path(os.environ.get('TART_HOME') or Path.home() / '.tart')
     try:
         pools = discover(tart('list', '--source', 'local', '--format', 'json'),
                          json.loads((ROOT / 'bases.json').read_text()),
                          lambda name: tart('get', name, '--format', 'json'), home,
-                         args.owner, args.base, args.group)
+                         args.owner, args.base, args.group, repair=True, slots_count=args.slots)
         if not pools:
             raise ValueError('No matching prepared macOS template pools found; use --owner with explicit options to create a new pool')
         print(f'Found {len(pools)} template pool(s):', flush=True)
@@ -179,10 +203,11 @@ def main():
             print(f'  {pool["owner"]}: {pool["base"]} / {pool["group"]} / {pool["cpu"]} CPU, {pool["memory"]} MiB', flush=True)
             for aliases in pool['targets'].values():
                 for name in aliases:
-                    print('    ' + name, flush=True)
+                    note = ' (missing; will create)' if name in pool['missing'] else (' (unfinished builder; offline repair)' if name in pool['builders'] else '')
+                    print('    ' + name + note, flush=True)
         if args.list:
             return 0
-        if args.ensure:
+        if args.ensure and not any(pool['missing'] or pool['builders'] for pool in pools):
             print('All discovered sources already exist; --ensure has nothing to create.')
             return 0
         with tempfile.TemporaryDirectory(prefix='pulse-image-discovery-') as directory:
@@ -206,6 +231,13 @@ def main():
                     command.extend(['--docker-profile', pool['profile']])
                 if args.ensure:
                     command.append('--ensure')
+                if pool['missing'] or pool['builders']:
+                    repair = work / f'repair-{i}.json'
+                    repair.write_text(json.dumps({'home': str(home.resolve()), 'owner': pool['owner'],
+                                                  'base_name': image_names.names(pool['owner'], pool['base'], pool['group'], pool['cpu'], pool['memory'], 1, pool['profile'])[0],
+                                                  'missing': pool['missing'], 'builders': pool['builders']}))
+                    command.extend(['--repair-plan', str(repair)])
+                    command = [sys.executable, str(ROOT / 'scripts/repair-image-pool.py'), str(repair), '--', *command]
                 subprocess.run(command, check=True)
         return 0
     except (ValueError, OSError, subprocess.SubprocessError) as error:

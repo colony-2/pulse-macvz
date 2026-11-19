@@ -1,0 +1,119 @@
+diff --git a/internal/controller/controller.go b/internal/controller/controller.go
+index 12f33a4..9411bad 100644
+--- a/internal/controller/controller.go
++++ b/internal/controller/controller.go
+@@ -12,6 +12,7 @@ import (
+ 	"github.com/colony-2/pulse/internal/scheduler"
+ 	"github.com/colony-2/pulse/pkg/compute"
+ 	"log/slog"
++	"maps"
+ 	"sort"
+ 	"sync"
+ 	"time"
+@@ -36,6 +37,8 @@ type Controller struct {
+ }
+ 
+ func (c *Controller) Once(ctx context.Context) (passErr error) {
++	maintenanceStates := map[string]string{}
++	maintenanceFailed := false
+ 	c.statusMu.Lock()
+ 	c.status.Running = true
+ 	c.status.LastStarted = time.Now().UTC()
+@@ -46,8 +49,9 @@ func (c *Controller) Once(ctx context.Context) (passErr error) {
+ 		c.status.Running = false
+ 		c.status.LastFinished = time.Now().UTC()
+ 		c.status.Passes++
+-		c.status.LastSucceeded = passErr == nil
+-		if passErr != nil {
++		c.status.ProviderMaintenance = maintenanceStates
++		c.status.LastSucceeded = passErr == nil && !maintenanceFailed
++		if passErr != nil || maintenanceFailed {
+ 			c.status.FailedPasses++
+ 		}
+ 	}()
+@@ -61,13 +65,17 @@ func (c *Controller) Once(ctx context.Context) (passErr error) {
+ 	var errs []error
+ 	preparation := map[string]placement.ProviderPreparation{}
+ 	for name, provider := range c.Providers {
++		maintenanceStates[name] = "not_reported"
+ 		preparation[name] = placement.UnknownProviderPreparation()
+ 		if maintenance, ok := provider.(interface{ Maintain(context.Context) error }); ok {
+ 			call, cancel := context.WithTimeout(ctx, c.Config.Call)
+ 			err := maintenance.Maintain(call)
++			maintenanceStates[name] = "ok"
+ 			preparation[name] = placement.ReturnedProviderPreparation(err)
+ 			if err != nil {
+-				c.Log.Warn("provider maintenance deferred", "error", err)
++				maintenanceFailed = true
++				maintenanceStates[name] = "degraded"
++				c.Log.Warn("provider maintenance deferred", "provider", name, "error", err)
+ 			}
+ 			cancel()
+ 		}
+@@ -216,16 +224,19 @@ func (c *Controller) Run(ctx context.Context) error {
+ 
+ // PollStatus intentionally excludes raw errors, which can contain credentials.
+ type PollStatus struct {
+-	Running       bool      `json:"running"`
+-	LastStarted   time.Time `json:"last_started"`
+-	LastFinished  time.Time `json:"last_finished"`
+-	LastSucceeded bool      `json:"last_succeeded"`
+-	Passes        uint64    `json:"passes"`
+-	FailedPasses  uint64    `json:"failed_passes"`
++	ProviderMaintenance map[string]string `json:"provider_maintenance,omitempty"`
++	Running             bool              `json:"running"`
++	LastStarted         time.Time         `json:"last_started"`
++	LastFinished        time.Time         `json:"last_finished"`
++	LastSucceeded       bool              `json:"last_succeeded"`
++	Passes              uint64            `json:"passes"`
++	FailedPasses        uint64            `json:"failed_passes"`
+ }
+ 
+ func (c *Controller) Status() PollStatus {
+ 	c.statusMu.RLock()
+ 	defer c.statusMu.RUnlock()
+-	return c.status
++	out := c.status
++	out.ProviderMaintenance = maps.Clone(c.status.ProviderMaintenance)
++	return out
+ }
+diff --git a/internal/controller/controller_test.go b/internal/controller/controller_test.go
+index 3c0cd8f..0ae3db8 100644
+--- a/internal/controller/controller_test.go
++++ b/internal/controller/controller_test.go
+@@ -157,3 +157,35 @@ func TestConfiguredBatchSizeBoundsClaimCount(t *testing.T) {
+ func (*accept) GetCapabilities(context.Context) (compute.Capabilities, error) {
+ 	return compute.Capabilities{}, nil
+ }
++
++type maintenanceProvider struct {
++	accept
++	err   error
++	calls int
++}
++
++func (p *maintenanceProvider) Maintain(context.Context) error { p.calls++; return p.err }
++func TestMaintenanceFailureDegradesStatusWithoutBlockingOtherProviders(t *testing.T) {
++	bad := &maintenanceProvider{err: errors.New("private detail")}
++	good := &maintenanceProvider{}
++	reads := 0
++	c := &Controller{Config: &config.Config{Call: time.Second, MaxPages: 1, Targets: []config.Target{{Instance: "db", Tenant: "tenant", JobDB: "https://jobs.test"}}},
++		Providers: map[string]compute.Provider{"tart": bad, "docker": good},
++		Lister:    listFunc(func(context.Context, string, string, []c2j.Route) (c2j.Page, error) { reads++; return c2j.Page{}, nil }),
++		Log:       slog.New(slog.NewTextHandler(io.Discard, nil))}
++	if err := c.Once(t.Context()); err != nil {
++		t.Fatal(err)
++	}
++	status := c.Status()
++	if status.LastSucceeded || status.FailedPasses != 1 || status.ProviderMaintenance["tart"] != "degraded" || status.ProviderMaintenance["docker"] != "ok" || reads != 1 || good.calls != 1 {
++		t.Fatal(status, reads, good.calls)
++	}
++	status.ProviderMaintenance["tart"] = "modified"
++	if c.Status().ProviderMaintenance["tart"] != "degraded" {
++		t.Fatal("mutable status map")
++	}
++	bad.err = nil
++	if err := c.Once(t.Context()); err != nil || !c.Status().LastSucceeded {
++		t.Fatal(err, c.Status())
++	}
++}

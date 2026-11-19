@@ -111,11 +111,26 @@ class Discovery(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('No matching', result.stderr)
 
+    def test_ensure_fills_standard_pool_without_overwriting_alias_only_slot(self):
+        data = json.loads(self.state.read_text())
+        del data['vms'][self.sources[1]]
+        del data['vms'][self.sources[2]]
+        self.state.write_text(json.dumps(data))
+        result = self.run_update('--ensure')
+        self.assert_passed(result)
+        after = json.loads(self.state.read_text())
+        self.assertEqual(after['vms'][self.orchard], self.before[self.orchard])
+        self.assertEqual(after['vms']['old-job'], self.before['old-job'])
+        self.assertIn(self.sources[2], after['vms'])
+        self.assertNotIn(self.sources[1], after['vms'])
+        self.assertFalse(any(call[:3] == ['tart', 'clone', '--overwrite'] and call[-1] == self.orchard
+                             for call in after['calls']))
+
     def test_disappearing_source_is_not_recreated_during_publication(self):
         self.env['DELETE_ON_PREPARE'] = self.sources[2]
         result = self.run_update()
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn('changed or disappeared', result.stderr)
+        self.assertIn('Discovered source disappeared', result.stderr)
         data = json.loads(self.state.read_text())
         self.assertNotIn(self.sources[2], data['vms'])
         self.assertFalse(any(call[:3] == ['tart', 'clone', '--overwrite'] and call[-1] == self.sources[2]
@@ -164,13 +179,13 @@ class Discovery(unittest.TestCase):
         for command in commands[1:]:
             self.assertEqual(command[command.index('--c2j') + 1], 'b' * 40)
 
-    def test_base_only_does_not_create_slots(self):
+    def test_base_only_repairs_standard_two_slot_pool(self):
         data = json.loads(self.state.read_text())
         data['vms'] = {self.sources[0]: data['vms'][self.sources[0]]}
         self.state.write_text(json.dumps(data))
         self.assert_passed(self.run_update())
         data = json.loads(self.state.read_text())
-        self.assertEqual(list(data['vms']), [self.sources[0]])
+        self.assertEqual(set(data['vms']), set(self.sources))
         self.assertEqual(data['vms'][self.sources[0]]['Release'], 'new')
 
     def test_discovered_docker_pool_keeps_profile(self):

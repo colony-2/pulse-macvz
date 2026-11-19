@@ -115,11 +115,16 @@ On the Apple Silicon worker, run this from a pulse-tart checkout as the same use
 
 Match the owner, base, group, count and size to the library configuration. The script prepares a fresh base and all requested suspended slots, then replaces the published sources under their existing names. **Already-created job clones keep their old environment; clones created after replacement use the new one.** Each replacement slot gets a fresh MAC. No Pulse release, RPC, or library restart is needed.
 
-Publication uses Tart's `clone --overwrite` lock, which serializes replacement with cloning. Each source is published separately: failure during preparation leaves existing sources unchanged; failure during publication can leave a mix of old and new sources. Rerun the command to finish updating. Reserve one free VM position while the script builds images; it does not pause admissions for you.
+Publication uses Tart's `clone --overwrite` lock, which serializes replacement with cloning. Each source is published separately: failure during preparation leaves existing sources unchanged; failure during publication can leave a mix of old and new sources. Use the printed `--resume` command to finish publication from retained builders, or rerun to rebuild. Reserve one free VM position while the script builds images; it does not pause admissions for you.
 
 The script also recognizes Orchard's worker-local aliases and replaces them alongside the canonical names. Run it **on that worker**; remote Orchard fleet updates are deferred. Requirements, naming, logs and custom-image options are in [image preparation](docs/prepared-images.md).
 
 ## Execution and recovery
+
+For an existing worker with preparation, capacity or restore problems, run
+`./scripts/diagnose-tart.sh` while Pulse stays running. It saves repeated read-only
+observations and a shareable archive under `test-results/`; see
+[Tart diagnosis](docs/tart-diagnosis.md) for report contents and optional log inputs.
 
 The library starts `c2j run with-lease --lease-file -`, passing the opaque lease through stdin and the concrete base as `--execution-base`. c2j retrieves secrets using the lease. The provider receives no job secrets. Acceptance means Orchard accepted creation or local Tart dispatched the detached run; Pulse handles subsequent boot or deployment failures.
 

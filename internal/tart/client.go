@@ -33,19 +33,20 @@ var ErrPlatform = errors.New("direct Tart requires macOS with native guest archi
 
 type command func(context.Context, ...string) ([]byte, error)
 type record struct {
-	Spec             backend.Spec `json:"spec"`
-	UID              string       `json:"uid"`
-	Phase            string       `json:"phase"`
-	PID              int          `json:"pid"`
-	Device           uint64       `json:"device"`
-	VolumeUUID       string       `json:"volume_uuid,omitempty"`
-	Inode            uint64       `json:"inode"`
-	MAC              string       `json:"mac"`
-	HostKey          []byte       `json:"host_key,omitempty"`
-	Created          time.Time    `json:"created"`
-	Delivered        bool         `json:"delivered"`
-	Reusable         bool         `json:"reusable,omitempty"`          // Published source; replacement under this name is intentional.
-	SuspendRequested bool         `json:"suspend_requested,omitempty"` // Tart suspend signals asynchronously; never signal a save twice.
+	Spec             backend.Spec    `json:"spec"`
+	UID              string          `json:"uid"`
+	Phase            string          `json:"phase"`
+	PID              int             `json:"pid"`
+	Device           uint64          `json:"device"`
+	VolumeUUID       string          `json:"volume_uuid,omitempty"`
+	Inode            uint64          `json:"inode"`
+	MAC              string          `json:"mac"`
+	HostKey          []byte          `json:"host_key,omitempty"`
+	Created          time.Time       `json:"created"`
+	Delivered        bool            `json:"delivered"`
+	Reusable         bool            `json:"reusable,omitempty"`          // Published source; replacement under this name is intentional.
+	SuspendRequested bool            `json:"suspend_requested,omitempty"` // Tart suspend signals asynchronously; never signal a save twice.
+	Delivery         *DeliveryStatus `json:"delivery,omitempty"`
 }
 type hardware struct {
 	OS         string
@@ -57,26 +58,28 @@ type hardware struct {
 	Name       string
 }
 type Client struct {
-	mu         ctxlock.Mutex
-	cfg        config.Tart
-	dir        string
-	scope      string
-	legacyDir  string
-	locks      []*os.File
-	properties map[string]json.RawMessage
-	staged     map[string]json.RawMessage // Pre-create properties; never returned as inventory.
-	bases      []config.Base
-	timeout    time.Duration
-	command    command
-	volumeUUID func(string) (string, error)
-	service    command // launchctl; injectable for lifecycle tests
-	launch     func(string) (int, error)
-	records    map[string]*record
-	ctx        context.Context
-	cancel     context.CancelFunc
-	workers    map[string]bool
-	wg         sync.WaitGroup
-	closed     bool
+	mu                  ctxlock.Mutex
+	cfg                 config.Tart
+	dir                 string
+	scope               string
+	legacyDir           string
+	locks               []*os.File
+	properties          map[string]json.RawMessage
+	staged              map[string]json.RawMessage // Pre-create properties; never returned as inventory.
+	bases               []config.Base
+	timeout             time.Duration
+	command             command
+	volumeUUID          func(string) (string, error)
+	service             command // launchctl; injectable for lifecycle tests
+	launch              func(string) (int, error)
+	records             map[string]*record
+	ctx                 context.Context
+	cancel              context.CancelFunc
+	workers             map[string]bool
+	wg                  sync.WaitGroup
+	closed              bool
+	lastDeliveryFailure error
+	deliveryRetryAt     time.Time
 }
 
 func New(c config.Tart, common config.Config) (*Client, error) {
@@ -117,6 +120,9 @@ func New(c config.Tart, common config.Config) (*Client, error) {
 		c.SSHTimeout = 15 * time.Second
 	}
 	if c.CommandTimeout < time.Second || c.SSHTimeout < time.Second {
+		return nil, config.Err
+	}
+	if c.DeliveryTimeout < 0 || (c.DeliveryTimeout > 0 && c.DeliveryTimeout < time.Second) {
 		return nil, config.Err
 	}
 	client, e := open(c, common)
@@ -351,6 +357,14 @@ func (b *Client) get(ctx context.Context, name string) (backend.VM, error) {
 		return backend.VM{}, failure("Get native instance: unrecognized power state", nil)
 	}
 	v.Conditions = []backend.Condition{{Type: "running", State: running}}
+	if r.Delivery != nil {
+		if r.Delivery.Cause != "" {
+			v.StatusMessage = deliveryError(r).Error()
+		}
+		if r.Delivery.Expired && v.Stopped() {
+			v.Status = "failed"
+		}
+	}
 	return v, nil
 }
 func (b *Client) Get(ctx context.Context, name string) (backend.VM, error) {
@@ -582,6 +596,7 @@ func (b *Client) Create(ctx context.Context, s backend.Spec) (backend.VM, error)
 	}
 	r.PID = pid
 	r.Phase = "started"
+	r.Delivery = &DeliveryStatus{StartedAt: time.Now().UTC(), Stage: "waiting_for_vm"}
 	if e := b.save(r); e != nil {
 		return backend.VM{}, e
 	}
@@ -720,8 +735,8 @@ func (b *Client) Events(ctx context.Context, name string) ([]backend.Event, erro
 	return []backend.Event{{Payload: string(data)}}, nil
 }
 
-// Recover resumes only idempotent guest delivery, never clone or run. List/Get
-// remain observational and never start a delivery worker.
+// Recover resumes pre-exec delivery and stops expired, undispatched VMs. It
+// never repeats an exec with an uncertain outcome. List/Get stay observational.
 func (b *Client) Recover(ctx context.Context) error {
 	if e := b.mu.LockContext(ctx); e != nil {
 		return e
@@ -734,6 +749,21 @@ func (b *Client) Recover(ctx context.Context) error {
 		return err
 	}
 	for name, r := range b.records {
+		if r.Delivery != nil && r.Delivery.Expired && !r.Delivered && !r.Delivery.ExecutionPossible && !b.workers[name] {
+			v, err := b.get(ctx, name)
+			if backend.IsStatus(err, 404) {
+				continue
+			}
+			if err != nil {
+				return err
+			}
+			if v.PowerState == "running" {
+				if _, err := b.command(ctx, "stop", name); err != nil {
+					return failure("stop undelivered instance", err)
+				}
+			}
+			continue // Normal reconciliation requires observed termination before deletion.
+		}
 		if (r.Phase != "started" && r.Phase != "starting") || r.Delivered || b.workers[name] {
 			continue
 		}
@@ -761,6 +791,12 @@ func (b *Client) deliver(r *record) {
 		return
 	}
 	b.workers[r.Spec.Name] = true
+	if r.Delivery == nil {
+		// Old records have no durable pre-exec fence. Do not infer that absence
+		// of local events proves that a guest command never ran.
+		r.Delivery = &DeliveryStatus{StartedAt: time.Now().UTC(), ExecutionPossible: true, Stage: "uncertain", Cause: "legacy_delivery_outcome_unknown"}
+		_ = b.save(r)
+	}
 	b.wg.Add(1)
 	// Copy immutable data before starting; journal/worker flags are under mu.
 	spec := r.Spec
@@ -773,31 +809,78 @@ func (b *Client) deliver(r *record) {
 		defer cancel()
 		for ctx.Err() == nil {
 			b.mu.Lock()
-			v, err := b.get(ctx, name)
+			if r.Delivered {
+				b.mu.Unlock()
+				return
+			}
+			if b.deliveryMarker(name) {
+				b.deliverySucceeded(r)
+				b.mu.Unlock()
+				return
+			}
+			if r.Delivery.ExecutionPossible {
+				r.Delivery.Stage, r.Delivery.Cause = "uncertain", "guest_execution_may_have_started"
+				_ = b.save(r)
+				b.mu.Unlock()
+				return
+			}
+			if time.Since(r.Delivery.StartedAt) >= b.deliveryBudget() {
+				r.Delivery.Expired = true
+				r.Delivery.Stage = "expired_before_exec"
+				if r.Delivery.Cause == "" {
+					r.Delivery.Cause = "delivery_deadline_exceeded"
+				}
+				_ = b.save(r)
+				b.mu.Unlock()
+				return
+			}
+			r.Delivery.Attempts++
+			r.Delivery.LastAttemptAt = time.Now().UTC()
+			r.Delivery.Stage = "observe_vm"
+			setup, cancelSetup := context.WithDeadline(ctx, r.Delivery.StartedAt.Add(b.deliveryBudget()))
+			v, err := b.get(setup, name)
 			// A fresh clone retains its snapshot's suspended state until the
 			// detached Tart process resumes it. Only a finished run proves that
 			// suspension is terminal and delivery should stop.
 			finished := err == nil && ((v.Status == "failed" && v.Stopped()) || (v.PowerState == "suspended" && b.runExited(r)))
 			b.mu.Unlock()
 			if backend.IsStatus(err, 404) || finished {
+				cancelSetup()
 				return
 			}
 			if err == nil && v.PowerState == "running" {
-				data, e := b.command(ctx, "ip", name, "--wait", "5")
+				b.deliveryStage(r, "discover_ip")
+				data, e := b.command(setup, "ip", name, "--wait", "5")
 				ip := strings.TrimSpace(string(data))
 				if e == nil && net.ParseIP(ip) != nil {
-					e = b.send(ctx, ip, spec, key)
-					events, _ := os.ReadFile(b.artifact(name, "events"))
-					if e == nil || bytes.Contains(events, []byte("PULSE_HANDOFF_OK")) || bytes.Contains(events, []byte("PULSE_BASE_READY")) || bytes.Contains(events, []byte("PULSE_TEMPLATE_READY")) {
+					e = b.sendAddressHooks(ctx, setup, net.JoinHostPort(ip, "22"), spec, key,
+						func(stage string) error { return b.deliveryStage(r, stage) },
+						func() { b.mu.Lock(); b.deliverySucceeded(r); b.mu.Unlock() })
+					if e == nil || b.deliveryMarker(name) {
 						b.mu.Lock()
-						r.Delivered = true
-						_ = b.save(r)
+						b.deliverySucceeded(r)
 						b.mu.Unlock()
+						cancelSetup()
 						return
 					}
+				} else if e == nil {
+					e = errors.New("invalid IP observation")
 				}
+				if e != nil {
+					b.deliveryFailed(r, e)
+				}
+			} else if err != nil {
+				b.deliveryFailed(r, err)
 			}
-			timer := time.NewTimer(time.Second)
+			cancelSetup()
+			b.mu.Lock()
+			delay := time.Second << min(r.Delivery.Attempts-1, 4)
+			remaining := b.deliveryBudget() - time.Since(r.Delivery.StartedAt)
+			if !r.Delivery.ExecutionPossible && delay > remaining {
+				delay = max(remaining, time.Millisecond)
+			}
+			b.mu.Unlock()
+			timer := time.NewTimer(delay)
 			select {
 			case <-ctx.Done():
 				timer.Stop()
@@ -811,6 +894,9 @@ func (b *Client) send(ctx context.Context, ip string, spec backend.Spec, key []b
 	return b.sendAddress(ctx, net.JoinHostPort(ip, "22"), spec, key)
 }
 func (b *Client) sendAddress(ctx context.Context, address string, spec backend.Spec, key []byte) error {
+	return b.sendAddressHooks(ctx, ctx, address, spec, key, func(string) error { return nil }, func() {})
+}
+func (b *Client) sendAddressHooks(ctx, setup context.Context, address string, spec backend.Spec, key []byte, stage func(string) error, delivered func()) error {
 	callback := ssh.InsecureIgnoreHostKey()
 	if len(key) > 0 {
 		pub, _, _, _, e := ssh.ParseAuthorizedKey(key)
@@ -820,21 +906,31 @@ func (b *Client) sendAddress(ctx context.Context, address string, spec backend.S
 		callback = ssh.FixedHostKey(pub)
 	}
 	cfg := &ssh.ClientConfig{User: spec.Username, Auth: []ssh.AuthMethod{ssh.Password(spec.Password)}, HostKeyCallback: callback, Timeout: b.cfg.SSHTimeout}
-	conn, e := (&net.Dialer{Timeout: b.cfg.SSHTimeout}).DialContext(ctx, "tcp", address)
+	if e := stage("tcp"); e != nil {
+		return e
+	}
+	conn, e := (&net.Dialer{Timeout: b.cfg.SSHTimeout}).DialContext(setup, "tcp", address)
 	if e != nil {
 		return failure("delivery SSH", e)
 	}
 	defer conn.Close()
 	stop := context.AfterFunc(ctx, func() { conn.Close() })
 	defer stop()
+	stopSetup := context.AfterFunc(setup, func() { conn.Close() })
+	defer stopSetup()
 	_ = conn.SetDeadline(time.Now().Add(b.cfg.SSHTimeout))
+	if e := stage("ssh_handshake"); e != nil {
+		return e
+	}
 	cc, ch, req, e := ssh.NewClientConn(conn, address, cfg)
 	if e != nil {
 		return failure("delivery SSH", e)
 	}
-	_ = conn.SetDeadline(time.Time{})
 	client := ssh.NewClient(cc, ch, req)
 	defer client.Close()
+	if e := stage("ssh_session"); e != nil {
+		return e
+	}
 	session, e := client.NewSession()
 	if e != nil {
 		return failure("delivery SSH", e)
@@ -845,9 +941,19 @@ func (b *Client) sendAddress(ctx context.Context, address string, spec backend.S
 		return failure("delivery SSH", e)
 	}
 	defer f.Close()
+	// Disarm only the pre-exec timer. Runtime cancellation still closes SSH,
+	// while an executing job can outlive the delivery deadline.
+	if !stopSetup() || setup.Err() != nil {
+		return setup.Err()
+	}
+	if e := stage("guest_exec"); e != nil {
+		return e
+	}
+	_ = conn.SetDeadline(time.Time{}) // Only executing guest work may outlive the SSH setup deadline.
 	session.Stdin = strings.NewReader(spec.StartupScript.Content)
-	session.Stdout = f
-	session.Stderr = f
+	writer := &deliveryWriter{destination: f, delivered: delivered}
+	session.Stdout = writer
+	session.Stderr = writer
 	if e := session.Run("/bin/bash -s"); e != nil {
 		return failure("delivery SSH", e)
 	}

@@ -6,7 +6,10 @@ import (
 	"compress/gzip"
 	"context"
 	"encoding/json"
+	"errors"
+	"github.com/colony-2/pulse-tart/internal/backend"
 	"github.com/colony-2/pulse-tart/internal/bundle"
+	engine "github.com/colony-2/pulse-tart/internal/provider"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -17,6 +20,55 @@ import (
 	"strings"
 	"testing"
 )
+
+type failingRecoveryBackend struct {
+	engine.Backend
+	recovery, inventory, health error
+	calls                       []string
+}
+
+func (b *failingRecoveryBackend) Recover(context.Context) error {
+	b.calls = append(b.calls, "recover")
+	return b.recovery
+}
+func (b *failingRecoveryBackend) List(context.Context) ([]backend.VM, error) {
+	b.calls = append(b.calls, "reconcile")
+	return nil, b.inventory
+}
+func (b *failingRecoveryBackend) DeliveryHealth(context.Context) error {
+	b.calls = append(b.calls, "health")
+	return b.health
+}
+
+func TestRecoveryFailureStillReconcilesAndReportsDeliveryHealth(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	store, err := engine.OpenStore(dir, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	b := &failingRecoveryBackend{recovery: errors.New("recovery failed"), inventory: errors.New("inventory failed"), health: errors.New("delivery failed")}
+	r := &Runtime{p: &engine.Provider{Store: store, Backend: b}}
+	err = r.Reconcile(t.Context())
+	for _, cause := range []error{b.recovery, b.inventory, b.health} {
+		if !errors.Is(err, cause) {
+			t.Fatalf("lost error %v: %v", cause, err)
+		}
+	}
+	if !reflect.DeepEqual(b.calls, []string{"recover", "reconcile", "health"}) {
+		t.Fatal(b.calls)
+	}
+	r.closed = true
+	if err := r.DeliveryHealth(t.Context()); err != ErrClosed {
+		t.Fatal(err)
+	}
+	if _, err := r.DeliveryObservations(t.Context()); err != ErrClosed {
+		t.Fatal(err)
+	}
+}
 
 func testConfig(t *testing.T) Config {
 	t.Helper()

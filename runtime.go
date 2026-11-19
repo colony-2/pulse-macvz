@@ -34,6 +34,7 @@ type DockerEndpoint = config.Endpoint
 type Secret = config.Secret
 type SlotStatus = engine.SlotStatus
 type ImageStatus = engine.ImageStatus
+type DeliveryObservation = local.DeliveryObservation
 
 const DefaultCPU = config.DefaultCPU
 const DefaultMemoryMiB = config.DefaultMemoryMiB
@@ -226,12 +227,46 @@ func (r *Runtime) Reconcile(ctx context.Context) error {
 	if r.closed {
 		return ErrClosed
 	}
+	var recovery error
 	if b, ok := r.p.Backend.(interface{ Recover(context.Context) error }); ok {
-		if e := b.Recover(ctx); e != nil {
-			return e
-		}
+		recovery = b.Recover(ctx)
 	}
-	return r.p.Reconcile(ctx)
+	// Health failures must not prevent the reconciliation that releases expired
+	// owned instances. The host can report this error while continuing maintenance.
+	reconciled := r.p.Reconcile(ctx)
+	var health error
+	if b, ok := r.p.Backend.(interface{ DeliveryHealth(context.Context) error }); ok {
+		health = b.DeliveryHealth(ctx)
+	}
+	return errors.Join(recovery, reconciled, health)
+}
+
+// DeliveryHealth reports observed delivery failures, independently of controller
+// liveness. A nil result does not certify connectivity when no guest was probed.
+func (r *Runtime) DeliveryHealth(ctx context.Context) error {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if r.closed {
+		return ErrClosed
+	}
+	if b, ok := r.p.Backend.(interface{ DeliveryHealth(context.Context) error }); ok {
+		return b.DeliveryHealth(ctx)
+	}
+	return nil
+}
+
+func (r *Runtime) DeliveryObservations(ctx context.Context) ([]DeliveryObservation, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if r.closed {
+		return nil, ErrClosed
+	}
+	if b, ok := r.p.Backend.(interface {
+		DeliveryObservations(context.Context) ([]local.DeliveryObservation, error)
+	}); ok {
+		return b.DeliveryObservations(ctx)
+	}
+	return nil, nil
 }
 
 // Run reconciles immediately, then every PollInterval. It returns the first

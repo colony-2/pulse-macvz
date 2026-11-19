@@ -183,6 +183,13 @@ func (p *Provider) Submit(ctx context.Context, ls []compute.Launch) ([]compute.S
 			out = append(out, p.submission(l.LaunchID, compute.Unavailable))
 			continue
 		}
+		if health, ok := p.Backend.(interface{ AdmissionHealth(context.Context) error }); ok {
+			if err := health.AdmissionHealth(ctx); err != nil {
+				p.observeError("delivery health prevents new admission", err)
+				out = append(out, p.submission(l.LaunchID, compute.Unavailable))
+				continue
+			}
+		}
 		if submission, handled := p.submitDocker(ctx, l, hash); handled {
 			out = append(out, submission)
 			continue

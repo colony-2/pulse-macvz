@@ -75,6 +75,11 @@ func (m *mockNative) run(ctx context.Context, args ...string) ([]byte, error) {
 	case "delete":
 		delete(m.vms, args[1])
 		return nil, os.RemoveAll(filepath.Join(m.home, "vms", args[1]))
+	case "stop":
+		h := m.vms[args[1]]
+		h.State = "stopped"
+		m.vms[args[1]] = h
+		return nil, os.WriteFile(filepath.Join(m.home, "vms", args[1], "pulse.exit"), []byte("1\n"), 0600)
 	case "ip":
 		return nil, Err
 	case "--version":
