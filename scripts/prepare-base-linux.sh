@@ -46,6 +46,10 @@ nix build --no-write-lock-file --out-link /opt/pulse-tart "$bundle#$(cat "$bundl
 id pulseworker >/dev/null 2>&1 || useradd --uid 55050 --user-group --create-home --shell /bin/bash pulseworker
 [[ $(id -u pulseworker) == 55050 && $(id -g pulseworker) == 55050 ]]
 install -d -m 700 -o pulseworker -g pulseworker /home/pulseworker /home/pulseworker/work /home/pulseworker/work/tmp
+# Ubuntu restricts the daemon socket to nix-users. Preserve other memberships
+# (notably docker), and exercise the daemon as the account that runs jobs.
+if getent group nix-users >/dev/null; then usermod -aG nix-users pulseworker; fi
+sudo -n -H -u pulseworker /usr/bin/nix --extra-experimental-features nix-command store ping --store daemon
 mkdir -p /opt/pulse-tart-image
 cp "$bundle/bootstrap-guest.sh" /opt/pulse-tart-image/
 /opt/pulse-tart/bin/c2j version

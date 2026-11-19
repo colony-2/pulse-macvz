@@ -44,4 +44,8 @@ PLIST
  ln -sf "$root/docker.sock" /var/run/docker.sock
 else
  install -d -m 700 -o pulseworker -g pulseworker /home/pulseworker/work /home/pulseworker/work/tmp
+ # Also repair clones of prepared Linux bases created before this membership
+ # was configured. A new worker process picks up the supplementary groups.
+ if getent group nix-users >/dev/null; then usermod -aG nix-users pulseworker; fi
+ sudo -n -H -u pulseworker /usr/bin/nix --extra-experimental-features nix-command store ping --store daemon
 fi

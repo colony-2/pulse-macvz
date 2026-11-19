@@ -70,6 +70,34 @@ images have been published; a container image such as `base2` cannot replace a
 bootable Tart disk. VM builds and Docker-engine qualification must run on real
 workers before the new defaults can be pinned.
 
+Linux preparation adds `pulseworker` to `nix-users` when that group is present,
+preserving its Docker group membership. Both base preparation and allocation
+setup verify access to the Nix daemon as `pulseworker`; admission repeats that
+check before handing over a lease. On upgrade, idle Linux allocations created
+before this fix are refreshed, and setup repairs new clones of existing cached
+bases. Running jobs are not interrupted. This addresses daemon-socket permission
+errors that a root-only `nix --version` check cannot detect.
+
+To repair existing workers without logging into each VM, run this from the
+checkout on the Mac host, as the same user and with the same `TART_HOME` as Pulse:
+
+```sh
+./scripts/repair-linux-nix.sh
+```
+
+This discovers owned, running Linux worker VMs, uses their private Pulse SSH
+settings, adds the group membership and verifies Nix as `pulseworker`. macOS
+VMs and Docker companion VMs are excluded. Existing job processes are not
+restarted; retry failed jobs with new processes to pick up the membership.
+
+To also repair stopped prepared Linux bases, stop Pulse normally and run
+`./scripts/repair-linux-nix.sh --include-stopped`. The script holds Pulse's pool
+locks while it boots those bases one at a time, repairs them, and returns them
+to the stopped state. It does not edit Pulse metadata or replay leases.
+`--check` previews the targets without making changes; repeat `--vm NAME` to
+select particular workers, or use `--tart-home PATH` for a nondefault Tart home.
+Failures are reported per VM and produce a nonzero exit status.
+
 The default companion uses four CPUs, 8 GiB RAM, and a 32 GiB private ext4 Docker
 filesystem, with Engine 29.1.3 checked before admission. CPU/memory reservations
 are submitted separately for both VMs. The bounded Docker filesystem is not a

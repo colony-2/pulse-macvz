@@ -58,12 +58,19 @@ func (p *Provider) dockerGroup(slot string) config.SlotGroup {
 func (p *Provider) dockerHash(g config.SlotGroup) string {
 	// Pool growth does not change an existing slot's execution contract.
 	g.Count = 0
+	// Refresh unused Linux workers so cached bases receive the Nix socket
+	// membership fix in configurePrimary. Active jobs keep their allocations.
+	linuxPreparation := 0
+	if p.base(g.Base).OS == "linux" {
+		linuxPreparation = 1
+	}
 	return p.Store.hash(struct {
-		Base     config.Base
-		Group    config.SlotGroup
-		Engine   config.EngineProfile
-		Endpoint config.Endpoint
-	}{p.base(g.Base), g, p.Config.Engine(g.DockerProfile), p.Config.DockerEndpoint})
+		Base             config.Base
+		Group            config.SlotGroup
+		Engine           config.EngineProfile
+		Endpoint         config.Endpoint
+		LinuxPreparation int `json:",omitempty"`
+	}{p.base(g.Base), g, p.Config.Engine(g.DockerProfile), p.Config.DockerEndpoint, linuxPreparation})
 }
 func (p *Provider) dockerMatch(g config.SlotGroup, l api.Launch) bool {
 	if g.DockerProfile == "" {
@@ -269,6 +276,9 @@ assert r('sudo','-n','-u','pulseworker','/opt/pulse-tart/bin/docker','--host','u
 	}
 	if b.OS == "linux" {
 		code += fmt.Sprintf("assert platform.system() == 'Linux'\nassert os.cpu_count() >= %d\nassert int(next(l.split()[1] for l in open('/proc/meminfo') if l.startswith('MemTotal:')))*1024 >= %d\nassert 'VERSION_ID=\"%s\"' in open('/etc/os-release').read()\n", g.CPU, (g.MemoryMiB-512)*(1<<20), b.OSVersion)
+		// A root version check cannot establish that the job user can reach the
+		// daemon. Ping returns no stdout on success; subprocess failure is enough.
+		code += "r('sudo','-n','-H','-u','pulseworker','/usr/bin/nix','--extra-experimental-features','nix-command','store','ping','--store','daemon')\n"
 	} else {
 		code += fmt.Sprintf("assert r('/usr/bin/sw_vers','-productVersion') == '%s'\nassert int(r('/usr/sbin/sysctl','-n','hw.ncpu')) == %d\nassert int(r('/usr/sbin/sysctl','-n','hw.memsize')) == %d\nsaved=json.load(open('/var/db/pulse-tart-template/ready'))\nassert r('/usr/sbin/sysctl','-n','kern.bootsessionuuid') == saved['boot_id']\nassert saved['mac'] in r('/sbin/ifconfig','en0')\n", b.OSVersion, g.CPU, g.MemoryMiB*(1<<20))
 	}

@@ -18,6 +18,7 @@ type dockerFake struct {
 	*fake
 	deliveries                                  int
 	receipt, loseDelivery, failDelete, notReady bool
+	nixDenied                                   bool
 	payload                                     envelope
 }
 
@@ -48,6 +49,9 @@ func (f *dockerFake) Exec(_ context.Context, name, uid string, script []byte) ([
 		return nil, errors.New("no receipt")
 	}
 	if strings.Contains(s, "PULSE_DOCKER_PRIMARY_READY") {
+		if f.nixDenied && strings.Contains(s, "'nix-command','store','ping','--store','daemon'") {
+			return nil, errors.New("getting status of /nix/var/nix/daemon-socket/socket: Permission denied")
+		}
 		if f.notReady {
 			return nil, errors.New("engine unavailable")
 		}
@@ -253,6 +257,66 @@ func TestDockerLinuxOwnsOnlyPrimary(t *testing.T) {
 			}
 			if !strings.Contains(strings.Join(f.payload.Process.Args, " "), "linux/"+arch) || f.payload.Process.WorkingDir != "/home/pulseworker" {
 				t.Fatal("wrong guest process")
+			}
+		})
+	}
+}
+
+func TestLinuxNixSocketAccessRequiredBeforeHandoff(t *testing.T) {
+	p, f := dockerFixture(t, true)
+	pair := readyDocker(t, p)
+	f.nixDenied = true
+	out, err := p.Submit(t.Context(), []api.Launch{dockerLaunch()})
+	if err != nil || len(out) != 1 || out[0].Status != api.Unavailable {
+		t.Fatal("worker without daemon access admitted", out, err)
+	}
+	if f.deliveries != 0 || pair.LaunchID != "" {
+		t.Fatal("lease delivered before worker Nix access was verified")
+	}
+	f.nixDenied = false
+	out, err = p.Submit(t.Context(), []api.Launch{dockerLaunch()})
+	if err != nil || len(out) != 1 || out[0].Status != api.Accepted {
+		t.Fatal("worker with restored daemon access rejected", out, err)
+	}
+}
+
+func TestLinuxNixPreparationRefreshesOnlyIdleLinuxAllocations(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		linux, active bool
+	}{
+		{"idle Linux", true, false}, {"active Linux", true, true}, {"idle macOS", false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p, f := dockerFixture(t, tc.linux)
+			pair := readyDocker(t, p)
+			if tc.active {
+				out, err := p.Submit(t.Context(), []api.Launch{dockerLaunch()})
+				if err != nil || out[0].Status != api.Accepted {
+					t.Fatal(out, err)
+				}
+			}
+			g := p.Config.Slots[0]
+			g.Count = 0
+			// Reproduce the persisted contract from before the Nix access fix.
+			pair.ConfigHash = p.Store.hash(struct {
+				Base     config.Base
+				Group    config.SlotGroup
+				Engine   config.EngineProfile
+				Endpoint config.Endpoint
+			}{p.base(g.Base), g, p.Config.Engine(g.DockerProfile), p.Config.DockerEndpoint})
+			if err := p.reconcilePairs(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+			if tc.linux && !tc.active {
+				if pair.Phase != "reclaiming" {
+					t.Fatal("old Linux preparation remained eligible", pair.Phase)
+				}
+			} else if pair.Phase != "ready" && pair.Phase != "running" {
+				t.Fatal("unaffected allocation was retired", pair.Phase)
+			}
+			if f.deletes != 0 {
+				t.Fatal("allocation deleted during refresh decision")
 			}
 		})
 	}

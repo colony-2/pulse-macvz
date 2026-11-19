@@ -62,3 +62,10 @@ func TestLinuxImageBuilder(t *testing.T) {
 		t.Fatalf("Linux image preparation: %v\n%s", err, out)
 	}
 }
+
+func TestLinuxWorkerNixAccess(t *testing.T) {
+	cmd := exec.CommandContext(t.Context(), "python3", "-B", "-m", "unittest", "scripts/test_linux_nix_access_test.py", "scripts/test_repair_linux_nix_test.py")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("Linux worker Nix access: %v\n%s", err, out)
+	}
+}
