@@ -38,6 +38,7 @@ type record struct {
 	Phase            string       `json:"phase"`
 	PID              int          `json:"pid"`
 	Device           uint64       `json:"device"`
+	VolumeUUID       string       `json:"volume_uuid,omitempty"`
 	Inode            uint64       `json:"inode"`
 	MAC              string       `json:"mac"`
 	HostKey          []byte       `json:"host_key,omitempty"`
@@ -67,6 +68,7 @@ type Client struct {
 	bases      []config.Base
 	timeout    time.Duration
 	command    command
+	volumeUUID func(string) (string, error)
 	service    command // launchctl; injectable for lifecycle tests
 	launch     func(string) (int, error)
 	records    map[string]*record
@@ -134,6 +136,7 @@ func open(c config.Tart, common config.Config) (*Client, error) {
 	}
 	scope := (config.Settings{Config: common, Kind: "tart", Endpoint: c.Home}).Scope()
 	b := &Client{service: service, cfg: c, dir: filepath.Join(c.Home, ".pulse", scope), scope: scope, legacyDir: common.StateDir, bases: common.Bases, timeout: common.BootstrapTimeout, records: map[string]*record{}, properties: map[string]json.RawMessage{}, workers: map[string]bool{}, ctx: ctx, cancel: cancel}
+	b.command, b.volumeUUID = b.execute, nativeVolumeUUID
 	if err := b.openProperties(); err != nil {
 		b.Close()
 		return nil, failure("open VM properties", err)
@@ -197,11 +200,16 @@ func (b *Client) binding(r *record, claim bool) error {
 		return failure("native ownership/state condition failed", nil)
 	}
 	marker := filepath.Join(b.path(r.Spec.Name), ".pulse-owner")
+	volume, e := b.volumeUUID(b.path(r.Spec.Name))
+	if e != nil {
+		return failure("observe native volume identity", e)
+	}
 	if claim {
 		if e := os.WriteFile(marker, []byte(r.UID), 0600); e != nil {
 			return failure("write ownership marker", e)
 		}
 		r.Device = uint64(sys.Dev)
+		r.VolumeUUID = volume
 		r.Inode = uint64(sys.Ino)
 		return nil
 	}
@@ -209,9 +217,31 @@ func (b *Client) binding(r *record, claim bool) error {
 	if e != nil {
 		return failure("observe native directory ownership", e)
 	}
-	if string(got) != r.UID || r.Device != uint64(sys.Dev) || r.Inode != uint64(sys.Ino) {
-		return failure("native identity, hardware or state mismatch", nil)
+	if string(got) != r.UID || r.Inode != uint64(sys.Ino) {
+		return failure("native ownership marker or directory inode mismatch for "+r.Spec.Name, nil)
 	}
+	if r.VolumeUUID != "" {
+		if volume != r.VolumeUUID {
+			return failure("native volume UUID mismatch for "+r.Spec.Name, nil)
+		}
+	} else if r.Device != uint64(sys.Dev) {
+		// Old records predate volume UUIDs. Permit a one-time upgrade only with
+		// the same owner token, inode and fully observed hardware. A partial
+		// creation has no MAC and cannot be safely migrated after renumbering.
+		if volume == "" || r.MAC == "" {
+			return failure("legacy native device mismatch for "+r.Spec.Name, nil)
+		}
+		h, err := b.inspect(b.ctx, r.Spec.Name)
+		if err != nil {
+			return failure("verify legacy native hardware for "+r.Spec.Name, err)
+		}
+		if h.CPU != r.Spec.CPU || h.Memory != r.Spec.Memory || h.MACAddress != r.MAC {
+			return failure("legacy native hardware mismatch for "+r.Spec.Name, nil)
+		}
+	}
+	// Keep device as a current observation for older diagnostic tooling. UUID
+	// is authoritative once populated; never replace a mismatched saved UUID.
+	r.Device, r.VolumeUUID = uint64(sys.Dev), volume
 	return nil
 }
 func (b *Client) inspect(ctx context.Context, name string) (hardware, error) {
