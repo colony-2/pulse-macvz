@@ -81,6 +81,7 @@ type Client struct {
 	ctx                 context.Context
 	cancel              context.CancelFunc
 	workers             map[string]bool
+	sources             map[string]*sourcePreparation
 	wg                  sync.WaitGroup
 	closed              bool
 	lastDeliveryFailure error

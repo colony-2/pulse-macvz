@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -9,6 +10,52 @@ import (
 	"github.com/colony-2/pulse-tart/internal/backend"
 	"github.com/colony-2/pulse-tart/internal/config"
 )
+
+type preparingBackend struct {
+	*fake
+	ready bool
+	err   error
+	calls int
+}
+
+func (b *preparingBackend) PrepareSource(context.Context, string) (bool, error) {
+	b.calls++
+	return b.ready, b.err
+}
+
+func TestPendingSourceDoesNotBlockReadyAllocation(t *testing.T) {
+	p, f := slotsFixture(t, 1)
+	warmSlots(t, p)
+	b := &preparingBackend{fake: f}
+	p.Backend = b
+	cold := p.Config.Bases[0]
+	cold.Name = "macos-cold"
+	cold.Image = "example.test/cold@sha256:" + strings.Repeat("b", 64)
+	p.Config.Bases = append(p.Config.Bases, cold)
+	p.Config.Slots = append(p.Config.Slots, config.SlotGroup{Name: "cold", Base: cold.Name, Count: 1, CPU: 4, MemoryMiB: 8192})
+	creates := f.creates
+	if err := p.Reconcile(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if b.calls == 0 || f.creates != creates {
+		t.Fatal("pending registry source was dispatched")
+	}
+	out, err := p.Submit(t.Context(), []compute.Launch{launch("during-import")})
+	if err != nil || out[0].Status != compute.Accepted {
+		t.Fatal("pending source blocked ready capacity", out, err)
+	}
+	b.err = errors.New("registry unavailable")
+	if err := p.Reconcile(t.Context()); !errors.Is(err, b.err) {
+		t.Fatal("registry failure not reported", err)
+	}
+	b.err, b.ready = nil, true
+	if err := p.Reconcile(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if p.Store.data.Images[p.baseImageName(cold.Name)] == nil {
+		t.Fatal("ready source did not advance to creation")
+	}
+}
 
 func TestPrepareBaseOnceAndReuseSourcesAfterDrain(t *testing.T) {
 	p, f := fixture(t)

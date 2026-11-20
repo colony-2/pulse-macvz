@@ -245,6 +245,16 @@ func (s *Store) List(ctx context.Context) ([]local.Hardware, error) {
 	}
 	return result, nil
 }
+
+// PrepareSource imports a registry image without creating or starting a VM.
+// The local client runs it outside its lifecycle lock.
+func (s *Store) PrepareSource(ctx context.Context, reference string) error {
+	ctx, cancel := context.WithTimeout(ctx, s.PullTimeout)
+	defer cancel()
+	_, err := s.cache(ctx, reference)
+	return err
+}
+
 func (s *Store) cache(ctx context.Context, reference string) (string, error) {
 	sum := sha256.Sum256([]byte(reference))
 	key := hex.EncodeToString(sum[:])

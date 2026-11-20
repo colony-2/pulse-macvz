@@ -1,4 +1,4 @@
-.PHONY: test vet build bundle integration
+.PHONY: test vet build install bundle integration
 
 test:
 	go test -race ./...
@@ -9,6 +9,9 @@ vet:
 
 build:
 	go build ./...
+
+install:
+	./scripts/install-server.sh
 
 bundle:
 	./scripts/build-bundle.sh

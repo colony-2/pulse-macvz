@@ -277,6 +277,22 @@ func (p *Provider) reconcileImages(ctx context.Context) error {
 				continue
 			}
 		}
+		// Registry imports must not occupy the journal/client locks or a VM
+		// delivery deadline. Poll preparation before reserving or creating a VM;
+		// other images and ready allocations can progress in the meantime.
+		if !probe {
+			if preparer, ok := p.Backend.(interface {
+				PrepareSource(context.Context, string) (bool, error)
+			}); ok {
+				ready, err := preparer.PrepareSource(ctx, base.Image)
+				if err != nil {
+					return backendError("prepare registry source", err)
+				}
+				if !ready {
+					continue
+				}
+			}
+		}
 		available, err := p.canStartVMs(ctx, spec)
 		if err != nil {
 			return err

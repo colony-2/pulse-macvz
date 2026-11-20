@@ -12,20 +12,25 @@ uses the published SDK unchanged.
 
 ## Install and prepare
 
-On Apple Silicon macOS, package the main executable in an app bundle:
+Build and install in Go's normal binary directory (`go env GOBIN`, or the
+first `GOPATH` entry's `bin` directory):
 
 ```sh
-./scripts/build-server-app.sh "$HOME/Applications/PulseProvider.app"
-mkdir -p "$HOME/.local/bin"
-ln -s "$HOME/Applications/PulseProvider.app/Contents/MacOS/pulse-tart" \
-  "$HOME/.local/bin/pulse-tart"
-# Put ~/.local/bin on PATH, then run from any directory:
+make install
+# Put the Go binary directory on PATH, then run from any directory:
 pulse-tart setup --owner production --macos-capacity 2 --linux-capacity 4 \
   --collector pulse.example.com:8443 \
   --tls-ca /etc/pulse/ca.pem --tls-cert /etc/pulse/worker.pem \
   --tls-key /etc/pulse/worker.key
 pulse-tart server
 ```
+
+On Apple Silicon macOS, `make install` builds and signs `PulseProvider.app`
+in that directory and installs `pulse-tart` as a symlink to its executable.
+It uses the signing policy described below. Other platforms get the cgo-free
+CLI executable directly. To select a destination, use
+`GOBIN="$HOME/.local/bin" make install`. For a custom app location, use
+`scripts/build-server-app.sh /absolute/path/PulseProvider.app` instead.
 
 The installed app contains one cgo-free executable. That same executable runs
 Cobra commands, VM children, and the Go Docker bridge through private child
@@ -52,6 +57,12 @@ saves settings after capacity is ready. It reuses prepared sources and does not
 connect to Pulse, so collector credentials may be omitted until serving. Pass
 collector/TLS flags to `setup` too if they should be saved. Downloads and guest
 preparation can take minutes on first use.
+
+VZ registry imports run in the background before a VM is created. An import
+does not hold the VM lifecycle or reconciliation locks while downloading, so
+other guest preparation and ready allocations can continue. Closing the
+provider cancels pending imports; completed registry cache entries are reused
+on restart. Import failures are reported by reconciliation and can be retried.
 
 `upgrade` waits for accepted jobs to finish, retires this owner's allocations,
 removes its inactive prepared images, and prepares fresh capacity using the
