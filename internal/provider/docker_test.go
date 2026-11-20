@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	api "github.com/colony-2/pulse-provider-api"
 	"github.com/colony-2/pulse-tart/internal/backend"
 	"github.com/colony-2/pulse-tart/internal/config"
@@ -20,6 +21,7 @@ type dockerFake struct {
 	receipt, loseDelivery, failDelete, notReady bool
 	nixDenied                                   bool
 	engineBlocked                               bool
+	engineStarts                                int
 	payload                                     envelope
 }
 
@@ -39,6 +41,7 @@ func TestDockerPairsRestoreBeforeEnginesReady(t *testing.T) {
 	p.Config.Slots[0].Count = 2
 	f.engineBlocked = true
 	for range 30 {
+		requestTestDockerPool(t, p)
 		if err := p.Reconcile(t.Context()); err != nil {
 			t.Fatal(err)
 		}
@@ -70,6 +73,13 @@ func TestDockerPairsRestoreBeforeEnginesReady(t *testing.T) {
 }
 func (f *dockerFake) Exec(_ context.Context, name, uid string, script []byte) ([]byte, error) {
 	s := string(script)
+	if strings.Contains(s, "systemd-run --no-block --unit=pulse-docker-prepare") {
+		f.engineStarts++
+		if f.engineBlocked {
+			return nil, nil
+		}
+		return []byte("PULSE_DOCKER_ENGINE_READY private-engine"), nil
+	}
 	if strings.Contains(s, "| sudo -n /opt/pulse-tart/bin/pulse-tart-guest ingest") {
 		f.deliveries++
 		f.receipt = true
@@ -129,14 +139,41 @@ func dockerFixture(t *testing.T, linux bool) (*Provider, *dockerFake) {
 	p.Assets = fstest.MapFS{"scripts/prepare-docker-engine.sh": &fstest.MapFile{Data: []byte("base engine installer")}, "scripts/docker-engine.sh": &fstest.MapFile{Data: []byte("engine installer")}, "scripts/docker-primary.sh": &fstest.MapFile{Data: []byte("primary setup")}}
 	return p, d
 }
+
+// Fault tests need requested-but-unassigned Docker capacity. This helper
+// reserves it without fabricating a job lease; admission is tested separately.
+func requestTestDockerPool(t *testing.T, p *Provider) {
+	t.Helper()
+	for _, pair := range p.Store.data.Pairs {
+		if pair.Phase == "ready" && !pair.DockerRequested && pair.LaunchID == "" {
+			pair.DockerRequested, pair.Phase = true, "docker-starting"
+		}
+	}
+	if !p.macTemplatesPending() {
+		for _, g := range p.Config.Slots {
+			if g.DockerProfile == "" || p.base(g.Base).OS == "linux" {
+				continue
+			}
+			for i := 1; i <= g.Count; i++ {
+				if _, err := p.reserveDockerPair(t.Context(), g, fmt.Sprintf("%s-%04d", g.Name, i), ""); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
+	}
+	if err := p.Store.save(); err != nil {
+		t.Fatal(err)
+	}
+}
 func readyDocker(t *testing.T, p *Provider) *PairRecord {
 	t.Helper()
 	for range 30 {
+		requestTestDockerPool(t, p)
 		if e := p.Reconcile(t.Context()); e != nil {
 			t.Fatal(e)
 		}
 		for _, pair := range p.Store.data.Pairs {
-			if pair.Phase == "ready" {
+			if pair.Phase == "ready" && pair.DockerRequested {
 				return pair
 			}
 		}
@@ -347,9 +384,9 @@ func TestLinuxNixPreparationRefreshesOnlyIdleLinuxAllocations(t *testing.T) {
 			if err := p.reconcilePairs(t.Context()); err != nil {
 				t.Fatal(err)
 			}
-			if tc.linux && !tc.active {
+			if !tc.active {
 				if pair.Phase != "reclaiming" {
-					t.Fatal("old Linux preparation remained eligible", pair.Phase)
+					t.Fatal("old eager Docker preparation remained eligible", pair.Phase)
 				}
 			} else if pair.Phase != "ready" && pair.Phase != "running" {
 				t.Fatal("unaffected allocation was retired", pair.Phase)
@@ -368,6 +405,18 @@ func TestDockerRecoveryAtEveryPreparationBoundary(t *testing.T) {
 			f.notReady = phase == "configuring"
 			var pair *PairRecord
 			for range 30 {
+				requestTestDockerPool(t, p)
+				if phase == "reserved" {
+					for _, v := range p.Store.data.Pairs {
+						if v.Phase == phase {
+							pair = v
+							break
+						}
+					}
+					if pair != nil {
+						break
+					}
+				}
 				if e := p.Reconcile(t.Context()); e != nil {
 					t.Fatal(e)
 				}

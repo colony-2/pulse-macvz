@@ -20,7 +20,7 @@ type savedConfiguration struct {
 
 func persistedFlag(name string) bool {
 	switch name {
-	case "config", "timeout", "help", "version":
+	case "config", "timeout", "progress", "help", "version":
 		return false
 	}
 	return true

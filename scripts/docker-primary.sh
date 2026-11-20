@@ -6,6 +6,17 @@ umask 077
 root=/var/lib/pulse-docker
 [[ $EUID == 0 ]]
 /opt/pulse-tart/bin/c2j version >/dev/null
+if [[ $(uname -s) == Linux ]]; then
+ install -d -m 700 -o pulseworker -g pulseworker /home/pulseworker/work /home/pulseworker/work/tmp
+ if getent group nix-users >/dev/null; then usermod -aG nix-users pulseworker; fi
+ sudo -n -H -u pulseworker /usr/bin/nix --extra-experimental-features nix-command store ping --store daemon
+ # Plain workers use the same prepared software, with no daemon or socket.
+ if [[ ${1:-docker} == plain ]]; then
+  ! systemctl is-active --quiet docker.service docker.socket containerd.service
+  test ! -S /var/run/docker.sock
+  exit 0
+ fi
+fi
 install -d -m 755 /usr/local/lib/docker /usr/local/lib/docker/cli-plugins
 for plugin in buildx compose; do ln -sf "/opt/pulse-tart/bin/docker-$plugin" "/usr/local/lib/docker/cli-plugins/docker-$plugin"; done
 /opt/pulse-tart/bin/docker --version >/dev/null
@@ -42,10 +53,4 @@ PLIST
  chmod 600 /Library/LaunchDaemons/dev.pulse-tart.docker.plist
  launchctl print system/dev.pulse-tart.docker >/dev/null 2>&1 || launchctl bootstrap system /Library/LaunchDaemons/dev.pulse-tart.docker.plist
  ln -sf "$root/docker.sock" /var/run/docker.sock
-else
- install -d -m 700 -o pulseworker -g pulseworker /home/pulseworker/work /home/pulseworker/work/tmp
- # Also repair clones of prepared Linux bases created before this membership
- # was configured. A new worker process picks up the supplementary groups.
- if getent group nix-users >/dev/null; then usermod -aG nix-users pulseworker; fi
- sudo -n -H -u pulseworker /usr/bin/nix --extra-experimental-features nix-command store ping --store daemon
 fi

@@ -214,7 +214,7 @@ func validPhase(phase string) bool {
 
 func validPairPhase(s string) bool {
 	switch s {
-	case "reserved", "engine-dispatch", "primary-dispatch", "configuring", "ready", "handoff-intent", "running", "reclaiming", "quarantine", "gone":
+	case "reserved", "engine-dispatch", "primary-dispatch", "configuring", "docker-starting", "ready", "handoff-intent", "running", "reclaiming", "quarantine", "gone":
 		return true
 	}
 	return false

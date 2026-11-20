@@ -43,6 +43,7 @@ func TestDiagnosticDockerPrimaryPreparationCauseAfterEngineGet(t *testing.T) {
 	p, _ := dockerFixture(t, false)
 	var pair *PairRecord
 	for range 30 {
+		requestTestDockerPool(t, p)
 		if e := p.Reconcile(t.Context()); e != nil {
 			t.Fatal(e)
 		}

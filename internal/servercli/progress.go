@@ -10,11 +10,16 @@ import (
 	tart "github.com/colony-2/pulse-tart"
 )
 
-type progressRow struct{ name, phase, detail string }
+type progressRow struct{ section, name, phase, detail string }
 
 type preparationReporter struct {
 	started, printed time.Time
 	signature        string
+	interactive      bool
+	terminalSize     func() (int, int, error)
+	frame            []string
+	width, height    int
+	previous         map[string]string
 }
 
 func (p *preparationReporter) print(w io.Writer, c tart.Config, r managedRuntime, force bool) error {
@@ -30,15 +35,15 @@ func (p *preparationReporter) print(w io.Writer, c tart.Config, r managedRuntime
 	for _, row := range rows {
 		fmt.Fprintf(&signature, "%s:%s\n", row.name, row.phase)
 	}
-	if !force && signature.String() == p.signature && now.Sub(p.printed) < 10*time.Second {
+	interval := 10 * time.Second
+	if p.interactive {
+		interval = time.Second
+	}
+	if !force && signature.String() == p.signature && now.Sub(p.printed) < interval {
 		return nil
 	}
-	fmt.Fprintf(w, "Preparation progress (elapsed %s):\n", elapsed(now.Sub(p.started)))
-	for _, row := range rows {
-		fmt.Fprintf(w, "  %-45s %s\n", row.name, row.detail)
-	}
-	if len(rows) == 0 {
-		fmt.Fprintln(w, "  No slots requested.")
+	if err := p.render(w, rows, now.Sub(p.started), force); err != nil {
+		return err
 	}
 	p.signature, p.printed = signature.String(), now
 	return nil
@@ -102,7 +107,7 @@ func preparationRows(c tart.Config, r managedRuntime, now time.Time) ([]progress
 			continue
 		}
 		image, present := bases[base.Name]
-		row := progressRow{name: "base " + base.Name, phase: "queued", detail: "waiting to prepare base"}
+		row := progressRow{section: "Base images", name: base.Name, phase: "queued", detail: "waiting to prepare base"}
 		if present {
 			row.phase = image.Phase
 			row.detail = vmStage(image.Phase, vms[image.Name])
@@ -117,13 +122,13 @@ func preparationRows(c tart.Config, r managedRuntime, now time.Time) ([]progress
 	for _, image := range images {
 		if image.Kind == "base" && image.Base == "" {
 			v := vms[image.Name]
-			rows = append(rows, progressRow{"companion " + image.Name, image.Phase + ":" + v.Stage, vmStage(image.Phase, v)})
+			rows = append(rows, progressRow{"Base images", "companion " + image.Name, image.Phase + ":" + v.Stage, vmStage(image.Phase, v)})
 		}
 	}
 	for _, g := range c.Slots {
 		for i := 1; i <= g.Count; i++ {
 			id := fmt.Sprintf("%s-%04d", g.Name, i)
-			row := progressRow{name: id + " [" + g.Base + "]", phase: "waiting_base", detail: "waiting for base " + g.Base}
+			row := progressRow{section: "Slots", name: id + " [" + g.Base + "]", phase: "waiting_base", detail: "waiting for base " + g.Base}
 			if bases[g.Base].Phase == "ready" {
 				row.phase, row.detail = "waiting_capacity", "waiting for a preparation VM position"
 			}
@@ -136,15 +141,15 @@ func preparationRows(c tart.Config, r managedRuntime, now time.Time) ([]progress
 			}
 			if g.DockerProfile != "" {
 				if pair, ok := allocations[id]; ok {
-					row.phase, row.detail = pair.Phase, "Docker allocation: "+pair.Phase
+					row.phase, row.detail = pair.Phase, "allocation: "+pair.Phase
 					for _, member := range []struct{ label, name string }{{"primary", pair.Primary}, {"engine", pair.Engine}} {
 						if v, ok := vms[member.name]; ok && pair.Phase != "ready" && pair.Phase != "running" {
 							row.detail += "; " + member.label + " " + vmStage("preparing", v)
 							row.phase += ":" + v.Stage + ":" + v.Cause
 						}
 					}
-				} else if baseOS[g.Base] == "linux" && bases[g.Base].Phase == "ready" || templates[id].Phase == "ready" {
-					row.phase, row.detail = "waiting_allocation", "source ready; waiting for shared Docker capacity / remaining templates"
+				} else if baseOS[g.Base] == "linux" && bases[g.Base].Phase == "ready" {
+					row.phase, row.detail = "waiting_allocation", "source ready; waiting for shared Linux capacity"
 				}
 			}
 			rows = append(rows, row)

@@ -40,8 +40,8 @@ func TestCountConventions(t *testing.T) {
 					t.Fatal("unexpected VM size", g)
 				}
 			}
-			if c.Slots[0].DockerProfile != "" || c.Slots[1].DockerProfile != "" || c.Slots[2].DockerProfile == "" || c.NeedsDockerEndpoint() {
-				t.Fatal("Linux defaults require macOS Docker connectivity")
+			if c.Slots[0].DockerProfile == "" || c.Slots[1].DockerProfile == "" || c.Slots[2].DockerProfile == "" || c.NeedsDockerEndpoint() != (min(tc.want[0], tc.want[2]) > 0) {
+				t.Fatal("default Docker eligibility or endpoint requirement is incorrect")
 			}
 			again, err := ResolveConfig(c)
 			if err != nil || !reflect.DeepEqual(c, again) {
@@ -78,7 +78,7 @@ func TestDefaultOrchardAndCountCopies(t *testing.T) {
 	if err := os.Chmod(dir, 0700); err != nil {
 		t.Fatal(err)
 	}
-	r, err := NewOrchard(Config{OwnerID: "defaults", StateDir: dir, VMCounts: counts}, OrchardConfig{URL: "https://orchard.example.test", Worker: "worker"})
+	r, err := NewOrchard(Config{OwnerID: "defaults", StateDir: dir, VMCounts: counts}, OrchardConfig{URL: "https://orchard.example.test", Worker: "worker", DockerEndpoint: DockerEndpoint{Address: "192.0.2.1", PortMin: 45000, PortMax: 45010}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -98,7 +98,7 @@ func TestDefaultOrchardAndCountCopies(t *testing.T) {
 	}
 }
 
-func TestConventionalMacDockerRemainsExplicit(t *testing.T) {
+func TestConventionalDockerProfiles(t *testing.T) {
 	c, err := ResolveConfig(Config{OwnerID: "docker", StateDir: t.TempDir(), Docker: &DockerConfig{}})
 	if err != nil {
 		t.Fatal(err)
@@ -128,8 +128,8 @@ func TestEveryConfiguredBaseGetsAStableConventionalGroup(t *testing.T) {
 			t.Fatal("invalid conventional group", g)
 		}
 		names[g.Name] = true
-		if (bases[i].OS == "linux") != (g.DockerProfile != "") {
-			t.Fatal("automatic Linux Docker enabled macOS Docker", g)
+		if g.DockerProfile == "" {
+			t.Fatal("default slot omitted Docker eligibility", g)
 		}
 	}
 }

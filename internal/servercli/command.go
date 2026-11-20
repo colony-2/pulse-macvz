@@ -24,6 +24,7 @@ type serverOptions struct {
 	transport                                                  transportOptions
 	configPath                                                 string
 	managementTimeout                                          time.Duration
+	progressMode                                               string
 	version                                                    string
 	log                                                        io.Writer
 }
@@ -75,6 +76,7 @@ func providerCommand(name, short string, run func(context.Context, serverOptions
 	f.StringVarP(&o.configPath, "config", "f", "", "Configuration file (default ~/.pulse/provider.json; explicit flags override saved settings)")
 	if name != "server" {
 		f.DurationVar(&o.managementTimeout, "timeout", 2*time.Hour, "Maximum preparation/drain time; timeout never cancels accepted jobs")
+		f.StringVar(&o.progressMode, "progress", "auto", "Preparation display: auto, interactive, or linear (redirected output is always linear)")
 	}
 	o.transport.flags(f)
 	f.StringVarP(&o.mode, "mode", "m", "outbound", "Plugin mode: outbound or inbound")
@@ -86,8 +88,8 @@ func providerCommand(name, short string, run func(context.Context, serverOptions
 	f.StringVar(&o.tartBinary, "tart-binary", "tart", "Tart executable")
 	f.StringVar(&o.capacity.macBase, "macos-base", "all", "macOS bases: all, or comma-separated macos-26-arm64,macos-15-arm64")
 	f.IntVar(&o.capacity.macOS, "macos-capacity", tart.DefaultMacOSVMCount, "Concurrent macOS jobs (0–2)")
-	f.IntVarP(&o.capacity.linux, "linux-capacity", "l", tart.DefaultLinuxVMCount, "Concurrent Linux job VMs, each including Docker (0–1000)")
-	f.IntVarP(&o.capacity.macDocker, "macos-docker-capacity", "d", 0, "macOS templates per selected version with Docker companions (within macos-capacity; running limits stay shared)")
+	f.IntVarP(&o.capacity.linux, "linux-capacity", "l", tart.DefaultLinuxVMCount, "Concurrent Linux job VMs; Docker starts only when requested (0–1000)")
+	f.IntVarP(&o.capacity.macDocker, "macos-docker-capacity", "d", -1, "macOS slots eligible for Docker per version (-1: all; companions start only when requested)")
 	f.IntVarP(&o.capacity.total, "total-capacity", "c", 0, "Shared job limit (default: macOS + Linux capacity; explicit 0 drains all jobs)")
 	f.StringVar(&o.c2j, "c2j-version", "latest", "c2j release for preparing missing images")
 	f.DurationVar(&o.poll, "poll-interval", 2*time.Second, "Provider reconciliation interval")
@@ -104,6 +106,9 @@ func providerCommand(name, short string, run func(context.Context, serverOptions
 }
 
 func (o *serverOptions) resolve() error {
+	if o.progressMode != "" && o.progressMode != "auto" && o.progressMode != "interactive" && o.progressMode != "linear" {
+		return fmt.Errorf("--progress must be auto, interactive, or linear")
+	}
 	if o.mode != "outbound" && o.mode != "inbound" {
 		return fmt.Errorf("--mode must be outbound or inbound")
 	}
@@ -142,7 +147,7 @@ func (o *serverOptions) resolve() error {
 		if err := o.endpoint.Validate(); err != nil {
 			return fmt.Errorf("invalid Docker worker IPv4 address or port range: %w", err)
 		}
-		if o.endpoint.PortMax-o.endpoint.PortMin+1 < o.capacity.macDocker {
+		if o.endpoint.PortMax-o.endpoint.PortMin+1 < min(o.capacity.macOS, *o.config.VMCounts.Total) {
 			return fmt.Errorf("Docker port range is smaller than --macos-docker-capacity")
 		}
 	}

@@ -59,7 +59,7 @@ func manage(parent context.Context, o serverOptions, upgrade bool, open func(ser
 	}
 	wait := func(stage string, ready func() (bool, error)) error {
 		fmt.Fprintln(o.log, stage)
-		reporter := &preparationReporter{}
+		reporter := newPreparationReporter(o.log, o.progressMode)
 		preparing := stage == "Preparing configured capacity"
 		if preparing {
 			if err := reporter.print(o.log, o.config, r, true); err != nil {
@@ -172,21 +172,19 @@ func capacityReady(c tart.Config, r managedRuntime) (bool, error) {
 	}
 	wanted := map[string]bool{}
 	dockerSlots := map[string]bool{}
-	linuxWanted, macDockerWanted := 0, 0
+	linuxWanted := 0
 	for _, g := range c.Slots {
 		for i := 1; i <= g.Count; i++ {
 			id := fmt.Sprintf("%s-%04d", g.Name, i)
 			if macBases[g.Base] {
 				wanted[id] = true
 			}
-			if g.DockerProfile != "" {
+			if g.DockerProfile != "" && !macBases[g.Base] {
 				dockerSlots[id] = true
 			}
 		}
 		if g.DockerProfile != "" {
-			if macBases[g.Base] {
-				macDockerWanted += g.Count
-			} else {
+			if !macBases[g.Base] {
 				linuxWanted += g.Count
 			}
 		}
@@ -211,8 +209,7 @@ func capacityReady(c tart.Config, r managedRuntime) (bool, error) {
 			ready[pair.Slot] = true
 		}
 	}
-	// Versions share one warm macOS Docker budget. Other version templates
-	// remain suspended and can supply allocations as demand changes.
-	warm := min(min(linuxWanted, *c.VMCounts.Linux)+min(macDockerWanted, *c.VMCounts.MacOS), *c.VMCounts.Total)
+	// macOS templates stay suspended. Linux workers warm with Docker stopped.
+	warm := min(linuxWanted, *c.VMCounts.Linux, *c.VMCounts.Total)
 	return len(ready) >= warm, nil
 }

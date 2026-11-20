@@ -187,6 +187,17 @@ func (f *TartDiagnosticFixture) Ready(ctx context.Context) error {
 			if e != nil {
 				return e
 			}
+			if ready && hasBase && len(pairs) == 0 {
+				// A real Docker request initiates preparation. With no pair,
+				// admission must defer and must not deliver this fixture lease.
+				out, err := f.Runtime.Submit(ctx, []api.Launch{f.Launch("fixture-prepare")})
+				if err != nil {
+					return err
+				}
+				if len(out) != 1 || out[0].Status != api.NoCapacity {
+					return fmt.Errorf("fixture preparation request was not deferred")
+				}
+			}
 			ready = ready && len(pairs) == 1 && pairs[0].Phase == "ready"
 		}
 		if ready && hasBase {

@@ -14,6 +14,11 @@ func TestInstalledConfigurationRoundTrip(t *testing.T) {
 	t.Setenv("HOME", home)
 	path := filepath.Join(home, "settings", "provider.json")
 	setup := providerCommand("setup", "test", func(_ context.Context, o serverOptions) error {
+		for _, g := range o.config.Slots {
+			if g.Count > 0 && g.DockerProfile == "" {
+				t.Fatal("default slot omitted Docker eligibility")
+			}
+		}
 		if o.vmHome != filepath.Join(home, ".pulse", "vz") {
 			t.Fatal("wrong storage default", o.vmHome)
 		}
@@ -22,7 +27,7 @@ func TestInstalledConfigurationRoundTrip(t *testing.T) {
 		}
 		return nil
 	})
-	setup.SetArgs([]string{"--config", path, "--linux-capacity", "0", "--macos-capacity", "1", "--total-capacity", "1"})
+	setup.SetArgs([]string{"--config", path, "--linux-capacity", "0", "--macos-capacity", "1", "--total-capacity", "1", "--progress", "linear"})
 	if err := setup.Execute(); err != nil {
 		t.Fatal(err)
 	}

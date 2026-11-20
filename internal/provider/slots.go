@@ -401,9 +401,7 @@ func (p *Provider) chooseSlot(ctx context.Context, l compute.Launch, spec backen
 	}
 	ids := []string{}
 	for id, t := range targets {
-		if p.dockerGroup(id).DockerProfile != "" {
-			continue
-		}
+
 		if baseMatches(p.base(t.image), l) && t.spec.CPU >= spec.CPU && t.spec.Memory >= spec.Memory {
 			ids = append(ids, id)
 		}

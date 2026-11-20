@@ -13,7 +13,7 @@ func TestCapacityConfiguration(t *testing.T) {
 		options                     capacityOptions
 		plain, docker, linux, total int
 	}{
-		{"defaults", capacityOptions{macOS: 2, linux: 4}, 2, 0, 4, 6},
+		{"defaults", capacityOptions{macOS: 2, linux: 4, macDocker: -1}, 0, 2, 4, 6},
 		{"one paired macOS job", capacityOptions{macOS: 2, linux: 4, macDocker: 1}, 1, 1, 4, 6},
 		{"Linux only", capacityOptions{linux: 3}, 0, 0, 3, 3},
 		{"disabled", capacityOptions{}, 0, 0, 0, 0},
@@ -64,7 +64,7 @@ func TestCapacityConfiguration(t *testing.T) {
 func TestInvalidCapacities(t *testing.T) {
 	for _, c := range []capacityOptions{
 		{macOS: -1}, {macOS: 3}, {linux: -1}, {linux: 1001},
-		{macOS: 1, macDocker: 2}, {macDocker: -1},
+		{macOS: 1, macDocker: 2}, {macDocker: -2},
 		{total: -1, totalSet: true}, {total: 1003, totalSet: true},
 	} {
 		if _, err := c.config("server", "", "", 0, 0); err == nil {

@@ -39,6 +39,8 @@ type PairRecord struct {
 	PrimaryDispatched, EngineDispatched            bool
 	Port                                           int
 	EngineID, LaunchID, DeliveryHash               string
+	DockerRequested                                bool
+	RequestID                                      string // Preparation hint only; never an accepted launch or lease.
 	Created                                        time.Time
 }
 
@@ -58,19 +60,15 @@ func (p *Provider) dockerGroup(slot string) config.SlotGroup {
 func (p *Provider) dockerHash(g config.SlotGroup) string {
 	// Pool growth does not change an existing slot's execution contract.
 	g.Count = 0
-	// Refresh unused Linux workers so cached bases receive the Nix socket
-	// membership fix in configurePrimary. Active jobs keep their allocations.
-	linuxPreparation := 0
-	if p.base(g.Base).OS == "linux" {
-		linuxPreparation = 1
-	}
+	// Refresh unused eager-Docker allocations; active jobs retain their contract.
+	preparationVersion := 2
 	return p.Store.hash(struct {
-		Base             config.Base
-		Group            config.SlotGroup
-		Engine           config.EngineProfile
-		Endpoint         config.Endpoint
-		LinuxPreparation int `json:",omitempty"`
-	}{p.base(g.Base), g, p.Config.Engine(g.DockerProfile), p.Config.DockerEndpoint, linuxPreparation})
+		Base               config.Base
+		Group              config.SlotGroup
+		Engine             config.EngineProfile
+		Endpoint           config.Endpoint
+		PreparationVersion int
+	}{p.base(g.Base), g, p.Config.Engine(g.DockerProfile), p.Config.DockerEndpoint, preparationVersion})
 }
 func (p *Provider) dockerMatch(g config.SlotGroup, l api.Launch) bool {
 	if g.DockerProfile == "" {
@@ -113,18 +111,27 @@ func keyPair() ([]byte, []byte, error) {
 }
 func (p *Provider) asset(name string) ([]byte, error) { return fs.ReadFile(p.Assets, "scripts/"+name) }
 func (p *Provider) engineStartup(profile config.EngineProfile, host, client []byte) (string, error) {
+	return p.engineScript(profile, host, client, true)
+}
+
+func (p *Provider) engineScript(profile config.EngineProfile, host, client []byte, wait bool) (string, error) {
 	script, e := p.asset("docker-engine.sh")
 	if e != nil {
 		return "", e
 	}
 	s := "#!/bin/bash\nset -eu\nset +x\numask 077\nsudo -n install -d -m 700 /var/lib/pulse-docker\n"
+	s += "if ! sudo -n systemctl cat pulse-docker-prepare.service >/dev/null 2>&1; then\n"
 	s += fileScript("/var/lib/pulse-docker/prepare.sh", script, true)
 	if len(host) > 0 {
 		s += fileScript("/var/lib/pulse-docker/host-key", host, true) + fileScript("/var/lib/pulse-docker/authorized_keys", client, true)
 	}
 	// systemd owns preparation across management-process disconnection. No lease.
-	s += fmt.Sprintf("if ! sudo -n systemctl cat pulse-docker-prepare.service >/dev/null 2>&1; then sudo -n systemd-run --unit=pulse-docker-prepare --service-type=oneshot --property=RemainAfterExit=yes /bin/bash /var/lib/pulse-docker/prepare.sh %s %d; fi\n", shell(profile.EngineVersion), profile.DiskGiB)
-	s += "for ((i=0;i<900;i++)); do\n if sudo -n systemctl is-failed --quiet pulse-docker-prepare; then exit 1; fi\n if sudo -n journalctl -u pulse-docker-prepare --no-pager -o cat | grep -q '^PULSE_DOCKER_ENGINE_READY '; then sudo -n journalctl -u pulse-docker-prepare --no-pager -o cat | grep '^PULSE_DOCKER_ENGINE_READY '; exit 0; fi\n sleep 1\ndone\nexit 1\n"
+	s += fmt.Sprintf("sudo -n systemd-run --no-block --unit=pulse-docker-prepare --service-type=oneshot --property=RemainAfterExit=yes /bin/bash /var/lib/pulse-docker/prepare.sh %s %d; fi\n", shell(profile.EngineVersion), profile.DiskGiB)
+	if wait {
+		s += "for ((i=0;i<900;i++)); do\n if sudo -n systemctl is-failed --quiet pulse-docker-prepare; then exit 1; fi\n if sudo -n journalctl -u pulse-docker-prepare --no-pager -o cat | grep -q '^PULSE_DOCKER_ENGINE_READY '; then sudo -n journalctl -u pulse-docker-prepare --no-pager -o cat | grep '^PULSE_DOCKER_ENGINE_READY '; exit 0; fi\n sleep 1\ndone\nexit 1\n"
+	} else {
+		s += "if sudo -n systemctl is-failed --quiet pulse-docker-prepare; then exit 1; fi\nsudo -n journalctl -u pulse-docker-prepare --no-pager -o cat | grep '^PULSE_DOCKER_ENGINE_READY ' || true\n"
+	}
 	// Replace Orchard's login shell: Ubuntu's .bash_logout can fail without a TTY.
 	return "exec /bin/bash <<'PULSE_DOCKER_STARTUP'\n" + s + "PULSE_DOCKER_STARTUP\n", nil
 }
@@ -141,11 +148,6 @@ func (p *Provider) newPair(g config.SlotGroup, slot string, template *SlotRecord
 			return nil, nil
 		}
 		pair.Primary.Image = image.LocalName
-		script, e := p.engineStartup(ep, nil, nil)
-		if e != nil {
-			return nil, e
-		}
-		pair.Primary.StartupScript.Content = script
 	} else {
 		if template == nil || template.Phase != "ready" {
 			return nil, nil
@@ -154,6 +156,7 @@ func (p *Provider) newPair(g config.SlotGroup, slot string, template *SlotRecord
 		if engineImage == nil || engineImage.Phase != "ready" {
 			return nil, nil
 		}
+		pair.DockerRequested = true
 		pair.Primary.Image = template.LocalName
 		used := map[int]bool{}
 		for _, v := range p.Store.data.Pairs {
@@ -260,7 +263,11 @@ func (p *Provider) configurePrimary(ctx context.Context, pair *PairRecord) error
 	if e != nil {
 		return e
 	}
-	content := "set -eu\nset +x\n" + fileScript("/var/lib/pulse-docker/primary.sh", script, linux) + "sudo -n /bin/bash /var/lib/pulse-docker/primary.sh\n"
+	mode := "docker"
+	if !pair.DockerRequested {
+		mode = "plain"
+	}
+	content := "set -eu\nset +x\nsudo -n install -d -m 700 /var/lib/pulse-docker\n" + fileScript("/var/lib/pulse-docker/primary.sh", script, linux) + "sudo -n /bin/bash /var/lib/pulse-docker/primary.sh " + mode + "\n"
 	_, e = p.Backend.(dockerBackend).Exec(ctx, pair.Primary.Name, pair.PrimaryUID, []byte(content))
 	return e
 }
@@ -268,11 +275,15 @@ func (p *Provider) primaryReadyDetail(ctx context.Context, pair *PairRecord) err
 	b := p.base(pair.Base)
 	g := p.dockerGroup(pair.SlotID)
 	// Both the OS/resource facts and the exact engine identity must be observed.
-	code := fmt.Sprintf(`import json,os,platform,subprocess
+	code := `import json,os,platform,subprocess
 r=lambda *a:subprocess.check_output(a,text=True).strip()
 assert r('/opt/pulse-tart/bin/c2j','version')
-assert r('sudo','-n','-u','pulseworker','/opt/pulse-tart/bin/docker','--host','unix:///var/run/docker.sock','info','--format','{{.ID}}') == %s
-`, strconv.Quote(pair.EngineID))
+`
+	if pair.DockerRequested {
+		code += fmt.Sprintf("assert r('sudo','-n','-u','pulseworker','/opt/pulse-tart/bin/docker','--host','unix:///var/run/docker.sock','info','--format','{{.ID}}') == %s\n", strconv.Quote(pair.EngineID))
+	} else {
+		code += "assert not os.path.exists('/var/run/docker.sock')\nassert subprocess.call(['systemctl','is-active','--quiet','docker.service','docker.socket','containerd.service']) != 0\n"
+	}
 	if b.Architecture() == "amd64" {
 		code += "assert platform.machine() == 'x86_64'\n"
 	} else {
@@ -596,13 +607,19 @@ func (p *Provider) reconcilePairs(ctx context.Context) error {
 		}
 		var observationCause error
 		switch pair.Phase {
-		case "primary-dispatch", "configuring":
-			if pair.Engine.Name == "" {
-				ready, e := p.pairEngineReady(ctx, pair)
-				if e != nil {
-					return e
+		case "primary-dispatch", "configuring", "docker-starting":
+			if pair.Engine.Name == "" && pair.DockerRequested {
+				script, err := p.engineScript(p.Config.Engine(pair.Profile), nil, nil, false)
+				if err != nil {
+					return err
 				}
-				if !ready {
+				out, err := b.Exec(ctx, pair.Primary.Name, pair.PrimaryUID, []byte(script))
+				if err != nil {
+					p.preparation("pair:"+pair.ID, backendError("start Linux Docker", err))
+					continue
+				}
+				pair.EngineID = engineIdentity(string(out))
+				if pair.EngineID == "" {
 					continue
 				}
 			}
@@ -645,35 +662,19 @@ func (p *Provider) reconcilePairs(ctx context.Context) error {
 	if p.Config.Docker == nil {
 		return nil
 	}
-	// Reservations include both VMs of every pair, so independent pairs can
-	// warm concurrently without exceeding job limits or the macOS ceiling.
+	// Only Linux primaries warm automatically, with Docker stopped. macOS
+	// Docker pairs are reserved by an explicit capability request.
 	for _, g := range p.Config.Slots {
 		if p.preferredGroup != "" && time.Now().Before(p.preferUntil) && g.Name != p.preferredGroup {
 			continue
 		}
-		if g.DockerProfile == "" {
-			continue
-		}
-		if templatesPending && p.base(g.Base).OS != "linux" {
+		if g.DockerProfile == "" || p.base(g.Base).OS != "linux" {
 			continue
 		}
 		for i := 1; i <= g.Count; i++ {
 			slot := fmt.Sprintf("%s-%04d", g.Name, i)
 			if p.slotBusy(slot) {
 				continue
-			}
-			if p.base(g.Base).OS != "linux" {
-				s := p.Store.data.Slots[slot]
-				if s == nil || s.Phase != "ready" {
-					continue
-				}
-				v, e := p.Backend.Get(ctx, s.Name)
-				if e != nil {
-					return backendError("Docker template Get", e)
-				}
-				if !p.matchesSlot(s, v) || !suspended(v) {
-					return backendError("Docker template identity or suspension mismatch", nil)
-				}
 			}
 			pair, e := p.newPair(g, slot, p.Store.data.Slots[slot])
 			if e != nil {
@@ -722,7 +723,7 @@ func (p *Provider) submitDocker(ctx context.Context, l api.Launch, hash string) 
 			compatible = true
 			compatibleGroups = append(compatibleGroups, g)
 		}
-		if g.DockerProfile == "" && baseMatches(p.base(g.Base), l) && g.CPU*1000 >= l.CPUMillis && g.MemoryMiB*(1<<20) >= l.MemoryBytes {
+		if (g.DockerProfile == "" || p.base(g.Base).OS != "linux") && baseMatches(p.base(g.Base), l) && g.CPU*1000 >= l.CPUMillis && g.MemoryMiB*(1<<20) >= l.MemoryBytes {
 			ordinary = true
 		}
 	}
@@ -761,7 +762,7 @@ func (p *Provider) submitDocker(ctx context.Context, l api.Launch, hash string) 
 			p.observe("Docker slot %s stale configuration", pair.SlotID)
 			continue
 		}
-		if p.dockerMatch(g, l) {
+		if p.dockerMatch(g, l) && pair.DockerRequested == wants {
 			candidates = append(candidates, pair)
 		} else {
 			p.observe("Docker slot %s configured request fit failed", pair.SlotID)
@@ -814,9 +815,11 @@ func (p *Provider) submitDocker(ctx context.Context, l api.Launch, hash string) 
 			b.Capabilities = append(slices.Clone(b.Capabilities), "docker")
 		}
 		proc := workerProcess(l, b, pair.Primary.CPU, pair.Primary.Memory-512)
-		proc.Env["DOCKER_HOST"] = "unix:///var/run/docker.sock"
-		proc.Env["TESTCONTAINERS_HOST_OVERRIDE"] = "127.0.0.1"
-		proc.Env["TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE"] = "/var/run/docker.sock"
+		if wants {
+			proc.Env["DOCKER_HOST"] = "unix:///var/run/docker.sock"
+			proc.Env["TESTCONTAINERS_HOST_OVERRIDE"] = "127.0.0.1"
+			proc.Env["TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE"] = "/var/run/docker.sock"
+		}
 		proc.Env["TMPDIR"] = proc.WorkingDir + "/work/tmp"
 		payload, _ := json.Marshal(envelope{1, l.LaunchID, proc})
 		sum := sha256.Sum256(payload)
@@ -887,7 +890,117 @@ func (p *Provider) submitDocker(ctx context.Context, l api.Launch, hash string) 
 		p.observeError("Docker room request", err)
 		return p.submission(l.LaunchID, api.Unavailable), true
 	}
+	if wants {
+		if err := p.requestDocker(ctx, l); err != nil {
+			p.observeError("prepare requested Docker capacity", err)
+			return p.submission(l.LaunchID, api.Unavailable), true
+		}
+	}
 	return p.submission(l.LaunchID, api.NoCapacity), true
+}
+
+// PrepareDocker explicitly requests unassigned Docker capacity without a job
+// lease. Internal qualification uses this to inspect engines before handoff;
+// normal runtime admission requests one allocation through Submit instead.
+// It does not change the default reconcile/setup behavior.
+func (p *Provider) PrepareDocker(ctx context.Context, allocation api.Allocation, count int) error {
+	p.Store.mu.Lock()
+	defer p.Store.mu.Unlock()
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	if p.Store.broken {
+		return p.Store.stateError()
+	}
+	if count < 1 || count > p.Config.Capacity() || !slices.Contains(allocation.Capabilities, "docker") {
+		return errors.New("invalid Docker capacity request")
+	}
+	return p.prepareDocker(ctx, api.Launch{Allocation: allocation}, count)
+}
+
+// No lease is retained while preparing requested capability. The controller
+// retries admission after reconciliation has observed readiness.
+func (p *Provider) requestDocker(ctx context.Context, l api.Launch) error {
+	return p.prepareDocker(ctx, l, 1)
+}
+
+func (p *Provider) prepareDocker(ctx context.Context, l api.Launch, count int) error {
+	for _, pair := range p.Store.data.Pairs {
+		if pair.LaunchID == "" && pair.DockerRequested && (l.LaunchID == "" || pair.RequestID == l.LaunchID) && pair.Phase != "gone" && pair.Phase != "reclaiming" && pair.Phase != "quarantine" && pair.ConfigHash == p.dockerHash(p.dockerGroup(pair.SlotID)) && p.dockerMatch(p.dockerGroup(pair.SlotID), l) {
+			count--
+		}
+	}
+	if count <= 0 {
+		return nil
+	}
+	for _, pair := range p.Store.data.Pairs {
+		if pair.Phase == "ready" && pair.LaunchID == "" && !pair.DockerRequested && pair.ConfigHash == p.dockerHash(p.dockerGroup(pair.SlotID)) && p.dockerMatch(p.dockerGroup(pair.SlotID), l) {
+			pair.DockerRequested, pair.Phase, pair.Created = true, "docker-starting", time.Now().UTC()
+			pair.RequestID = l.LaunchID
+			if err := p.Store.save(); err != nil {
+				return err
+			}
+			count--
+			if count == 0 {
+				return nil
+			}
+		}
+	}
+	for _, g := range p.Config.Slots {
+		if p.base(g.Base).OS == "linux" || !p.dockerMatch(g, l) {
+			continue
+		}
+		for i := 1; i <= g.Count; i++ {
+			created, err := p.reserveDockerPair(ctx, g, fmt.Sprintf("%s-%04d", g.Name, i), l.LaunchID)
+			if err != nil {
+				return err
+			}
+			if created {
+				count--
+			}
+			if count == 0 {
+				return nil
+			}
+		}
+	}
+	return nil
+}
+
+func (p *Provider) reserveDockerPair(ctx context.Context, g config.SlotGroup, slot, requestID string) (bool, error) {
+	if p.slotBusy(slot) {
+		return false, nil
+	}
+	s := p.Store.data.Slots[slot]
+	if s == nil || s.Phase != "ready" {
+		return false, nil
+	}
+	v, err := p.Backend.Get(ctx, s.Name)
+	if err != nil {
+		return false, backendError("Docker template Get", err)
+	}
+	if !p.matchesSlot(s, v) || !suspended(v) {
+		return false, backendError("Docker template identity or suspension mismatch", nil)
+	}
+	pair, err := p.newPair(g, slot, s)
+	if err != nil || pair == nil {
+		return false, err
+	}
+	available, err := p.canReserveJobs(ctx, pair.Primary)
+	if err != nil || !available {
+		return false, err
+	}
+	pair.RequestID = requestID
+	p.Store.data.Pairs[pair.ID] = pair
+	return true, p.Store.save()
+}
+
+func engineIdentity(output string) string {
+	for _, line := range strings.Split(output, "\n") {
+		if id, ok := strings.CutPrefix(line, "PULSE_DOCKER_ENGINE_READY "); ok {
+			return strings.TrimSpace(id)
+		}
+	}
+	return ""
 }
 
 func (p *Provider) dockerReadyTimeout() time.Duration {

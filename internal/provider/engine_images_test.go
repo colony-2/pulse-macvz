@@ -30,6 +30,7 @@ func TestDockerReplacementReusesPreparedEngineBase(t *testing.T) {
 	}
 	first.Phase = "reclaiming"
 	for i := 0; i < 30; i++ {
+		requestTestDockerPool(t, p)
 		if err := p.Reconcile(t.Context()); err != nil {
 			t.Fatal(err)
 		}

@@ -11,7 +11,7 @@ import (
 )
 
 // capacityOptions describes job capacity, not image builders or Docker companions.
-// macDocker selects the Docker portion of each version's macOS templates.
+// macDocker optionally limits Docker eligibility; -1 enables every macOS slot.
 type capacityOptions struct {
 	macBase                 string
 	macOS, linux, macDocker int
@@ -26,8 +26,8 @@ func (o capacityOptions) config(owner, stateDir, c2j string, poll, bootstrap tim
 	if o.linux < 0 || o.linux > 1000 {
 		return tart.Config{}, fmt.Errorf("--linux-capacity must be between 0 and 1000")
 	}
-	if o.macDocker < 0 || o.macDocker > o.macOS {
-		return tart.Config{}, fmt.Errorf("--macos-docker-capacity must be between 0 and --macos-capacity")
+	if o.macDocker < -1 || o.macDocker > o.macOS {
+		return tart.Config{}, fmt.Errorf("--macos-docker-capacity must be -1 (all) or between 0 and --macos-capacity")
 	}
 	counts := tart.VMCounts{MacOS: tart.VMCount(o.macOS), Linux: tart.VMCount(o.linux)}
 	if o.totalSet {
@@ -79,6 +79,10 @@ func (o capacityOptions) config(owner, stateDir, c2j string, poll, bootstrap tim
 		name := "standard"
 		if base.Name != macBases[0].Name {
 			name = "mac-" + base.Name
+		}
+		if o.macDocker == -1 {
+			c.Slots = append(c.Slots, tart.SlotGroup{Name: name, Base: base.Name, Count: min(o.macOS, *counts.Total), DockerProfile: engine.Name})
+			continue
 		}
 		c.Slots = append(c.Slots, tart.SlotGroup{Name: name, Base: base.Name, Count: min(o.macOS-o.macDocker, *counts.Total)})
 		if o.macDocker > 0 {

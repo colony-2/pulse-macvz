@@ -100,7 +100,7 @@ sys.exit(code)
 class UpdateImages(unittest.TestCase):
     def setUp(self):
         self.temp=TemporaryDirectory();self.addCleanup(self.temp.cleanup)
-        self.root=Path(self.temp.name);binary=self.root/'bin';binary.mkdir()
+        self.root=Path(self.temp.name).resolve();binary=self.root/'bin';binary.mkdir()
         self.sources=names.names('test','macos-26-arm64','standard',4,8192,2)
         vms={name:dict(Name=name,OS='darwin',CPU=4,Memory=8192,State='stopped' if i==0 else 'suspended',MACAddress=f'old-{i}',MachineID='inherited',Release='old',IP=f'192.0.2.{i+1}') for i,name in enumerate(self.sources)}
         # An already-running job clone must remain unchanged through publication.
@@ -112,7 +112,7 @@ class UpdateImages(unittest.TestCase):
         for tool in ('tart','ssh','scp'):
             path=binary/tool;path.write_text('#!'+sys.executable+'\n'+FAKE);path.chmod(0o755)
         uname=binary/'uname';uname.write_text('#!/bin/bash\nif [[ $1 == -s ]]; then echo Darwin; else echo arm64; fi\n');uname.chmod(0o755)
-        self.env=dict(os.environ,PATH=str(binary)+os.pathsep+os.environ['PATH'],FAKE_TART_STATE=str(self.state),FAKE_VM_FILES='1',TART_HOME=str(self.root/'tart'),PULSE_IMAGE_LOG_DIR=str(self.root/'logs'))
+        self.env=dict(os.environ,PATH=str(binary)+os.pathsep+os.environ['PATH'],FAKE_TART_STATE=str(self.state),FAKE_VM_FILES='1',TART_HOME=str(self.root/'tart'),PULSE_IMAGE_LOG_DIR=str(self.root/'logs'),PULSE_LEGACY_PROVIDERS_DIR=str(self.root/'legacy'))
 
     def run_update(self,*args):
         return subprocess.run(['bash',str(ROOT/'scripts/update-macos-images.sh'),'--owner','test','--slots','2','--c2j','a'*40,*args],env=self.env,capture_output=True,text=True,timeout=60)

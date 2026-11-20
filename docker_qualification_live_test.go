@@ -244,6 +244,11 @@ func (q *qualification) ready() []DockerStatus {
 	lastProgress := time.Now()
 	waitLive(q.t, q.ctx, "two production Docker allocations", limit, func(ctx context.Context) bool {
 		q.reconcile(ctx)
+		// Qualification explicitly requests Docker before inspecting its private
+		// engine identities. Setup itself leaves these templates suspended.
+		if err := q.r.p.PrepareDocker(ctx, api.Allocation{Base: q.cfg.Bases[0].Name, Capabilities: []string{"docker", "git"}, CPUMillis: 1000, MemoryBytes: 2 << 30}, 2); err != nil {
+			q.t.Fatal("request qualification Docker capacity", err)
+		}
 		images, err := q.r.Images()
 		if err != nil {
 			q.t.Fatal(err)

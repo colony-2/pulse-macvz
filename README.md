@@ -1,6 +1,6 @@
 # pulse-tart
 
-A Go library and standalone server implementing [`pulse-provider-api`](https://github.com/colony-2/pulse-provider-api) through local Tart, Orchard, or a cgo-free native VZ provider. Defaults support macOS jobs and Linux jobs with Docker. macOS Docker support adds a private Linux companion and is opt-in. Pulse imports the library and supplies complete job assignments. Use the typed Go API or the Cobra `pulse-tart setup`, `upgrade`, and `server` commands. The server defaults to outbound connections through the published provider plugin SDK; it also exposes the SDK’s inbound mode. See [server CLI setup and options](docs/server-cli.md), including the current upstream macOS inbound restriction.
+A Go library and standalone server implementing [`pulse-provider-api`](https://github.com/colony-2/pulse-provider-api) through local Tart, Orchard, or a cgo-free native VZ provider. Default macOS and Linux slots support Docker when requested by a launch. macOS Docker uses an on-demand private Linux companion; Linux starts its local daemon only for Docker requests. Pulse imports the library and supplies complete job assignments. Use the typed Go API or the Cobra `pulse-tart setup`, `upgrade`, and `server` commands. The server defaults to outbound connections through the published provider plugin SDK; it also exposes the SDK’s inbound mode. See [server CLI setup and options](docs/server-cli.md), including the current upstream macOS inbound restriction.
 
 ## Images and jobs
 
@@ -25,6 +25,7 @@ runtime, err := tart.NewTart(cfg, tart.TartConfig{})
 // runtime, err := tart.NewOrchard(cfg, tart.OrchardConfig{
 //     URL: "https://orchard.example.test", Worker: "mac-worker",
 //     Username: "pulse", Token: tart.Secret(controllerToken),
+//     DockerEndpoint: tart.DockerEndpoint{Address: "192.168.64.1", PortMin: 45000, PortMax: 45099},
 // })
 if err != nil { return err }
 defer runtime.Close()
@@ -197,12 +198,12 @@ Orchard requires configuration-preserving suspended clones and power-state updat
 
 ## Docker capability
 
-The conventional Linux group includes Docker. To enable it for conventional
-macOS groups too, set `Docker: &tart.DockerConfig{}` and supply a worker
-`DockerEndpoint` in the backend options. Explicit groups use `Config.Docker` and
+Conventional Linux and macOS groups support Docker by default. macOS requires
+a worker `DockerEndpoint` (native backends provide defaults; Orchard requires
+an explicit guest-reachable worker address). Explicit groups use `Config.Docker` and
 `SlotGroup.DockerProfile`. The library prepares and verifies unused capacity
-before accepting a lease: one Linux VM for Linux jobs, or a fresh macOS clone
-plus a private Linux Engine. It tracks both native identities through handoff,
+before accepting a lease: Docker requests activate the Linux daemon or restore
+a macOS clone with a private Linux engine. Ordinary requests do neither. It tracks both native identities through handoff,
 reopen and teardown. `DockerAllocations()` exposes operational status.
 
 The native workspace stays private. Build contexts, copies, engine-owned volumes,
@@ -218,7 +219,7 @@ most two macOS VMs plus two Linux engines; run it alone. See the linked guide fo
 resource requirements, coverage and current validation status.
 For Orchard, use `./scripts/test-orchard-docker-qualification.sh` with the
 connection variables documented in the guide; the same VM limit applies.
-macOS Docker remains opt-in. Both backends passed integration and concurrency,
+Earlier Docker implementations passed integration and concurrency,
 recovery, pressure and isolation qualification by November 8, 2026. Orchard
 coverage includes API transport outage and endpoint recreation. Shared Orchard
 daemon termination and physical host power loss were not tested.

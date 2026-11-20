@@ -1,6 +1,7 @@
 # Docker through the provider library
 
-Docker is included in conventional Linux groups and opt-in for macOS. The main library manages provisioning, readiness, handoff
+Conventional macOS and Linux groups are Docker-capable by default. Daemons and
+macOS companions start only for launches requesting the `docker` capability. The main library manages provisioning, readiness, handoff
 and cleanup; applications do not import `experimental/docker` or provision VMs.
 The earlier prototype's successful matrix establishes the architecture. Production
 library integration has its own tests and remaining live qualification gates.
@@ -35,10 +36,13 @@ runtime, err := tart.NewTart(cfg, tart.TartConfig{DockerEndpoint: endpoint})
 
 With omitted slots, each macOS base gets two template positions sharing a
 two-job limit, and the default Linux base gets four positions. Every VM uses
-4 vCPU / 8 GiB. Linux gets the standard Docker profile automatically. Set
-`Docker: &tart.DockerConfig{}` to enable that profile for macOS too; this requires
-a backend `DockerEndpoint`. Linux-only Docker needs no worker endpoint.
-Explicit empty `SlotGroup.DockerProfile` preserves ordinary macOS behavior.
+4 vCPU / 8 GiB. Both operating systems get the standard Docker profile automatically.
+macOS Docker eligibility requires a backend `DockerEndpoint`. Linux-only Docker needs no worker endpoint.
+Explicit empty `SlotGroup.DockerProfile` disables Docker eligibility for that
+macOS group. Docker-eligible macOS slots also accept ordinary jobs without
+creating companions. Warm Linux primaries keep Docker stopped; activation is
+recorded before startup and verified before lease handoff. While activation
+is pending, Submit returns `no_capacity` and retains no lease.
 Profiles add `docker` to discovery for their configured bases,
 including busy/warming/drained groups. Ordinary groups retain their original
 execution facts. Linux requires an Ubuntu 24.04 or 26.04 ARM64 or AMD64 base and a Docker
@@ -134,8 +138,9 @@ survive `Runtime.Close`; run reconciliation again to recover and clean them up.
 
 ## Preparation and jobs
 
-Run `Run` or `Reconcile` in the host application. Image installation and warm
-allocation provisioning happen before admission. A warming or exhausted group
+Run `Run` or `Reconcile` in the host application. Image installation and warm Linux
+worker provisioning happen before admission. macOS templates stay suspended;
+Docker activation begins only after a capability request. A warming or exhausted group
 returns `no_capacity`; no lease waits in an installation queue. `DockerAllocations()`
 reports primary/companion identities and phases without credentials or leases.
 
@@ -147,8 +152,8 @@ Linux workers cold-boot a prepared Nix/c2j base. Linux suspension is not require
 Docker engine packages are installed with apt once during base preparation.
 macOS companions clone a reusable cold Linux source keyed by the registry image
 and engine version; Linux worker bases include the engine during their own
-preparation. Each allocation creates only its private Docker filesystem and
-identities, then starts the installed daemon. Replacement allocations do not run
+preparation. Each Docker-requested allocation creates only its private Docker filesystem
+and identities, then starts the installed daemon. Replacement allocations do not run
 apt. Prepared sources survive controller reopen and normal pool drain;
 `PurgeImages` explicitly removes them. Linux groups sharing a base must select
 the same engine version. The versioned Linux source names cause older bases

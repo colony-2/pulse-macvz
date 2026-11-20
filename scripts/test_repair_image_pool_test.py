@@ -16,7 +16,7 @@ class PoolRepair(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
-        self.home = Path(temporary.name)
+        self.home = Path(temporary.name).resolve()
         self.name = 'pulse-owner-macos-26-arm64-standard-4cpu-8192m-slot-0001'
         self.base = 'pulse-owner-macos-26-arm64-base'
         self.directory = self.home / 'vms' / self.name

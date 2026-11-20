@@ -65,9 +65,24 @@ provider cancels pending imports; completed registry cache entries are reused
 on restart. Import failures are reported by reconciliation and can be retried.
 
 Setup prints the owner, VM home, shared concurrency limits, and every requested
-slot. Progress updates appear on phase changes and at least every ten seconds
-while reconciliation is polling. They show base preparation, guest SSH/command
-stages, snapshot saving, and Docker allocation readiness. Registry imports show
+slot, grouped under **Base images** and **Slots**. By default (`--progress auto`),
+an interactive terminal refreshes changed lines in place as reconciliation polls.
+Redirecting stderr to a file or pipe automatically selects linear output, which
+prints changed rows on phase changes and roughly every ten seconds while polling,
+with a heartbeat when nothing has changed. No cursor controls are written to logs.
+Use `--progress linear` to select this mode in a terminal too:
+
+```sh
+pulse-tart setup --macos-base all --progress linear 2>&1 | tee setup.log
+```
+
+`--progress interactive` requests the in-place display when stderr is a capable
+terminal. Redirected output, `TERM=dumb`, and terminals too small to show the
+whole display fall back to linear output so every slot remains visible. Progress
+mode applies only to the current command and is not saved in provider configuration.
+
+The display shows base preparation, guest SSH/command stages, snapshot saving,
+and Docker allocation readiness. Registry imports show
 compressed bytes read versus the manifest's total, average throughput, and a
 rough transfer ETA. This is not the virtual disk size and the ETA excludes later
 guest installation and snapshot work. Unknown totals, stalled transfers, cache
@@ -149,29 +164,36 @@ submission, and starts a fresh runtime only after the previous session closes.
 | --- | --- | --- |
 | `--macos-base` | `all` | Both `macos-26-arm64` and `macos-15-arm64`; accepts one name or a comma-separated selection |
 | `--macos-capacity` | 2 | Total concurrent macOS job slots, limited to 0–2 |
-| `--linux-capacity`, `-l` | 4 | Linux job VM slots; Docker runs inside each VM |
-| `--macos-docker-capacity`, `-d` | 0 | Templates per macOS version configured with Docker companions, within `--macos-capacity`; running limits stay shared |
+| `--linux-capacity`, `-l` | 4 | Linux job VM slots; Docker starts inside the VM only when requested |
+| `--macos-docker-capacity`, `-d` | -1 (all) | Slots per macOS version eligible for Docker; 0 disables it, a positive count limits eligibility |
 | `--total-capacity`, `-c` | macOS + Linux | Shared job limit; explicitly setting 0 drains all capacity |
 
-For example, `--macos-capacity 2 --macos-docker-capacity 1 --linux-capacity 3`
-configures one ordinary and one Docker-capable macOS template per selected
-version, with shared macOS concurrency of two, and three Linux/Docker slots.
-A Docker-capable macOS slot uses an additional private Linux
-companion. Companions and preparation builders are not job slots. Each job VM
-uses 4 vCPU / 8 GiB; a macOS Docker companion uses another 4 vCPU / 8 GiB.
+All macOS slots support ordinary and Docker-capable launches by default.
+Only a launch carrying the `docker` capability starts a private Linux companion.
+Linux workers warm with Docker software installed but its daemon and socket
+stopped. A Docker request starts the daemon before admission; an ordinary
+request receives no Docker environment variables. Preparation retains no lease:
+the controller retries while the requested Docker environment becomes ready.
+
+`--macos-docker-capacity 1` limits Docker eligibility to one template per version;
+that template can also run an ordinary job. Companions and preparation builders
+are not job slots. Each job VM uses 4 vCPU / 8 GiB; a macOS Docker companion uses
+another 4 vCPU / 8 GiB while allocated.
 
 Each selected macOS version has its own prepared base and suspended templates.
 The running-job limits remain shared: the default creates two templates for
 macOS 26 and two for macOS 15, but runs at most two macOS jobs in total. Setup
-waits for every selected version's templates. Warm macOS Docker allocations also
-share the configured capacity; another version's prepared templates can supply
-allocations as demand changes. Pending template preparation may retire an idle
+waits for every selected version's templates and the warm Linux workers,
+without starting Docker. macOS templates remain suspended until requested. Pending template preparation may retire an idle
 macOS Docker worker when both physical VM positions are occupied; accepted jobs
 are preserved. Linux uses the library's pinned Ubuntu ARM64 base.
 Set either OS capacity to 0 to disable it. Reduced capacity is reconciled without
 terminating accepted work; it can take time to retire occupied allocations.
 
-Existing saved configurations keep their explicit base selection. To add both
+Existing saved configurations keep explicit settings, including the old
+`--macos-docker-capacity 0`. To enable Docker eligibility for every macOS slot,
+run setup/upgrade with `--macos-docker-capacity=-1`. Existing saved configurations
+keep their explicit base selection. To add both
 versions to an existing single-version setup, stop its controller and run:
 
 ```sh

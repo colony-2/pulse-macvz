@@ -167,12 +167,23 @@ func (p *Provider) requestJobRoom(ctx context.Context, l api.Launch) error {
 			if g.Base != base.Name || g.Count == 0 || !baseMatches(base, l) && !p.dockerMatch(g, l) {
 				continue
 			}
-			if g.DockerProfile != "" {
+			if g.DockerProfile != "" && (base.OS == "linux" || slices.Contains(l.Capabilities, "docker")) {
 				if !p.dockerMatch(g, l) {
 					continue
 				}
 			} else if slices.Contains(l.Capabilities, "docker") || g.CPU*1000 < l.CPUMillis || g.MemoryMiB*(1<<20) < l.MemoryBytes {
 				continue
+			}
+			// An idle Docker allocation can be retired for an ordinary request
+			// in the same group. Never stop an accepted job or enable Docker
+			// merely because its source slot advertises the capability.
+			if !slices.Contains(l.Capabilities, "docker") {
+				for _, pair := range p.Store.data.Pairs {
+					if pair.Phase == "ready" && pair.LaunchID == "" && pair.DockerRequested && p.dockerGroup(pair.SlotID).Name == g.Name {
+						pair.Phase = "reclaiming"
+						return p.Store.save()
+					}
+				}
 			}
 			free := false
 			for i := 1; i <= g.Count; i++ {

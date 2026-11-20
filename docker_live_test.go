@@ -104,6 +104,9 @@ func TestLiveDockerLibrary(t *testing.T) {
 		if e := r.Reconcile(ctx); e != nil {
 			t.Logf("reconcile: %v", e)
 		}
+		if err := r.p.PrepareDocker(ctx, api.Allocation{Base: base.Name, Capabilities: []string{"docker"}}, 1); err != nil {
+			t.Fatal("request Docker capacity", err)
+		}
 		images, _ := r.Images()
 		for _, im := range images {
 			if im.Phase == "failed" || im.Phase == "quarantine" {

@@ -29,12 +29,13 @@ func mixedCountFixture(t *testing.T, macDocker bool) (*Provider, *dockerFake) {
 func warmCountPools(t *testing.T, p *Provider, want int) {
 	t.Helper()
 	for range 80 {
+		requestTestDockerPool(t, p)
 		if err := p.Reconcile(t.Context()); err != nil {
 			t.Fatal(err)
 		}
 		n := 0
 		for _, pair := range p.Store.data.Pairs {
-			if pair.Phase == "ready" {
+			if pair.Phase == "ready" && pair.DockerRequested {
 				n++
 			}
 		}

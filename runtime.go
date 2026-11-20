@@ -347,7 +347,8 @@ func (r *Runtime) PurgeImages(ctx context.Context) error {
 	return r.p.PurgeImages(ctx)
 }
 
-// DockerAllocations reports warming, running and reclaiming Docker resources.
+// DockerAllocations reports Linux workers and requested macOS Docker pairs,
+// including their preparation, execution and reclamation phases.
 func (r *Runtime) DockerAllocations() ([]DockerStatus, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()

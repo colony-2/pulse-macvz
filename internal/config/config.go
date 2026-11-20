@@ -104,7 +104,7 @@ type SlotGroup struct {
 	Base          string
 	CPU           int64  // Zero or 4; other sizes are currently unsupported.
 	MemoryMiB     int64  // Zero or 8192; other sizes are currently unsupported.
-	DockerProfile string // Empty disables Docker for this group.
+	DockerProfile string // Enables Docker eligibility; activation requires a launch requesting docker. Empty disables it.
 }
 
 // Orchard adds connectivity and placement only; the execution configuration is shared.

@@ -296,7 +296,7 @@ func (p *Provider) plan(l compute.Launch) (backend.Spec, compute.Status) {
 	cpu := (l.CPUMillis + 999) / 1000
 	memory := (l.MemoryBytes + (1 << 20) - 1) / (1 << 20)
 	for _, g := range p.Config.Slots {
-		if g.DockerProfile != "" {
+		if g.DockerProfile != "" && p.base(g.Base).OS == "linux" {
 			continue
 		}
 		b := p.base(g.Base)
