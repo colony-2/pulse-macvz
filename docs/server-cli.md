@@ -10,6 +10,45 @@ Long flags use `--full-name`; short aliases use one character, such as
 options. All three commands share a versioned JSON configuration file; transport
 uses the published SDK unchanged.
 
+## Embed setup and upgrade in Pulse
+
+Import the public `cli` package and attach fresh commands to your Cobra tree:
+
+```go
+import (
+    providercli "github.com/colony-2/pulse-tart/cli"
+    "github.com/spf13/cobra"
+)
+
+func addProviderCommands(root *cobra.Command) {
+    vz := &cobra.Command{Use: "vz", Short: "Manage local VM capacity"}
+    vz.AddCommand(providercli.NewSetupCommand(), providercli.NewUpgradeCommand())
+    root.AddCommand(vz)
+}
+```
+
+This exposes `pulse vz setup` and `pulse vz upgrade` with the same flags,
+configuration loading/saving, validation, progress display, and lifecycle as
+the standalone commands. No option definitions or preparation logic need to be
+copied. `cli.NewCommand(version)` also constructs the complete standalone CLI.
+
+Commands inherit the parent's context, output streams, version, and ordinary
+Cobra persistent hooks. Execute the root with a signal-cancelled context for
+Ctrl-C handling. Parent persistent flags are not read from or written to the
+provider configuration. Provider flags are local to these commands; `--config`
+selects the provider configuration, defaulting to `~/.pulse/provider.json`.
+
+Use the same `--owner`, storage paths, and capacity settings as Pulse's runtime;
+embedding does not automatically read Pulse's own runtime configuration. The
+default owner remains `server`. Stop that pool's controller before running
+maintenance: the existing owner lock prevents concurrent management.
+
+If the current executable is the VZ runner, keep `tart.RunnerMain()` at the start
+of `main`, before Cobra or other application initialization, and build/sign the
+host executable with its virtualization entitlement. Alternatively, pass
+`--runner` pointing to an installed signed runner. Embedding commands does not
+change the VZ signing or Local Network permission requirements.
+
 ## Install and prepare
 
 Build and install in Go's normal binary directory (`go env GOBIN`, or the

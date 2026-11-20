@@ -39,9 +39,18 @@ func NewCommand(version string) *cobra.Command {
 func newCommand(run func(context.Context, serverOptions) error) *cobra.Command {
 	root := &cobra.Command{Use: "pulse-tart", Short: "Run a Pulse VM provider", SilenceUsage: true, SilenceErrors: true}
 	root.AddCommand(providerCommand("server", "Serve a VM provider through Pulse's outbound or inbound plugin", run))
-	root.AddCommand(providerCommand("setup", "Save configuration and prepare the configured VM capacity", runSetup))
-	root.AddCommand(providerCommand("upgrade", "Drain accepted work and rebuild this owner's prepared images", runUpgrade))
+	root.AddCommand(NewSetupCommand(), NewUpgradeCommand())
 	return root
+}
+
+// NewSetupCommand constructs the shared setup subcommand.
+func NewSetupCommand() *cobra.Command {
+	return providerCommand("setup", "Save configuration and prepare the configured VM capacity", runSetup)
+}
+
+// NewUpgradeCommand constructs the shared upgrade subcommand.
+func NewUpgradeCommand() *cobra.Command {
+	return providerCommand("upgrade", "Drain accepted work and rebuild this owner's prepared images", runUpgrade)
 }
 
 func providerCommand(name, short string, run func(context.Context, serverOptions) error) *cobra.Command {

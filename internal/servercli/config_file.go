@@ -62,7 +62,7 @@ func loadConfiguration(cmd *cobra.Command, o *serverOptions) error {
 		return fmt.Errorf("configuration must contain a single version 1 flags object")
 	}
 	for name, value := range saved.Flags {
-		flag := cmd.Flags().Lookup(name)
+		flag := cmd.LocalNonPersistentFlags().Lookup(name)
 		if flag == nil || !persistedFlag(name) {
 			return fmt.Errorf("unsupported saved option --%s", name)
 		}
@@ -81,7 +81,7 @@ func loadConfiguration(cmd *cobra.Command, o *serverOptions) error {
 
 func saveConfiguration(cmd *cobra.Command, path string) error {
 	saved := savedConfiguration{Version: 1, Flags: map[string]string{}}
-	cmd.Flags().VisitAll(func(f *pflag.Flag) {
+	cmd.LocalNonPersistentFlags().VisitAll(func(f *pflag.Flag) {
 		if !persistedFlag(f.Name) || f.Name == "total-capacity" && !f.Changed {
 			return
 		}

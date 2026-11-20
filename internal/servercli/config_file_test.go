@@ -1,13 +1,61 @@
 package servercli
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+
+	"github.com/spf13/cobra"
 )
+
+func TestEmbeddedConfigurationExcludesParentFlags(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	path := filepath.Join(t.TempDir(), "provider.json")
+	type contextKey struct{}
+	ctx := context.WithValue(context.Background(), contextKey{}, "host context")
+	var output bytes.Buffer
+	var hostToken string
+	hookCalled, runCalled := false, false
+	root := &cobra.Command{Use: "pulse", Version: "host-version", PersistentPreRun: func(*cobra.Command, []string) { hookCalled = true }}
+	root.PersistentFlags().StringVar(&hostToken, "host-token", "", "Host-only option")
+	root.SetErr(&output)
+	setup := providerCommand("setup", "test", func(got context.Context, o serverOptions) error {
+		runCalled = true
+		if !hookCalled || got.Value(contextKey{}) != "host context" || o.log != &output || o.version != "host-version" {
+			t.Fatal("host hook, context, output, or version was lost")
+		}
+		return nil
+	})
+	root.AddCommand(setup)
+	root.SetArgs([]string{"setup", "--config", path, "--host-token", "host-secret"})
+	if err := root.ExecuteContext(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if !runCalled || hostToken != "host-secret" {
+		t.Fatal("embedded command or host flag did not run")
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "host-token") || strings.Contains(string(data), "host-secret") {
+		t.Fatal("provider configuration persisted a host flag")
+	}
+	if !strings.Contains(output.String(), "Configuration saved:") {
+		t.Fatal("configuration output did not reach host stream")
+	}
+	if err := os.WriteFile(path, []byte(`{"version":1,"flags":{"host-token":"override"}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := loadConfiguration(setup, &serverOptions{configPath: path}); err == nil || !strings.Contains(err.Error(), "unsupported saved option --host-token") {
+		t.Fatalf("provider configuration may alter host flags: %v", err)
+	}
+}
 
 func TestInstalledConfigurationRoundTrip(t *testing.T) {
 	home := t.TempDir()
