@@ -266,6 +266,9 @@ func (f *TartDiagnosticFixture) serve(w http.ResponseWriter, r *http.Request) {
 		}
 		name, _ := v["name"].(string)
 		role := "job"
+		if strings.HasSuffix(name, "-base") {
+			role = "engine-base"
+		}
 		if strings.HasSuffix(name, "-engine") {
 			role = "engine"
 		}
@@ -279,6 +282,10 @@ func (f *TartDiagnosticFixture) serve(w http.ResponseWriter, r *http.Request) {
 		v["powerState"] = "running"
 		v["status"] = "running"
 		v["conditions"] = []any{map[string]any{"type": "running", "state": "true"}}
+		if role == "engine-base" {
+			v["powerState"], v["status"] = "stopped", "failed"
+			v["conditions"] = []any{map[string]any{"type": "running", "state": "false"}}
+		}
 		f.objects[name] = v
 		f.roles[name] = role
 		if f.scenario == "create" && role == "job" {
@@ -297,6 +304,10 @@ func (f *TartDiagnosticFixture) serve(w http.ResponseWriter, r *http.Request) {
 	}
 	if strings.HasSuffix(path, "/events") {
 		f.record("GET", "events-"+role)
+		if role == "engine-base" {
+			json.NewEncoder(w).Encode([]map[string]string{{"payload": "PULSE_BASE_READY"}})
+			return
+		}
 		json.NewEncoder(w).Encode([]map[string]string{{"payload": "PULSE_DOCKER_ENGINE_READY fixture-engine-id"}})
 		return
 	}

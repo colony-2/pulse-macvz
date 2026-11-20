@@ -150,6 +150,10 @@ func (p *Provider) newPair(g config.SlotGroup, slot string, template *SlotRecord
 		if template == nil || template.Phase != "ready" {
 			return nil, nil
 		}
+		engineImage := p.Store.data.Images[p.engineBaseName(ep)]
+		if engineImage == nil || engineImage.Phase != "ready" {
+			return nil, nil
+		}
 		pair.Primary.Image = template.LocalName
 		used := map[int]bool{}
 		for _, v := range p.Store.data.Pairs {
@@ -174,7 +178,7 @@ func (p *Provider) newPair(g config.SlotGroup, slot string, template *SlotRecord
 		if e != nil {
 			return nil, e
 		}
-		pair.Engine = p.sourceSpec(config.Base{OS: "linux", Image: ep.Image, SSHUsername: ep.SSHUsername, SSHPassword: ep.SSHPassword}, ep.CPU, ep.MemoryMiB)
+		pair.Engine = p.sourceSpec(config.Base{OS: "linux", Image: engineImage.LocalName, SSHUsername: ep.SSHUsername, SSHPassword: ep.SSHPassword}, ep.CPU, ep.MemoryMiB)
 		pair.Engine.Name = "pulse-" + p.Config.Scope()[:12] + "-" + pair.ID + "-engine"
 		pair.Engine.StartupScript.Content, e = p.engineStartup(ep, host, clientPub)
 		if e != nil {

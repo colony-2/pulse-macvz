@@ -9,8 +9,14 @@ ROOT = Path(__file__).resolve().parent.parent
 
 
 class EngineVersionSelection(unittest.TestCase):
+    def test_allocation_does_not_install_software(self):
+        script = (ROOT / 'scripts/docker-engine.sh').read_text()
+        self.assertNotIn('apt-get', script)
+        self.assertNotIn('apt-cache', script)
+        self.assertIn('Prepared Docker base missing engine', script)
+
     def test_supported_guest_releases(self):
-        guard = next(line for line in (ROOT / 'scripts/docker-engine.sh').read_text().splitlines()
+        guard = next(line for line in (ROOT / 'scripts/prepare-docker-engine.sh').read_text().splitlines()
                      if line.startswith('[[ $ID =='))
         for distro, version, accepted in [('ubuntu', '24.04', True), ('ubuntu', '26.04', True),
                                           ('ubuntu', '22.04', False), ('ubuntu', '26.10', False),
@@ -22,7 +28,7 @@ class EngineVersionSelection(unittest.TestCase):
                 self.assertEqual(result.returncode == 0, accepted, result.stderr)
 
     def test_large_package_inventory_does_not_sigpipe(self):
-        line = next(line.strip() for line in (ROOT / 'scripts/docker-engine.sh').read_text().splitlines()
+        line = next(line.strip() for line in (ROOT / 'scripts/prepare-docker-engine.sh').read_text().splitlines()
                     if line.strip().startswith('selected=$(apt-cache'))
         with TemporaryDirectory() as tmp:
             binary = Path(tmp) / 'apt-cache'

@@ -5,6 +5,7 @@ set +x
 [[ $(uname -s) == Linux && ( $(uname -m) == aarch64 || $(uname -m) == x86_64 ) && $EUID == 0 ]]
 bundle=$1
 expected=$3
+engine_version=${4:-}
 . /etc/os-release
 [[ $ID == ubuntu && $VERSION_ID == "$expected" ]]
 if [[ ${PULSE_LINUX_BUILD_SERVICE:-0} != 1 ]]; then
@@ -18,7 +19,7 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 Environment=PULSE_LINUX_BUILD_SERVICE=1
-ExecStart=/bin/bash /var/lib/pulse-tart-build/prepare-base-linux.sh /var/lib/pulse-tart-build $2 $3
+ExecStart=/bin/bash /var/lib/pulse-tart-build/prepare-base-linux.sh /var/lib/pulse-tart-build $2 $3 $engine_version
 TimeoutStartSec=$2
 StandardOutput=append:/var/log/pulse-tart-build.log
 StandardError=append:/var/log/pulse-tart-build.log
@@ -43,6 +44,9 @@ printf 'experimental-features = nix-command flakes\nfilter-syscalls = false\n' >
 systemctl restart nix-daemon
 /bin/bash "$bundle/resolve-c2j-vendor.sh" "$bundle"
 nix build --no-write-lock-file --out-link /opt/pulse-tart "$bundle#$(cat "$bundle/profile")"
+if [[ -n $engine_version ]]; then
+ /bin/bash "$bundle/prepare-docker-engine.sh" "$engine_version"
+fi
 id pulseworker >/dev/null 2>&1 || useradd --uid 55050 --user-group --create-home --shell /bin/bash pulseworker
 [[ $(id -u pulseworker) == 55050 && $(id -g pulseworker) == 55050 ]]
 install -d -m 700 -o pulseworker -g pulseworker /home/pulseworker /home/pulseworker/work /home/pulseworker/work/tmp

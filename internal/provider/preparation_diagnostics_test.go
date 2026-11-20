@@ -73,7 +73,7 @@ func TestDiagnosticDockerPrimaryPreparationCauseAfterEngineGet(t *testing.T) {
 	if e := p.Reconcile(t.Context()); e != nil {
 		t.Fatal(e)
 	}
-	diagnosticCalls(t, d, "List", "Get:base", "Get:template", "Get:primary", "Get:engine")
+	diagnosticCalls(t, d, "List", "Get:base", "Get:base", "Get:template", "Get:primary", "Get:engine")
 	t.Logf("after missing primary and successful engine Get: phase=%s retained=%d", pair.Phase, len(p.preparationCauses))
 	diagnosticSubmit(t, p, dockerLaunch(), api.NoCapacity, "earlier preparation observation", diagnosticRaw)
 }

@@ -23,7 +23,9 @@ def summarize(out, exit_code, backend="tart"):
     passed = passed and not any(e.get('Action') == 'fail' for e in events)
     required = CHECKS if backend != 'orchard' else tuple(k for k in CHECKS if k != 'worker_endpoint_sigkill') + ('orchard_api_outage', 'orchard_endpoint_recreation')
     checks = {key: evidence.get('checks', {}).get(key) is True for key in required}
-    identities = evidence.get('identities', [])
+    identities = evidence.get('identities') or []
+    if not isinstance(identities, list):
+        raise ValueError('identities must be a list')
     distinct = len(identities) == 6 and all(len({i.get(key) for i in identities}) == 6
                  and all(i.get(key) for i in identities)
                  for key in ('primary_uid', 'engine_id', 'client_key_sha256', 'host_key_sha256'))

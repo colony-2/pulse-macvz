@@ -248,6 +248,16 @@ func (r *liveReport) capture(t *testing.T, ctx context.Context, kind string, con
 		}
 		r.write(t, fmt.Sprintf("endpoint-diagnostics-%d.json", time.Now().UnixNano()), data)
 	}
+	if data, err := runtime.DeliveryObservations(ctx); err == nil {
+		r.write(t, fmt.Sprintf("delivery-diagnostics-%d.json", time.Now().UnixNano()), data)
+	} else {
+		t.Logf("delivery diagnostics: %v", err)
+	}
+	if data, err := runtime.DockerAllocations(); err == nil {
+		r.write(t, fmt.Sprintf("allocation-diagnostics-%d.json", time.Now().UnixNano()), data)
+	} else {
+		t.Logf("allocation diagnostics: %v", err)
+	}
 	journal, err := readLiveState(runtime, stateDir)
 	if err != nil {
 		t.Logf("VM properties diagnostics: %v", err)
@@ -318,7 +328,11 @@ func (r *liveReport) capture(t *testing.T, ctx context.Context, kind string, con
 			}
 		}
 		if !v.Stopped() {
-			logs, e := testGuestExec(ctx, kind, connection, v, `for f in /var/log/pulse-tart-build.log /var/log/pulse-tart-base.log /var/log/pulse-tart-docker.log /var/tmp/pulse-docker-contract.log /var/log/pulse-tart-template.log /var/log/pulse-tart-bootstrap.log /var/log/pulse-tart-guest.log /var/log/pulse-fixture.log /var/db/pulse-tart/worker.log; do if sudo -n test -f "$f"; then printf '\n%s\n' "$f"; sudo -n tail -c 16000 "$f"; fi; done`)
+			logs, e := testGuestExec(ctx, kind, connection, v, `for f in /var/log/pulse-tart-build.log /var/log/pulse-tart-base.log /var/log/pulse-tart-docker.log /var/tmp/pulse-docker-contract.log /var/log/pulse-tart-template.log /var/log/pulse-tart-bootstrap.log /var/log/pulse-tart-guest.log /var/log/pulse-fixture.log /var/db/pulse-tart/worker.log; do if sudo -n test -f "$f"; then printf '\n%s\n' "$f"; sudo -n tail -c 16000 "$f"; fi; done
+if command -v systemctl >/dev/null 2>&1; then
+ sudo -n systemctl show pulse-docker-prepare.service -p LoadState -p ActiveState -p SubState -p Result -p ExecMainStatus || true
+ sudo -n journalctl -u pulse-docker-prepare.service --no-pager -o cat -n 160 | tail -c 32000 || true
+fi`)
 			if e == nil {
 				d.GuestLogs = string(logs)
 			} else {

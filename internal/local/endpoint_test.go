@@ -4,12 +4,71 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
+
+func TestEngineEndpointRequiresUpstreamSSH(t *testing.T) {
+	for _, tc := range []struct {
+		name, reply string
+		wantError   bool
+	}{
+		{"reachable engine", "SSH-2.0-OpenSSH_9.6\r\n", false},
+		{"bridge closes denied upstream", "", true},
+		{"wrong service", "HTTP/1.1 200 OK\r\n", true},
+		{"incomplete banner", "SSH-2.0-incomplete", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			listener, err := net.Listen("tcp4", "127.0.0.1:0")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer listener.Close()
+			go func() {
+				conn, err := listener.Accept()
+				if err == nil {
+					defer conn.Close()
+					io.WriteString(conn, tc.reply)
+				}
+			}()
+			err = probeEngineEndpoint(t.Context(), listener.Addr().(*net.TCPAddr).Port)
+			if (err != nil) != tc.wantError {
+				t.Fatalf("probe = %v; want error %t", err, tc.wantError)
+			}
+		})
+	}
+}
+
+func TestEngineEndpointProbeHonorsCancellation(t *testing.T) {
+	listener, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	go func() {
+		conn, err := listener.Accept()
+		if err == nil {
+			defer conn.Close()
+			cancel()
+			io.Copy(io.Discard, conn)
+		}
+	}()
+	start := time.Now()
+	if err := probeEngineEndpoint(ctx, listener.Addr().(*net.TCPAddr).Port); err == nil {
+		t.Fatal("stalled upstream was ready")
+	}
+	if time.Since(start) > time.Second {
+		t.Fatal("probe did not honor cancellation")
+	}
+}
 
 func missingService(t *testing.T) error {
 	t.Helper()

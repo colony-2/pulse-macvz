@@ -107,6 +107,14 @@ class QualificationReport(unittest.TestCase):
         self.jobs.pop()
         self.assertEqual(self.result(), 'incomplete')
 
+    def test_early_failure_with_null_identities_keeps_stage_report(self):
+        self.evidence.update(backend='vz', checks={}, identities=None)
+        self.jobs = []
+        self.assertEqual(self.result(exit_code=1, backend='vz'), 'incomplete')
+        result = report.summarize(self.root, 1, 'vz')
+        self.assertEqual(result['scope'], 'vz-production-docker-qualification')
+        self.assertFalse(any(result['checks'].values()))
+
 
 class QualificationDriver(unittest.TestCase):
     def test_failed_preconditions_and_missing_live_evidence_are_archived(self):

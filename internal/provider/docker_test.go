@@ -87,7 +87,7 @@ func dockerFixture(t *testing.T, linux bool) (*Provider, *dockerFake) {
 		p.Config.Bases[0].OS = "linux"
 		p.Config.Bases[0].OSVersion = "24.04"
 	}
-	p.Assets = fstest.MapFS{"scripts/docker-engine.sh": &fstest.MapFile{Data: []byte("engine installer")}, "scripts/docker-primary.sh": &fstest.MapFile{Data: []byte("primary setup")}}
+	p.Assets = fstest.MapFS{"scripts/prepare-docker-engine.sh": &fstest.MapFile{Data: []byte("base engine installer")}, "scripts/docker-engine.sh": &fstest.MapFile{Data: []byte("engine installer")}, "scripts/docker-primary.sh": &fstest.MapFile{Data: []byte("primary setup")}}
 	return p, d
 }
 func readyDocker(t *testing.T, p *Provider) *PairRecord {

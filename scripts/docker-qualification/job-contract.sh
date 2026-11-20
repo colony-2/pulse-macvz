@@ -1,6 +1,10 @@
 #!/bin/bash
 # Runs inside a real c2j job as pulseworker. Identical names/ports in both VMs.
 set -euo pipefail
+log=/var/tmp/pulse-docker-contract.log
+(umask 077; : > "$log")
+exec > >(tee "$log") 2>&1
+trap 'status=$?; printf "Qualification command failed at line %s (exit %s)\n" "$LINENO" "$status" >&2' ERR
 marker=$(cat /opt/pulse-docker/qualification-marker)
 export DOCKER_HOST=unix:///var/run/docker.sock
 for name in qualification-service qualification-pressure qualification-oom; do

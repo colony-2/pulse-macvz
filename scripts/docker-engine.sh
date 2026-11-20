@@ -9,14 +9,10 @@ umask 077
 root=/var/lib/pulse-docker
 version=$1
 disk=$2
-export DEBIAN_FRONTEND=noninteractive
+# Software is installed once in the reusable base, never during allocation.
 if ! command -v docker >/dev/null || [[ $(docker --version) != *" $version,"* ]]; then
- apt-get update
- # Consume all apt-cache output: exiting awk early can SIGPIPE apt-cache and
- # fail preparation under pipefail when the repository lists many versions.
- selected=$(apt-cache madison docker.io | awk -v v="$version" '!found && $3 ~ "^([0-9]+:)?" v "([+~.-]|$)" {print $3;found=1}')
- [[ -n $selected ]]
- apt-get install -y "docker.io=$selected" docker-buildx docker-compose-v2 openssh-server e2fsprogs
+ echo "Prepared Docker base missing engine $version" >&2
+ exit 1
 fi
 # A failed preparation may retry on this same unused allocation. Never wipe it.
 if [[ ! -f $root/disk-ready ]]; then

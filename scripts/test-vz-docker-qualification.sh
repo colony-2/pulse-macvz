@@ -16,8 +16,11 @@ python3 scripts/test-report.py snapshot "$out"
 { date -u; git rev-parse HEAD; go version; uname -sm; } > "$out/environment.log" 2>&1
 cd "$out/source"
 export CGO_ENABLED=0 GOWORK=off
-export PULSE_VZ_HOME="$out/home" PULSE_VZ_RUNNER="$out/pulse-vz"
+export PULSE_VZ_HOME="$out/home"
+provided_runner=${PULSE_VZ_RUNNER:-}
+export PULSE_VZ_RUNNER=${provided_runner:-"$out/pulse-vz"}
 export PULSE_VZ_PREPARED_BASE="${1:-}" PULSE_TEST_OUTPUT_DIR="$out"
+export PULSE_VZ_TEST_CACHE=${PULSE_VZ_TEST_CACHE-"$root/.local/vz-qualification-cache"}
 export PULSE_TEST_QUALIFICATION_BACKEND=vz
 export PULSE_TEST_ENGINE_WORKER_ADDRESS=${PULSE_TEST_ENGINE_WORKER_ADDRESS:-192.168.64.1}
 unset PULSE_TEST_BACKEND PULSE_TEST_DOCKER_LIBRARY PULSE_TEST_DOCKER_QUALIFICATION PULSE_QUALIFICATION_CONTROLLER
@@ -28,7 +31,18 @@ assert shutil.disk_usage(sys.argv[1]).free >= 40*2**30, 'Need at least 40 GiB fr
 PY
 then cat "$out/preflight.log" >&2; status=2; fi
 if [[ $status == 0 ]]; then
-  bash scripts/build-vz-runner.sh "$PULSE_VZ_RUNNER" > "$out/build.log" 2>&1 || status=2
+  if [[ -n $provided_runner ]]; then
+    if [[ $provided_runner != /* || ! -x $provided_runner ]]; then
+      echo 'PULSE_VZ_RUNNER must name an absolute executable.' >&2
+      status=2
+    else
+      codesign --verify --strict "$provided_runner" > "$out/build.log" 2>&1 || status=2
+      codesign -dvv -r- "$provided_runner" > "$out/runner-signing.log" 2>&1 || status=2
+      shasum -a 256 "$provided_runner" > "$out/runner-sha256.txt" || status=2
+    fi
+  else
+    bash scripts/build-vz-runner.sh "$PULSE_VZ_RUNNER" > "$out/build.log" 2>&1 || status=2
+  fi
 fi
 if [[ $status == 0 ]]; then
   printf 'Checking launchd before creating any VMs.\n'

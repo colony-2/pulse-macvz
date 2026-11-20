@@ -78,6 +78,24 @@ func TestLinuxDockerVersions(t *testing.T) {
 	}
 }
 
+func TestLinuxGroupsShareOnePreparedEngineVersion(t *testing.T) {
+	c := dockerConfig()
+	c.Bases[0].OS, c.Bases[0].OSVersion = "linux", "24.04"
+	other := c.Docker.Profiles[0]
+	other.Name, other.EngineVersion = "other", "29.2.0"
+	c.Docker.Profiles = append(c.Docker.Profiles, other)
+	g := c.Slots[0]
+	g.Name, g.DockerProfile = "other", "other"
+	c.Slots = append(c.Slots, g)
+	if _, err := Normalize(c); err == nil {
+		t.Fatal("conflicting versions share a Linux base")
+	}
+	c.Docker.Profiles[1].EngineVersion = "29.1.3"
+	if _, err := Normalize(c); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestBaseArchitectures(t *testing.T) {
 	for _, tc := range []struct {
 		os, arch string

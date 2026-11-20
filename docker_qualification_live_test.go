@@ -3,6 +3,7 @@ package tart
 import (
 	"context"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -127,6 +128,7 @@ type qualification struct {
 	checks     map[string]bool
 	identities []map[string]string
 	peakMac    int
+	cache      *vzQualificationCache
 }
 
 func (q *qualification) open() {
@@ -152,7 +154,37 @@ func (q *qualification) execContext(ctx context.Context, p DockerStatus, engine 
 		name, uid = p.Engine, p.EngineUID
 	}
 	// Exec also verifies the UID, including after a controller reopen.
-	return q.ops().Exec(ctx, name, uid, []byte("set -eu\n"+script+"\n"))
+	out, err := q.ops().Exec(ctx, name, uid, qualificationExecScript(script))
+	if err != nil {
+		return out, err
+	}
+	return qualificationExecResult(out)
+}
+
+// Management SSH intentionally omits stderr and unsuccessful command output.
+// Keep failed-command diagnostics in stdout with an explicit status trailer,
+// then restore the command failure here so it cannot turn into a false pass.
+// Successful commands retain stdout alone for callers that parse their output.
+func qualificationExecScript(script string) []byte {
+	encoded := base64.StdEncoding.EncodeToString([]byte("set -eu\n" + script + "\n"))
+	return []byte("diagnostics=$(umask 077; mktemp) || exit 1\ntrap 'rm -f \"$diagnostics\"' EXIT\nprintf '%s' '" + encoded + "' | base64 -d | /bin/bash 2>\"$diagnostics\"\nstatus=$?\nif [ \"$status\" -ne 0 ]; then cat \"$diagnostics\"; fi\nprintf '\\nPULSE_QUALIFICATION_EXIT=%s\\n' \"$status\"\n")
+}
+
+func qualificationExecResult(out []byte) ([]byte, error) {
+	const marker = "\nPULSE_QUALIFICATION_EXIT="
+	text := string(out)
+	i := strings.LastIndex(text, marker)
+	if i < 0 {
+		return out, fmt.Errorf("qualification command status missing")
+	}
+	status, err := strconv.Atoi(strings.TrimSuffix(text[i+len(marker):], "\n"))
+	if err != nil || status < 0 || status > 255 {
+		return out, fmt.Errorf("qualification command status invalid")
+	}
+	if status != 0 {
+		return out[:i], fmt.Errorf("qualification command exited with status %d", status)
+	}
+	return out[:i], nil
 }
 func (q *qualification) run(p DockerStatus, engine bool, script string) string {
 	q.t.Helper()
@@ -167,8 +199,12 @@ func (q *qualification) run(p DockerStatus, engine bool, script string) string {
 func (q *qualification) checkpoint(name string) {
 	q.t.Helper()
 	q.checks[name] = true
-	q.report.write(q.t, "qualification.json", map[string]any{"backend": q.kind, "checks": q.checks, "identities": q.identities, "peak_running_macos": q.peakMac})
+	q.writeProgress()
 	q.t.Log("qualification passed:", name)
+}
+func (q *qualification) writeProgress() {
+	q.t.Helper()
+	q.report.write(q.t, "qualification.json", map[string]any{"backend": q.kind, "checks": q.checks, "identities": q.identities, "peak_running_macos": q.peakMac})
 }
 func (q *qualification) reconcile(ctx context.Context) {
 	q.t.Helper()
@@ -201,7 +237,12 @@ func (q *qualification) reconcile(ctx context.Context) {
 func (q *qualification) ready() []DockerStatus {
 	q.t.Helper()
 	var pairs []DockerStatus
-	waitLive(q.t, q.ctx, "two production Docker allocations", 35*time.Minute, func(ctx context.Context) bool {
+	limit := 35 * time.Minute
+	if q.cache != nil && q.cache.restored {
+		limit = 5 * time.Minute // Sources are ready; no image downloads/builds remain.
+	}
+	lastProgress := time.Now()
+	waitLive(q.t, q.ctx, "two production Docker allocations", limit, func(ctx context.Context) bool {
 		q.reconcile(ctx)
 		images, err := q.r.Images()
 		if err != nil {
@@ -230,9 +271,24 @@ func (q *qualification) ready() []DockerStatus {
 				q.t.Fatal("allocation failed during preparation", p.ID, p.Phase)
 			}
 		}
+		if time.Since(lastProgress) >= 30*time.Second {
+			lastProgress = time.Now()
+			for _, p := range pairs {
+				q.t.Logf("Docker allocation %s: phase=%s", p.Slot, p.Phase)
+			}
+			q.report.write(q.t, "allocation-wait.json", pairs)
+			if diagnostic, ok := q.r.p.Backend.(interface {
+				EndpointDiagnostics(context.Context) (map[string]map[string]string, error)
+			}); ok {
+				if data, err := diagnostic.EndpointDiagnostics(ctx); err == nil {
+					q.report.write(q.t, "endpoint-wait.json", data)
+				}
+			}
+		}
 		return len(pairs) == 2 && pairs[0].Phase == "ready" && pairs[1].Phase == "ready"
 	})
 	sort.Slice(pairs, func(i, j int) bool { return pairs[i].Slot < pairs[j].Slot })
+	q.cacheSources()
 	for _, p := range pairs {
 		facts := strings.Fields(q.run(p, false, `sudo -n /opt/pulse-tart/bin/python3 - <<'PY'
 import hashlib,json,pathlib,subprocess
@@ -266,15 +322,49 @@ PY`))
 func qualificationUpload(path string, data []byte) string {
 	return fmt.Sprintf("printf '%%s' '%s' | base64 -D | sudo -n tee %s >/dev/null\nsudo -n chmod 755 %s\n", base64.StdEncoding.EncodeToString(data), path, path)
 }
+
+// The production guest shuts down shortly after its worker exits. Keep an SSH
+// observer attached before handoff so early failure logs reach the host before
+// that shutdown, without changing production worker/shutdown behavior.
+const qualificationCompletionObserver = `sudo -n /opt/pulse-tart/bin/python3 - <<'PULSE_OBSERVER'
+import json,pathlib,time
+state=pathlib.Path('/var/db/pulse-tart')
+launcher=pathlib.Path('/var/log/pulse-tart-guest.log')
+pathlib.Path('/var/tmp/pulse-qualification-observer-ready').touch()
+def tail(path):
+    try:
+        with path.open('rb') as f:
+            f.seek(0,2); size=f.tell(); f.seek(max(0,size-16000))
+            return f.read(16000).decode(errors='replace')
+    except FileNotFoundError:
+        return ''
+deadline=time.monotonic()+20
+while time.monotonic()<deadline:
+    if (state/'complete').exists() or 'guest operation failed' in tail(launcher):
+        print(json.dumps({'complete':tail(state/'complete'), 'worker_log':tail(state/'worker.log'), 'launcher_log':tail(launcher), 'fixture_log':tail(pathlib.Path('/var/log/pulse-fixture.log')), 'contract_log':tail(pathlib.Path('/var/tmp/pulse-docker-contract.log'))}),flush=True)
+        break
+    time.sleep(.1)
+PULSE_OBSERVER
+`
+
 func (q *qualification) startJobs(pairs []DockerStatus) []api.Launch {
 	q.t.Helper()
+	observeCtx, stopObservers := context.WithCancel(q.ctx)
+	var observers []<-chan struct{}
+	defer func() {
+		stopObservers()
+		for _, done := range observers {
+			<-done
+		}
+	}()
 	contract, err := os.ReadFile("scripts/docker-qualification/job-contract.sh")
 	if err != nil {
 		q.t.Fatal(err)
 	}
 	launches := []api.Launch{}
 	for _, p := range pairs {
-		q.run(p, false, "sudo -n mkdir -p /opt/pulse-docker\n"+qualificationUpload("/opt/pulse-docker/engine-contract.sh", contract)+fmt.Sprintf("printf '%%s' '%s' | sudo -n tee /opt/pulse-docker/qualification-marker >/dev/null\nsudo -n chmod 644 /opt/pulse-docker/qualification-marker\n", p.ID)+strings.ReplaceAll(fixtureStartup, "pulse-orchard-fixture", "pulse-docker-fixture"))
+		q.run(p, false, "sudo -n install -d -m 755 /opt/pulse-docker\n"+qualificationUpload("/opt/pulse-docker/engine-contract.sh", contract)+fmt.Sprintf("printf '%%s' '%s' | sudo -n tee /opt/pulse-docker/qualification-marker >/dev/null\nsudo -n chmod 644 /opt/pulse-docker/qualification-marker\n", p.ID)+strings.ReplaceAll(fixtureStartup, "pulse-orchard-fixture", "pulse-docker-fixture"))
+		q.worker(p, "test -x /opt/pulse-docker/engine-contract.sh\ntest -r /opt/pulse-docker/qualification-marker\ndocker version --format '{{.Server.Version}}'")
 		waitLive(q.t, q.ctx, "qualification JobDB ready", time.Minute, func(ctx context.Context) bool {
 			_, err := q.execContext(ctx, p, false, "curl --max-time 5 -fsS http://127.0.0.1:18881/health")
 			return err == nil
@@ -286,6 +376,23 @@ func (q *qualification) startJobs(pairs []DockerStatus) []api.Launch {
 		q.report.addLease(launch.Lease)
 		launch.LaunchID = "qualification-" + p.ID
 		launch.Allocation = api.Allocation{Base: q.cfg.Bases[0].Name, Capabilities: []string{"docker", "git"}, CPUMillis: 1000, MemoryBytes: 2 << 30}
+		done := make(chan struct{})
+		observers = append(observers, done)
+		go func(p DockerStatus) {
+			defer close(done)
+			// Management SSH limits each command to 30 seconds. Renew the
+			// observer before that limit until readiness or an early exit.
+			for observeCtx.Err() == nil {
+				out, err := q.execContext(observeCtx, p, false, qualificationCompletionObserver)
+				if len(out) > 0 || err != nil {
+					if len(out) > 0 || observeCtx.Err() == nil {
+						q.report.write(q.t, "early-job-"+p.ID+".json", map[string]any{"output": string(out), "error": fmt.Sprint(err)})
+					}
+					return
+				}
+			}
+		}(p)
+		q.run(p, false, "for ((i=0;i<100;i++)); do if test -f /var/tmp/pulse-qualification-observer-ready; then exit 0; fi; sleep .1; done; exit 1")
 		out, err := q.r.Submit(q.ctx, []api.Launch{launch})
 		if err != nil || len(out) != 1 || out[0].Status != api.Accepted {
 			q.t.Fatal("qualification admission failed", err)
@@ -308,6 +415,10 @@ func (q *qualification) startJobs(pairs []DockerStatus) []api.Launch {
 	}
 	for _, p := range pairs {
 		waitLive(q.t, q.ctx, "c2j Docker job started", 4*time.Minute, func(ctx context.Context) bool {
+			v, err := q.r.p.Backend.Get(ctx, p.Primary)
+			if err == nil && v.UID == p.PrimaryUID && v.Stopped() {
+				q.t.Fatalf("primary stopped before job readiness; see early-job-%s.json and VM diagnostics", p.ID)
+			}
 			out, err := q.execContext(ctx, p, false, "cat /var/tmp/qualification-started")
 			return err == nil && strings.TrimSpace(string(out)) == p.ID
 		})
@@ -452,6 +563,27 @@ func (q *qualification) pressure(p, peer DockerStatus, engine bool, script, name
 			if samples < 3 {
 				q.t.Fatal("pressure did not overlap sufficient peer probes", samples)
 			}
+			if name == "cpu_memory_pressure" {
+				id := ""
+				for _, line := range strings.Split(string(r.out), "\n") {
+					if value, ok := strings.CutPrefix(line, "OOM_CONTAINER="); ok {
+						id = value
+					}
+				}
+				decoded, err := hex.DecodeString(id)
+				if err != nil || len(decoded) != 32 {
+					q.t.Fatal("missing or invalid OOM container identity")
+				}
+				verify, err := os.ReadFile("scripts/docker-qualification/verify-oom.py")
+				if err != nil {
+					q.t.Fatal(err)
+				}
+				out, err := q.execContext(ctx, p, true, "sudo -n python3 - "+id+" <<'VERIFY_OOM'\n"+string(verify)+"\nVERIFY_OOM")
+				q.report.write(q.t, "container-oom.json", map[string]any{"output": string(out), "error": fmt.Sprint(err), "docker_oom_killed": strings.Contains(string(r.out), "OOM_KILLED=true")})
+				if err != nil || !strings.Contains(string(out), "CONTAINER_OOM_CONFIRMED") {
+					q.t.Fatalf("container memory-limit enforcement unproven: %v\n%s", err, out)
+				}
+			}
 			q.healthy(p)
 			q.checkpoint(name)
 			return
@@ -515,6 +647,7 @@ func (q *qualification) assertGone(pairs []DockerStatus) {
 }
 func (q *qualification) cleanup() {
 	q.t.Helper()
+	q.writeProgress()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 	q.report.capture(q.t, ctx, q.kind, q.connection, q.r, q.cfg.StateDir)
@@ -571,23 +704,9 @@ func TestLiveDockerQualification(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(t.Context(), 90*time.Minute)
 	defer cancel()
-	dir, err := os.MkdirTemp("", "pulse-docker-qualification-")
-	if err != nil {
-		t.Fatal(err)
-	}
-	engine := DefaultDockerEngine()
-	engine.DiskGiB = 8
-	base := DefaultBases()[0]
-	q := &qualification{t: t, ctx: ctx, report: newLiveReport(t, string(base.SSHPassword)), checks: map[string]bool{}, cfg: Config{OwnerID: fmt.Sprintf("docker-qualification-%d", time.Now().UnixNano()), StateDir: dir, Bases: []Base{base}, C2JVersion: os.Getenv("PULSE_TEST_C2J_VERSION"), Slots: []SlotGroup{{Name: "standard", Base: base.Name, Count: 2, DockerProfile: "standard"}}, Docker: &DockerConfig{Profiles: []DockerEngineProfile{engine}}}, options: TartConfig{Home: os.Getenv("PULSE_TEST_TART_HOME"), DockerEndpoint: DockerEndpoint{Address: os.Getenv("PULSE_TEST_ENGINE_WORKER_ADDRESS"), PortMin: 45200, PortMax: 45201}}}
-	q.kind = kind
-	q.vzOptions = VZConfig{Home: os.Getenv("PULSE_VZ_HOME"), Runner: os.Getenv("PULSE_VZ_RUNNER"), DockerEndpoint: q.options.DockerEndpoint}
-	q.connection = OrchardConfig{URL: os.Getenv("PULSE_TEST_ORCHARD_URL"), Worker: os.Getenv("PULSE_TEST_ORCHARD_WORKER"), Username: os.Getenv("PULSE_TEST_ORCHARD_USERNAME"), Token: Secret(os.Getenv("PULSE_TEST_ORCHARD_TOKEN")), AllowInsecureHTTP: true, DockerEndpoint: q.options.DockerEndpoint}
-	q.open()
+	q := newLiveQualification(t, ctx, kind)
 	defer q.cleanup()
-	t.Log("private recovery state:", dir)
-	if kind == "vz" && os.Getenv("PULSE_VZ_PREPARED_BASE") != "" {
-		prepareVZLiveBase(t, ctx, q.r, base, os.Getenv("PULSE_VZ_PREPARED_BASE"), config.BaseImageName(q.cfg.OwnerID, base.Name+"-docker"))
-	}
+	q.prepareFixtureBase()
 	pairs := q.ready()
 	launches := q.startJobs(pairs)
 	q.overlap(pairs)
@@ -678,4 +797,36 @@ func TestLiveDockerQualification(t *testing.T) {
 	q.complete(pairs)
 	q.checkpoint("fresh_generation_after_faults")
 	t.Log("DOCKER_QUALIFICATION_PASS: concurrency; isolation; crash recovery; bounded pressure; fresh generation")
+}
+
+func newLiveQualification(t *testing.T, ctx context.Context, kind string) *qualification {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "pulse-docker-qualification-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine := DefaultDockerEngine()
+	engine.DiskGiB = 8
+	base := DefaultBases()[0]
+	q := &qualification{t: t, ctx: ctx, report: newLiveReport(t, string(base.SSHPassword)), checks: map[string]bool{}, cfg: Config{OwnerID: fmt.Sprintf("docker-qualification-%d", time.Now().UnixNano()), StateDir: dir, Bases: []Base{base}, C2JVersion: os.Getenv("PULSE_TEST_C2J_VERSION"), Slots: []SlotGroup{{Name: "standard", Base: base.Name, Count: 2, DockerProfile: "standard"}}, Docker: &DockerConfig{Profiles: []DockerEngineProfile{engine}}}, options: TartConfig{Home: os.Getenv("PULSE_TEST_TART_HOME"), DockerEndpoint: DockerEndpoint{Address: os.Getenv("PULSE_TEST_ENGINE_WORKER_ADDRESS"), PortMin: 45200, PortMax: 45201}}}
+	q.kind = kind
+	if kind == "vz" && os.Getenv("PULSE_VZ_TEST_CACHE") != "" {
+		q.cfg.OwnerID = "vz-docker-qualification"
+	}
+	q.vzOptions = VZConfig{Home: os.Getenv("PULSE_VZ_HOME"), Runner: os.Getenv("PULSE_VZ_RUNNER"), DockerEndpoint: q.options.DockerEndpoint}
+	q.connection = OrchardConfig{URL: os.Getenv("PULSE_TEST_ORCHARD_URL"), Worker: os.Getenv("PULSE_TEST_ORCHARD_WORKER"), Username: os.Getenv("PULSE_TEST_ORCHARD_USERNAME"), Token: Secret(os.Getenv("PULSE_TEST_ORCHARD_TOKEN")), AllowInsecureHTTP: true, DockerEndpoint: q.options.DockerEndpoint}
+	if kind == "vz" {
+		q.cache = openVZQualificationCache(t, q.vzOptions.Home, q.cfg)
+	}
+	q.open()
+	t.Log("private recovery state:", dir)
+	return q
+}
+
+func (q *qualification) prepareFixtureBase() {
+	t, ctx, kind := q.t, q.ctx, q.kind
+	base := q.cfg.Bases[0]
+	if kind == "vz" && os.Getenv("PULSE_VZ_PREPARED_BASE") != "" && (q.cache == nil || !q.cache.restored) {
+		prepareVZLiveBase(t, ctx, q.r, base, os.Getenv("PULSE_VZ_PREPARED_BASE"), config.BaseImageName(q.cfg.OwnerID, base.Name+"-docker"))
+	}
 }

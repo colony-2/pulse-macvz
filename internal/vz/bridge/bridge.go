@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"os"
 	"path/filepath"
@@ -89,17 +90,22 @@ func serve(ctx context.Context, listener net.Listener, c Config) error {
 			return err
 		}
 		workers.Add(1)
-		go func() { defer workers.Done(); forward(ctx, client, c.Target) }()
+		go func() {
+			defer workers.Done()
+			if err := forward(ctx, client, c.Target); err != nil && ctx.Err() == nil {
+				log.Printf("bridge forwarding failed: %v", err)
+			}
+		}()
 	}
 }
 
-func forward(ctx context.Context, client net.Conn, target string) {
+func forward(ctx context.Context, client net.Conn, target string) error {
 	defer client.Close()
 	stopClient := context.AfterFunc(ctx, func() { client.Close() })
 	defer stopClient()
 	remote, err := (&net.Dialer{Timeout: 10 * time.Second}).DialContext(ctx, "tcp", target)
 	if err != nil {
-		return
+		return fmt.Errorf("connect to engine: %w", err)
 	}
 	defer remote.Close()
 	stopRemote := context.AfterFunc(ctx, func() { remote.Close() })
@@ -114,4 +120,5 @@ func forward(ctx context.Context, client net.Conn, target string) {
 	go func() { defer close(done); pump(remote, client) }()
 	pump(client, remote)
 	<-done
+	return nil
 }

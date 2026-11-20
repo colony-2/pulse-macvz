@@ -143,6 +143,16 @@ macOS Docker sources have a separate `-docker` prepared base and a template per
 slot/profile. Templates contain software, never allocation keys or a lease. Each
 allocation resumes a new primary clone and cold-boots a private Linux companion.
 Linux workers cold-boot a prepared Nix/c2j base. Linux suspension is not required.
+
+Docker engine packages are installed with apt once during base preparation.
+macOS companions clone a reusable cold Linux source keyed by the registry image
+and engine version; Linux worker bases include the engine during their own
+preparation. Each allocation creates only its private Docker filesystem and
+identities, then starts the installed daemon. Replacement allocations do not run
+apt. Prepared sources survive controller reopen and normal pool drain;
+`PurgeImages` explicitly removes them. Linux groups sharing a base must select
+the same engine version. The versioned Linux source names cause older bases
+without preinstalled Docker to be rebuilt once.
 The selected c2j release and its Go dependency hash resolve during preparation;
 no c2j release is compiled into the library. Docker client/plugins come from the
 pinned Nixpkgs input. Engine setup verifies the configured server version.

@@ -1,6 +1,7 @@
 package local
 
 import (
+	"bufio"
 	"context"
 	_ "embed"
 	"encoding/json"
@@ -76,7 +77,38 @@ func (b *Client) Endpoint(ctx context.Context, name, uid string, port int) (bool
 	if net.ParseIP(ip) == nil {
 		return false, failure("Docker endpoint IP is invalid", nil)
 	}
-	return b.ensureEndpoint(ctx, uid, net.JoinHostPort(ip, "2222"), port)
+	ready, err := b.ensureEndpoint(ctx, uid, net.JoinHostPort(ip, "2222"), port)
+	if err != nil || !ready || b.kind != "vz" {
+		return ready, err
+	}
+	// A listening launchd agent can still be denied Local Network access to
+	// the VM. Check the forwarded SSH banner before restoring the primary.
+	if err := probeEngineEndpoint(ctx, port); err != nil {
+		return false, fmt.Errorf("Docker endpoint cannot reach engine through launchd bridge: %w; inspect service.log and the runner's Local Network permission", err)
+	}
+	return true, nil
+}
+
+func probeEngineEndpoint(ctx context.Context, port int) error {
+	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	conn, err := (&net.Dialer{}).DialContext(ctx, "tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)))
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	stop := context.AfterFunc(ctx, func() { conn.Close() })
+	defer stop()
+	deadline, _ := ctx.Deadline()
+	conn.SetDeadline(deadline)
+	banner, err := bufio.NewReader(io.LimitReader(conn, 256)).ReadString('\n')
+	if err != nil {
+		return fmt.Errorf("read engine SSH banner: %w", err)
+	}
+	if !strings.HasPrefix(banner, "SSH-2.0-") {
+		return errors.New("forwarded endpoint did not return an SSH 2.0 banner")
+	}
+	return nil
 }
 
 // The caller has verified VM ownership. This supervisor also has a VM-free Mac
@@ -138,7 +170,17 @@ func (b *Client) ensureEndpoint(ctx context.Context, uid, target string, port in
 	for _, a := range args {
 		arr.WriteString("<string>" + xmlEscape(a) + "</string>")
 	}
-	content := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict><key>Label</key><string>%s</string><key>ProgramArguments</key><array>%s</array><key>LimitLoadToSessionType</key><string>Background</string><key>RunAtLoad</key><true/><key>KeepAlive</key><true/><key>ThrottleInterval</key><integer>2</integer><key>StandardOutPath</key><string>%s</string><key>StandardErrorPath</key><string>%s</string></dict></plist>`, label, arr.String(), xmlEscape(filepath.Join(dir, "service.log")), xmlEscape(filepath.Join(dir, "service.log")))
+	association := ""
+	if b.kind == "vz" && len(args) > 0 {
+		id, err := endpointBundleIdentifier(ctx, args[0])
+		if err != nil {
+			return false, err
+		}
+		if id != "" {
+			association = "<key>AssociatedBundleIdentifiers</key><array><string>" + xmlEscape(id) + "</string></array>"
+		}
+	}
+	content := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict><key>Label</key><string>%s</string><key>ProgramArguments</key><array>%s</array>%s<key>LimitLoadToSessionType</key><string>Background</string><key>RunAtLoad</key><true/><key>KeepAlive</key><true/><key>ThrottleInterval</key><integer>2</integer><key>StandardOutPath</key><string>%s</string><key>StandardErrorPath</key><string>%s</string></dict></plist>`, label, arr.String(), association, xmlEscape(filepath.Join(dir, "service.log")), xmlEscape(filepath.Join(dir, "service.log")))
 	if e = os.WriteFile(plist, []byte(content), 0600); e != nil {
 		return false, e
 	}

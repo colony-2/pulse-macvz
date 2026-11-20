@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build and ad-hoc sign the standalone development runner; installs no service.
+# Build and sign the standalone development runner; installs no service.
 set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 if [[ $# != 1 || $1 != /* || $(uname -s)/$(uname -m) != Darwin/arm64 ]]; then
@@ -8,6 +8,8 @@ if [[ $# != 1 || $1 != /* || $(uname -s)/$(uname -m) != Darwin/arm64 ]]; then
 fi
 mkdir -p "$(dirname "$1")"
 cd "$root"
-CGO_ENABLED=0 go build -o "$1" ./cmd/pulse-vz
-codesign --force --entitlements cmd/pulse-vz/vz.entitlements -s - "$1"
-codesign --verify --strict "$1"
+# Signing changes do not change Go's default Mach-O UUID. Never reuse that
+# UUID between ad-hoc and certificate-signed variants (Apple TN3178/TN3179).
+runner_uuid=$(uuidgen | tr -d '-')
+CGO_ENABLED=0 go build -ldflags="-B 0x$runner_uuid" -o "$1" ./cmd/pulse-vz
+bash scripts/sign-macos.sh "$1" dev.pulse.vz.runner

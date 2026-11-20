@@ -3,13 +3,35 @@ package bridge
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
+
+func TestForwardReportsUnavailableEngine(t *testing.T) {
+	upstream, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := upstream.Addr().String()
+	upstream.Close()
+	client, peer := net.Pipe()
+	defer peer.Close()
+	err = forward(t.Context(), client, target)
+	var networkError *net.OpError
+	if !errors.As(err, &networkError) || !strings.Contains(err.Error(), "connect to engine") {
+		t.Fatalf("forward discarded connection failure: %v", err)
+	}
+	peer.SetReadDeadline(time.Now().Add(time.Second))
+	if _, err := peer.Read(make([]byte, 1)); err != io.EOF {
+		t.Fatalf("failed connection left client open: %v", err)
+	}
+}
 
 func TestBridgeHalfCloseAndCancellation(t *testing.T) {
 	upstream, err := net.Listen("tcp4", "127.0.0.1:0")

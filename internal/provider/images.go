@@ -100,6 +100,17 @@ func (p *Provider) adopt(ctx context.Context, spec backend.Spec, base config.Bas
 // directories (including pulse.json). This only adopts existing ready sources;
 // admission must never build images or start VMs while holding a job lease.
 func (p *Provider) recoverPublishedSources(ctx context.Context) error {
+	for name, ep := range p.engineBases() {
+		if p.Store.data.Images[name] != nil {
+			continue
+		}
+		base := engineBase(ep)
+		spec := p.sourceSpec(base, ep.CPU, ep.MemoryMiB)
+		spec.Name = name
+		if _, err := p.adoptBase(ctx, spec, base); err != nil {
+			return err
+		}
+	}
 	for _, g := range p.Config.Slots {
 		if g.Count == 0 {
 			continue
@@ -165,14 +176,22 @@ func eventHas(events []backend.Event, marker string) bool {
 	}
 	return false
 }
-func baseStartup(setup, script []byte, seconds int, osVersion string, reuse bool) string {
+func baseStartup(setup, script []byte, seconds int, osVersion string, reuse bool, engineVersion string) string {
 	if reuse {
 		return fmt.Sprintf("#!/bin/bash\nset -eu\nwork=$(mktemp -d)\ntrap 'rm -rf \"$work\"' EXIT\n/usr/bin/base64 -D > \"$work/prepare-base.sh\" <<'PULSE_SCRIPT'\n%s\nPULSE_SCRIPT\nsudo -n /bin/bash \"$work/prepare-base.sh\" \"$work\" %d %s reuse\n", base64.StdEncoding.EncodeToString(script), seconds, osVersion)
 	}
-	return fmt.Sprintf("#!/bin/bash\nset -eu\nwork=$(mktemp -d)\ntrap 'rm -rf \"$work\"' EXIT\n/usr/bin/base64 -D > \"$work/setup.tar.gz\" <<'PULSE_SETUP'\n%s\nPULSE_SETUP\n/usr/bin/tar -xzf \"$work/setup.tar.gz\" -C \"$work\"\nsudo -n /bin/bash \"$work/prepare-base.sh\" \"$work\" %d %s\n", base64.StdEncoding.EncodeToString(setup), seconds, osVersion)
+	args := shell(osVersion)
+	if engineVersion != "" {
+		args += " " + shell(engineVersion)
+	}
+	return fmt.Sprintf("#!/bin/bash\nset -eu\nwork=$(mktemp -d)\ntrap 'rm -rf \"$work\"' EXIT\n/usr/bin/base64 -D > \"$work/setup.tar.gz\" <<'PULSE_SETUP'\n%s\nPULSE_SETUP\n/usr/bin/tar -xzf \"$work/setup.tar.gz\" -C \"$work\"\nsudo -n /bin/bash \"$work/prepare-base.sh\" \"$work\" %d %s\n", base64.StdEncoding.EncodeToString(setup), seconds, args)
 }
 func (p *Provider) reconcileImages(ctx context.Context) error {
 	wanted := map[string]config.Base{}
+	engines := p.engineBases()
+	for name, ep := range engines {
+		wanted[name] = engineBase(ep)
+	}
 	for _, g := range p.Config.Slots {
 		if g.Count > 0 {
 			b := p.base(g.Base)
@@ -266,9 +285,10 @@ func (p *Provider) reconcileImages(ctx context.Context) error {
 			continue
 		}
 		var setup []byte
+		ep, isEngine := engines[name]
 		if probe {
 			spec.Image = name
-		} else {
+		} else if !isEngine {
 			if p.Setup == nil {
 				return fmt.Errorf("image installer is not configured")
 			}
@@ -278,10 +298,25 @@ func (p *Provider) reconcileImages(ctx context.Context) error {
 				return fmt.Errorf("prepare base setup: %w", err)
 			}
 		}
-		spec.StartupScript.Content = baseStartup(setup, p.BaseScript, int(p.Config.BootstrapTimeout.Seconds()), base.OSVersion, probe)
+		engineVersion := ""
+		if base.OS == "linux" && !isEngine {
+			for _, g := range p.Config.Slots {
+				if g.Base == base.Name && g.DockerProfile != "" {
+					engineVersion = p.Config.Engine(g.DockerProfile).EngineVersion
+					break
+				}
+			}
+		}
+		spec.StartupScript.Content = baseStartup(setup, p.BaseScript, int(p.Config.BootstrapTimeout.Seconds()), base.OSVersion, probe, engineVersion)
 		if base.OS == "linux" {
 			spec.StartupScript.Content = strings.ReplaceAll(spec.StartupScript.Content, "/usr/bin/base64 -D", "/usr/bin/base64 -d")
 			spec.StartupScript.Content = strings.ReplaceAll(spec.StartupScript.Content, "prepare-base.sh", "prepare-base-linux.sh")
+		}
+		if isEngine {
+			spec.StartupScript.Content, err = p.engineBaseStartup(ep)
+			if err != nil {
+				return err
+			}
 		}
 		r = &ImageRecord{Name: name, Phase: "dispatch", Probe: probe, Kind: "base", OS: base.OS, NativeHash: p.Store.hash(spec), Worker: p.Config.Worker, Created: time.Now().UTC()}
 		p.Store.data.Images[name] = r
@@ -352,7 +387,11 @@ func (p *Provider) PurgeImages(ctx context.Context) error {
 func (p *Provider) baseImageName(name string) string {
 	for _, g := range p.Config.Slots {
 		if g.Base == name && g.DockerProfile != "" {
-			return config.BaseImageName(p.Config.OwnerID, name+"-docker")
+			label := name + "-docker"
+			if p.base(name).OS == "linux" {
+				label += "-engine-v1-" + p.Config.Engine(g.DockerProfile).EngineVersion
+			}
+			return config.BaseImageName(p.Config.OwnerID, label)
 		}
 	}
 	return config.BaseImageName(p.Config.OwnerID, name)

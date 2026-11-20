@@ -109,6 +109,7 @@ func normalizeDocker(c *Config) error {
 			c.Docker.Profiles[i].SSHHostKey = slices.Clone(keys[c.Docker.Profiles[i].Image])
 		}
 	}
+	linuxVersions := map[string]string{}
 	for _, g := range c.Slots {
 		if g.DockerProfile != "" && (!profiles[g.DockerProfile] || g.MemoryMiB < 2048) {
 			return Err
@@ -116,6 +117,16 @@ func normalizeDocker(c *Config) error {
 		for _, b := range c.Bases {
 			if b.Name == g.Base && b.OS == "linux" && (g.DockerProfile == "" || (b.OSVersion != "24.04" && b.OSVersion != "26.04")) {
 				return Err
+			}
+			if g.Base == b.Name && b.OS == "linux" && g.DockerProfile != "" {
+				for _, p := range c.Docker.Profiles {
+					if p.Name == g.DockerProfile {
+						if old := linuxVersions[b.Name]; old != "" && old != p.EngineVersion {
+							return Err
+						}
+						linuxVersions[b.Name] = p.EngineVersion
+					}
+				}
 			}
 		}
 	}
