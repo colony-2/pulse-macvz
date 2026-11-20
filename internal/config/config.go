@@ -131,6 +131,16 @@ type Tart struct {
 	PythonBinary    string // Worker-local bridge supervisor; defaults to /usr/bin/python3.
 }
 
+// VZ selects the independent, cgo-free Virtualization.framework provider.
+type VZ struct {
+	Home            string // Defaults to ~/.pulse-vz; separate from Tart's inventory.
+	Runner          string // Defaults to this executable, whose main must call RunnerMain.
+	CommandTimeout  time.Duration
+	SSHTimeout      time.Duration
+	DeliveryTimeout time.Duration
+	DockerEndpoint  Endpoint
+}
+
 // Settings is implementation-only: the public Config has no transport mode.
 type Settings struct {
 	Config

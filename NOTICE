@@ -1,5 +1,5 @@
 pulse-tart implementation: Copyright 2026 pulse-tart contributors.
-Licensed under FSL-1.1-ALv2.
+Licensed under the Apache License, Version 2.0.
 
 The public contract comes from github.com/colony-2/pulse-provider-api.
 Orchard is accessed through its REST API; direct Tart uses its installed CLI.
@@ -7,3 +7,8 @@ The guest fixture uses public c2j/JobDB packages. Upstream copyrights and licens
 remain with their authors. Guest bootstrap installs separately licensed Nix,
 c2j, and nixpkgs packages, which retain notices in their closures.
 The Nix installer is downloaded from DeterminateSystems, not redistributed here.
+
+Apple LZ4 framing code and tests in internal/vz/image/applelz4*.go are
+adapted from tmc/cove, commit 8dad6f9abe6a3c5de68b32f09ffb3875a3a6651e.
+Copyright (c) 2025 Travis Cline. Used under the MIT License; the full license
+is retained in internal/vz/image/LICENSE.cove.

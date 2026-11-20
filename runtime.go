@@ -1,5 +1,5 @@
 // Package tart provides macOS ARM64 and Linux ARM64/AMD64 concurrency slots
-// through Orchard or local Tart. It implements the Pulse provider API as an
+// through Orchard, local Tart, or native VZ. It implements the Pulse provider API as an
 // in-process Go library.
 package tart
 
@@ -16,10 +16,11 @@ import (
 	api "github.com/colony-2/pulse-provider-api"
 	"github.com/colony-2/pulse-tart/internal/bundle"
 	"github.com/colony-2/pulse-tart/internal/config"
+	"github.com/colony-2/pulse-tart/internal/local"
 	"github.com/colony-2/pulse-tart/internal/orchard"
 	engine "github.com/colony-2/pulse-tart/internal/provider"
 	"github.com/colony-2/pulse-tart/internal/releases"
-	local "github.com/colony-2/pulse-tart/internal/tart"
+	nativeTart "github.com/colony-2/pulse-tart/internal/tart"
 )
 
 type Config = config.Config
@@ -147,7 +148,7 @@ func NewTart(c Config, options TartConfig) (*Runtime, error) {
 		}
 	}
 	settings := config.Settings{Config: c, Kind: "tart", Endpoint: options.Home, Worker: "local", DockerEndpoint: options.DockerEndpoint}
-	b, e := local.New(options, c)
+	b, e := nativeTart.New(options, c)
 	if e != nil {
 		return nil, e
 	}

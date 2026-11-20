@@ -1,8 +1,8 @@
-# Pulse provider for Orchard and Tart
+# Pulse provider for Orchard, Tart and VZ
 
 This cell owns `github.com/colony-2/pulse-tart`, an importable Go library implementing the shared cell API that executes c2j workers in disposable VMs. `SPEC.md` defines the implementation contract.
 
-Support Orchard's public REST API and direct local Tart for macOS ARM64 guests. Orchard library users can run on Linux or macOS; direct Tart requires an Apple Silicon Mac with Tart installed. Linux guests and shared volumes are deferred.
+Support Orchard's public REST API, direct local Tart, and native VZ as independent provider options. VZ uses Virtualization.framework through cgo-free Go bindings on Apple Silicon; it does not require Tart or host Python. Provider selection and defaults belong to Pulse. Preserve existing Tart and Orchard behavior. Support macOS and Linux guests within each backend's architecture limits; shared host volumes remain unsupported.
 
 Own approved image mapping, provisioning, automatic guest bootstrap, process and lease delivery, admission, active owned-instance listing, durable reconciliation, cleanup, packaging, and automated integration tests. Install Nix on the base VM, then use a locked Nix environment for c2j, the guest runner, and execution tools. Each phase 1 VM has its own Nix store and caches. Support unattended bootstrap through Orchard so routine tests need no manual guest setup.
 
@@ -16,4 +16,4 @@ Use durable ownership and reservations across library instances. Listing is obse
 
 Require deterministic API/HTTP/state tests and automated real Orchard tests covering bootstrap, supplied-lease execution, Nix-managed tools, listing, failures, restart recovery, and cleanup. Deferred features are not phase 1 release gates. The development implementation and measured compatibility are documented in `README.md` and `compatibility.json`.
 
-Implementation releases follow FSL-1.1-ALv2, including its two-year Apache-2.0 future grant, with appropriate new-work attribution and release dates. Retain upstream notices for copied material and recheck actual release/dependency licenses before distribution. Do not describe current implementation releases as immediately Apache-2.0 or MIT.
+Implementation releases use the Apache License, Version 2.0, with appropriate attribution. Retain upstream notices for copied material and recheck actual release/dependency licenses before distribution. Third-party tools and dependencies retain their own licenses.

@@ -47,7 +47,7 @@ fi
 if [[ $status == 0 && $backend == tart && $platform != linux ]]; then
  printf 'Checking the native worker endpoint (no VMs; up to 90 seconds).\n'
  set +e
- PULSE_TEST_DOCKER_ENDPOINT=1 go test -race -json -count=1 -run '^TestLiveDockerEndpoint$' -timeout=90s ./internal/tart 2>&1 | tee "$out/endpoint-tests.jsonl" | python3 scripts/test-report.py stream "$out/endpoint.log"
+ PULSE_TEST_DOCKER_ENDPOINT=1 go test -race -json -count=1 -run '^TestLiveDockerEndpoint$' -timeout=90s ./internal/local 2>&1 | tee "$out/endpoint-tests.jsonl" | python3 scripts/test-report.py stream "$out/endpoint.log"
  codes=("${PIPESTATUS[@]}")
  set -e
  for code in "${codes[@]}"; do if [[ $code != 0 ]]; then status=2; fi; done

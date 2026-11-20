@@ -17,6 +17,7 @@ import (
 
 	api "github.com/colony-2/pulse-provider-api"
 	"github.com/colony-2/pulse-tart/internal/backend"
+	"github.com/colony-2/pulse-tart/internal/config"
 	orchardbackend "github.com/colony-2/pulse-tart/internal/orchard"
 	native "github.com/colony-2/pulse-tart/internal/tart"
 )
@@ -81,6 +82,7 @@ type qualificationControllerConfig struct {
 	Kind       string
 	Config     Config
 	Options    TartConfig
+	VZOptions  VZConfig
 	Connection OrchardConfig
 }
 
@@ -93,7 +95,11 @@ func newQualificationRuntime(input qualificationControllerConfig) (*Runtime, err
 			r.p.Backend = &qualificationOrchardBackend{Client: r.p.Backend.(*orchardbackend.Client), worker: input.Connection.Worker}
 		}
 	} else {
-		r, err = NewTart(input.Config, input.Options)
+		if input.Kind == "vz" {
+			r, err = NewVZ(input.Config, input.VZOptions)
+		} else {
+			r, err = NewTart(input.Config, input.Options)
+		}
 		if err == nil {
 			r.p.Backend = &qualificationBackend{Client: r.p.Backend.(*native.Client)}
 		}
@@ -113,6 +119,7 @@ type qualification struct {
 	ctx        context.Context
 	cfg        Config
 	options    TartConfig
+	vzOptions  VZConfig
 	kind       string
 	connection OrchardConfig
 	r          *Runtime
@@ -124,7 +131,7 @@ type qualification struct {
 
 func (q *qualification) open() {
 	q.t.Helper()
-	r, err := newQualificationRuntime(qualificationControllerConfig{q.kind, q.cfg, q.options, q.connection})
+	r, err := newQualificationRuntime(qualificationControllerConfig{Kind: q.kind, Config: q.cfg, Options: q.options, VZOptions: q.vzOptions, Connection: q.connection})
 	if err != nil {
 		q.t.Fatal(err)
 	}
@@ -380,7 +387,7 @@ func TestDockerQualificationController(t *testing.T) {
 func (q *qualification) controllerCrash(launches []api.Launch) {
 	q.t.Helper()
 	path := filepath.Join(q.cfg.StateDir, "controller-input.json")
-	input, _ := json.Marshal(qualificationControllerConfig{q.kind, q.cfg, q.options, q.connection})
+	input, _ := json.Marshal(qualificationControllerConfig{Kind: q.kind, Config: q.cfg, Options: q.options, VZOptions: q.vzOptions, Connection: q.connection})
 	if err := os.WriteFile(path, input, 0600); err != nil {
 		q.t.Fatal(err)
 	}
@@ -556,10 +563,10 @@ func TestLiveDockerQualification(t *testing.T) {
 	if kind == "" {
 		kind = "tart"
 	}
-	if kind != "tart" && kind != "orchard" {
+	if kind != "tart" && kind != "orchard" && kind != "vz" {
 		t.Fatal("invalid qualification backend")
 	}
-	if kind == "tart" && (runtime.GOOS != "darwin" || runtime.GOARCH != "arm64") {
+	if kind != "orchard" && (runtime.GOOS != "darwin" || runtime.GOARCH != "arm64") {
 		t.Fatal("native qualification requires Apple Silicon macOS")
 	}
 	ctx, cancel := context.WithTimeout(t.Context(), 90*time.Minute)
@@ -573,10 +580,14 @@ func TestLiveDockerQualification(t *testing.T) {
 	base := DefaultBases()[0]
 	q := &qualification{t: t, ctx: ctx, report: newLiveReport(t, string(base.SSHPassword)), checks: map[string]bool{}, cfg: Config{OwnerID: fmt.Sprintf("docker-qualification-%d", time.Now().UnixNano()), StateDir: dir, Bases: []Base{base}, C2JVersion: os.Getenv("PULSE_TEST_C2J_VERSION"), Slots: []SlotGroup{{Name: "standard", Base: base.Name, Count: 2, DockerProfile: "standard"}}, Docker: &DockerConfig{Profiles: []DockerEngineProfile{engine}}}, options: TartConfig{Home: os.Getenv("PULSE_TEST_TART_HOME"), DockerEndpoint: DockerEndpoint{Address: os.Getenv("PULSE_TEST_ENGINE_WORKER_ADDRESS"), PortMin: 45200, PortMax: 45201}}}
 	q.kind = kind
+	q.vzOptions = VZConfig{Home: os.Getenv("PULSE_VZ_HOME"), Runner: os.Getenv("PULSE_VZ_RUNNER"), DockerEndpoint: q.options.DockerEndpoint}
 	q.connection = OrchardConfig{URL: os.Getenv("PULSE_TEST_ORCHARD_URL"), Worker: os.Getenv("PULSE_TEST_ORCHARD_WORKER"), Username: os.Getenv("PULSE_TEST_ORCHARD_USERNAME"), Token: Secret(os.Getenv("PULSE_TEST_ORCHARD_TOKEN")), AllowInsecureHTTP: true, DockerEndpoint: q.options.DockerEndpoint}
 	q.open()
 	defer q.cleanup()
 	t.Log("private recovery state:", dir)
+	if kind == "vz" && os.Getenv("PULSE_VZ_PREPARED_BASE") != "" {
+		prepareVZLiveBase(t, ctx, q.r, base, os.Getenv("PULSE_VZ_PREPARED_BASE"), config.BaseImageName(q.cfg.OwnerID, base.Name+"-docker"))
+	}
 	pairs := q.ready()
 	launches := q.startJobs(pairs)
 	q.overlap(pairs)
@@ -599,7 +610,7 @@ func TestLiveDockerQualification(t *testing.T) {
 		q.orchardEndpointRecovery(a, b)
 	} else {
 		// The worker endpoint service must also survive an abrupt process death.
-		label := "user/" + strconv.Itoa(os.Getuid()) + "/dev.pulse-tart.engine." + a.EngineUID
+		label := "user/" + strconv.Itoa(os.Getuid()) + "/dev.pulse-" + q.kind + ".engine." + a.EngineUID
 		if out, err := exec.CommandContext(ctx, "/bin/launchctl", "kill", "SIGKILL", label).CombinedOutput(); err != nil {
 			t.Fatalf("endpoint kill: %v %s", err, out)
 		}

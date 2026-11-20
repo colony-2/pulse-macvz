@@ -15,6 +15,7 @@ import (
 
 	api "github.com/colony-2/pulse-provider-api"
 	"github.com/colony-2/pulse-tart/internal/backend"
+	"github.com/colony-2/pulse-tart/internal/config"
 	"github.com/colony-2/pulse-tart/internal/orchard"
 )
 
@@ -22,7 +23,7 @@ import (
 func TestLive(t *testing.T) {
 	kind := os.Getenv("PULSE_TEST_BACKEND")
 	if kind == "" {
-		t.Skip("set PULSE_TEST_BACKEND=orchard or tart; see README")
+		t.Skip("set PULSE_TEST_BACKEND=orchard, tart, or vz; see README")
 	}
 	var nonce [8]byte
 	_, _ = rand.Read(nonce[:])
@@ -78,6 +79,12 @@ func TestLive(t *testing.T) {
 				r.profile = "integration"
 			}
 			return r, err
+		case "vz":
+			r, err := NewVZ(c, VZConfig{Home: os.Getenv("PULSE_VZ_HOME"), Runner: os.Getenv("PULSE_VZ_RUNNER")})
+			if err == nil {
+				r.profile = "integration"
+			}
+			return r, err
 		default:
 			return nil, fmt.Errorf("unknown test backend")
 		}
@@ -89,6 +96,9 @@ func TestLive(t *testing.T) {
 	defer func() { _ = r.Close() }()
 	ctx, cancel := context.WithTimeout(t.Context(), 45*time.Minute)
 	defer cancel()
+	if kind == "vz" && os.Getenv("PULSE_VZ_PREPARED_BASE") != "" {
+		prepareVZLiveBase(t, ctx, r, base, os.Getenv("PULSE_VZ_PREPARED_BASE"), config.BaseImageName(owner, base.Name))
+	}
 	t.Logf("private test scratch: %s; owner: %s", dir, owner)
 	// Cleanup only this test owner's exact identities. Drain never kills a valid job.
 	defer func() {
@@ -181,7 +191,7 @@ func TestLive(t *testing.T) {
 	if e = r.Close(); e != nil {
 		t.Fatal(e)
 	}
-	if kind == "tart" {
+	if kind == "tart" || kind == "vz" {
 		if _, err := os.Stat(filepath.Join(dir, "state.json")); !os.IsNotExist(err) {
 			t.Fatal("direct Tart unexpectedly needs a separate journal", err)
 		}
@@ -195,7 +205,7 @@ func TestLive(t *testing.T) {
 		t.Fatal(e)
 	}
 	assertRecoveredLaunches(t, ctx, r, dir, []api.Launch{a, b})
-	if kind == "tart" {
+	if kind == "tart" || kind == "vz" {
 		if _, err := os.Stat(dir); !os.IsNotExist(err) {
 			t.Fatal("restart recreated the old state directory", err)
 		}

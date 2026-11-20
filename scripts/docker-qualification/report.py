@@ -11,7 +11,7 @@ CHECKS = ('concurrent_jobs', 'controller_sigkill_replay', 'guest_relay_sigkill',
 
 
 def summarize(out, exit_code, backend="tart"):
-    if backend not in ("tart", "orchard"):
+    if backend not in ("tart", "orchard", "vz"):
         raise ValueError("invalid qualification backend")
     def read(name, default):
         p = out / name
@@ -21,7 +21,7 @@ def summarize(out, exit_code, backend="tart"):
     passed = any(e.get('Action') == 'pass' and e.get('Package') == 'github.com/colony-2/pulse-tart'
                  and e.get('Test') == 'TestLiveDockerQualification' for e in events)
     passed = passed and not any(e.get('Action') == 'fail' for e in events)
-    required = CHECKS if backend == 'tart' else tuple(k for k in CHECKS if k != 'worker_endpoint_sigkill') + ('orchard_api_outage', 'orchard_endpoint_recreation')
+    required = CHECKS if backend != 'orchard' else tuple(k for k in CHECKS if k != 'worker_endpoint_sigkill') + ('orchard_api_outage', 'orchard_endpoint_recreation')
     checks = {key: evidence.get('checks', {}).get(key) is True for key in required}
     identities = evidence.get('identities', [])
     distinct = len(identities) == 6 and all(len({i.get(key) for i in identities}) == 6
@@ -34,12 +34,12 @@ def summarize(out, exit_code, backend="tart"):
                    and j.get('claims') == 1 and j.get('renewals', 0) >= 2 and j.get('secret_calls') == 1 for j in jobs)
     peak = evidence.get('peak_running_macos', 0)
     success = evidence.get('backend', 'tart') == backend and exit_code == 0 and passed and all(checks.values()) and distinct and macs and jobs_ok and 0 < peak <= 2
-    return {'scope': ('native' if backend == 'tart' else 'orchard') + '-production-docker-qualification', 'result': 'passed' if success else 'incomplete',
+    return {'scope': ('native' if backend == 'tart' else backend) + '-production-docker-qualification', 'result': 'passed' if success else 'incomplete',
             'checks': checks, 'distinct_allocation_identities': distinct, 'distinct_concurrent_macs': macs, 'completed_jobdb_jobs': len(jobs),
             'jobdb_valid': jobs_ok, 'peak_observed_running_macos': peak,
             'limits': ['bounded container CPU/memory and 8 GiB engine filesystem pressure',
                        'process and VM loss; physical host power loss is not injected',
-                       ('one native macOS worker; Orchard fault behavior is not certified by this run' if backend == 'tart' else 'one Orchard worker; API transport outage and endpoint withdrawal/recreation; shared Orchard daemons are not killed')]}
+                       ('one native macOS worker; Orchard fault behavior is not certified by this run' if backend != 'orchard' else 'one Orchard worker; API transport outage and endpoint withdrawal/recreation; shared Orchard daemons are not killed')]}
 
 
 if __name__ == '__main__':

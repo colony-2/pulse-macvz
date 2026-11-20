@@ -7,6 +7,7 @@ import (
 	"fmt"
 	api "github.com/colony-2/pulse-provider-api"
 	"github.com/colony-2/pulse-tart/internal/backend"
+	"github.com/colony-2/pulse-tart/internal/config"
 	"os"
 	"strings"
 	"testing"
@@ -17,7 +18,7 @@ import (
 func TestLiveDockerLibrary(t *testing.T) {
 	kind := os.Getenv("PULSE_TEST_DOCKER_LIBRARY")
 	if kind == "" {
-		t.Skip("set PULSE_TEST_DOCKER_LIBRARY=orchard or tart")
+		t.Skip("set PULSE_TEST_DOCKER_LIBRARY=orchard, tart, or vz")
 	}
 	osname := os.Getenv("PULSE_TEST_DOCKER_OS")
 	if osname == "" {
@@ -41,6 +42,8 @@ func TestLiveDockerLibrary(t *testing.T) {
 		var e error
 		if kind == "orchard" {
 			r, e = NewOrchard(cfg, OrchardConfig{URL: os.Getenv("PULSE_TEST_ORCHARD_URL"), Worker: os.Getenv("PULSE_TEST_ORCHARD_WORKER"), AllowInsecureHTTP: true, DockerEndpoint: endpoint})
+		} else if kind == "vz" {
+			r, e = NewVZ(cfg, VZConfig{Home: os.Getenv("PULSE_VZ_HOME"), Runner: os.Getenv("PULSE_VZ_RUNNER"), DockerEndpoint: endpoint})
 		} else if kind == "tart" {
 			r, e = NewTart(cfg, TartConfig{Home: os.Getenv("PULSE_TEST_TART_HOME"), DockerEndpoint: endpoint})
 		} else {
@@ -94,6 +97,9 @@ func TestLiveDockerLibrary(t *testing.T) {
 		}
 		t.Errorf("cleanup incomplete; preserve private state %s", dir)
 	}()
+	if kind == "vz" && osname == "darwin" && os.Getenv("PULSE_VZ_PREPARED_BASE") != "" {
+		prepareVZLiveBase(t, ctx, r, base, os.Getenv("PULSE_VZ_PREPARED_BASE"), config.BaseImageName(owner, base.Name+"-docker"))
+	}
 	waitLive(t, ctx, "Docker ready capacity", 30*time.Minute, func(ctx context.Context) bool {
 		if e := r.Reconcile(ctx); e != nil {
 			t.Logf("reconcile: %v", e)

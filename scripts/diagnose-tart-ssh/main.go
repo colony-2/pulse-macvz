@@ -88,7 +88,7 @@ func probe(ctx context.Context, req request) (out result) {
 		}
 		callback = ssh.FixedHostKey(key)
 	}
-	// Match internal/tart.Client.sendAddress: password-only auth, key pinning,
+	// Match internal/local.Client.sendAddress: password-only auth, key pinning,
 	// TCP and handshake deadlines, NewSession, then /bin/bash -s over stdin.
 	cfg := &ssh.ClientConfig{User: req.Username, Auth: []ssh.AuthMethod{ssh.Password(req.Password)},
 		HostKeyCallback: callback, Timeout: 15 * time.Second}

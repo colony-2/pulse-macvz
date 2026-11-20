@@ -1,6 +1,6 @@
 # pulse-tart
 
-A Go library implementing [`pulse-provider-api`](https://github.com/colony-2/pulse-provider-api) for ARM64 jobs through local Tart or Orchard. Defaults support macOS jobs and Linux jobs with Docker. macOS Docker support adds a private Linux companion and is opt-in. Pulse imports the library and supplies complete job assignments. Configuration is a Go API; there is no provider CLI, plugin protocol, or configuration file.
+A Go library implementing [`pulse-provider-api`](https://github.com/colony-2/pulse-provider-api) through local Tart, Orchard, or a cgo-free native VZ provider. Defaults support macOS jobs and Linux jobs with Docker. macOS Docker support adds a private Linux companion and is opt-in. Pulse imports the library and supplies complete job assignments. Configuration is a Go API; there is no provider CLI, plugin protocol, or configuration file.
 
 ## Images and jobs
 
@@ -33,6 +33,59 @@ return runtime.Run(ctx)
 ```
 
 Import `tart "github.com/colony-2/pulse-tart"`. Constructors validate/copy configuration and lock the owner scope; they create no VMs. Drive `Run(ctx)` or call `Reconcile(ctx)` periodically. `Run` returns on cancellation or a reconciliation error; the application owns its retry policy. `Slots()` reports preparation and occupancy; `Images()` reports known prepared sources.
+
+### Native VZ provider
+
+`NewVZ` selects Apple's Virtualization.framework on Apple Silicon with macOS 14
+or later. It uses `tmc/apple` and `purego`, builds with `CGO_ENABLED=0`, and needs
+neither Tart nor host Python. Tart and Orchard remain separate options; Pulse
+owns default-provider selection. VZ uses its own `~/.pulse-vz` home and `vz`
+ownership scope. It does not coordinate admission with Tart.
+
+When embedding the runner, call the hook before other work in `main`:
+
+```go
+func main() {
+    tart.RunnerMain()
+    // Configure and drive this Runtime as with NewTart or NewOrchard.
+    runtime, err := tart.NewVZ(tart.Config{OwnerID: "pulse"}, tart.VZConfig{})
+    // Handle err, then call runtime.Run(ctx).
+    _, _ = runtime, err
+}
+```
+
+Sign the executable with `com.apple.security.virtualization=true`, preserving
+the host application's existing signing entitlements. For development, the
+entitlement file is `cmd/pulse-vz/vz.entitlements`. An optional
+standalone helper avoids embedding the hook in the host:
+
+```sh
+./scripts/build-vz-runner.sh "$PWD/.local/bin/pulse-vz"
+```
+
+Pass its absolute path in `VZConfig.Runner`. Production applications should use
+their normal release-signing identity. `Runtime.Check` verifies the helper
+protocol, virtualization support, entitlement, and inventory. This helper is
+an implementation detail, not a provider configuration CLI.
+
+Each VM runs in a detached process and survives `Runtime.Close`. The shared
+local backend retains ownership binding, guest-delivery fences, and restart
+recovery. VZ clones only VM data; cold clones receive fresh identities, while
+suspended clones retain their MAC and machine identity. Saved state is tied to
+the host OS build, device layout, and VM configuration. A missing or incompatible
+snapshot fails without a cold-boot fallback; rebuild affected templates after
+incompatible host or runner upgrades. Linux uses cold clones and does not suspend.
+The Docker companion endpoint uses the Go runner under launchd.
+
+The provider's live Linux lifecycle and macOS suspend/restore tests pass under
+Safehouse with the required control-socket and GPU permissions. The macOS test
+covers two independent snapshots, two rounds of concurrent restores, client
+recovery, and corrupt-restore rejection. Public API/JobDB execution, a pinned
+Ubuntu registry import and boot, and the Go endpoint's launchd lifecycle also
+passed. See [the implementation plan](vz-migration-plan.md) and
+[VZ setup, script map, and testing instructions](docs/vz-testing.md) for supported
+entry points, reproducible checks, and limits. The ignored `.local/vz-diagnostics`
+files are workstation diagnostics, not required VZ setup.
 
 Omitted configuration selects **two macOS job VMs and four Linux job VMs**, each
 with **4 vCPU / 8 GiB**. The bases are Tahoe (`macos-26-arm64`), Sequoia

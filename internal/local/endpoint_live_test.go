@@ -1,4 +1,4 @@
-package tart
+package local
 
 import (
 	"context"
@@ -27,6 +27,22 @@ func TestLiveDockerEndpoint(t *testing.T) {
 	if os.Getenv("PULSE_TEST_DOCKER_ENDPOINT") != "1" {
 		t.Skip("set PULSE_TEST_DOCKER_ENDPOINT=1 for the Mac launchd preflight")
 	}
+	testLiveDockerEndpoint(t, "tart", "")
+}
+
+func TestLiveVZDockerEndpoint(t *testing.T) {
+	runner := os.Getenv("PULSE_VZ_RUNNER")
+	if os.Getenv("PULSE_TEST_VZ_DOCKER_ENDPOINT") != "1" || runner == "" {
+		t.Skip("set PULSE_TEST_VZ_DOCKER_ENDPOINT=1 and PULSE_VZ_RUNNER for the Go launchd preflight")
+	}
+	if !filepath.IsAbs(runner) {
+		t.Fatal("runner must be absolute")
+	}
+	testLiveDockerEndpoint(t, "vz", runner)
+}
+
+func testLiveDockerEndpoint(t *testing.T, kind, runner string) {
+	t.Helper()
 	if runtime.GOOS != "darwin" {
 		t.Fatal("launchd preflight requires macOS")
 	}
@@ -34,9 +50,14 @@ func TestLiveDockerEndpoint(t *testing.T) {
 	defer cancel()
 	common := config.Config{StateDir: t.TempDir()}
 	factory := func() *Client {
-		b, err := open(config.Tart{}, common)
+		b, err := openNative(config.Tart{Home: common.StateDir}, common, kind, nil)
 		if err != nil {
 			t.Fatal(err)
+		}
+		if runner != "" {
+			b.endpointArgs = func(target, ready string, port int) []string {
+				return []string{runner, "__pulse-vm", "bridge", "--target", target, "--ready", ready, "--port", strconv.Itoa(port)}
+			}
 		}
 		return b
 	}

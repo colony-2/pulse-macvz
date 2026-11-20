@@ -22,7 +22,8 @@ class SourceSnapshot(unittest.TestCase):
             root = Path(temp)
             for name in ("assets.go", "go.mod", "go.sum", "flake.nix", "flake.lock", "bases.json",
                          "guest/main.go", "scripts/bootstrap-guest.sh", "internal/provider/launch.go",
-                         "tests/integration/c2j-fixture.go.txt"):
+                         "tests/integration/c2j-fixture.go.txt", "cmd/pulse-vz/main.go",
+                         "cmd/pulse-vz/vz.entitlements"):
                 path = root / name
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text("original " + name)
@@ -42,10 +43,10 @@ class SourceSnapshot(unittest.TestCase):
             self.assertEqual(copied.read_text(), "original scripts/bootstrap-guest.sh")
             self.assertEqual(copied.stat().st_mode & 0o777, 0o755)
             fingerprints = json.loads((destination / "source-sha256.json").read_text())
-            self.assertEqual(len(fingerprints), 10)
+            self.assertEqual(len(fingerprints), 12)
             for name, digest in fingerprints.items():
                 self.assertEqual(hashlib.sha256((destination / "source" / name).read_bytes()).hexdigest(), digest)
-            self.assertEqual(len(list(p for p in (destination / "source").rglob("*") if p.is_file())), 10)
+            self.assertEqual(len(list(p for p in (destination / "source").rglob("*") if p.is_file())), 12)
 
     def test_changes_during_capture_fail_before_testing(self):
         with TemporaryDirectory() as temp, patch.object(report, "capture_source", side_effect=[{}, {"changed": (b"", 0)}]):

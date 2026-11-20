@@ -73,7 +73,11 @@ func (p *Provider) sourceSpec(b config.Base, cpu, memory int64) backend.Spec {
 	if osname == "linux" {
 		macSlots = 0
 	}
-	return backend.Spec{OS: osname, Arch: b.Architecture(), Runtime: "tart", Image: b.Image, CPU: cpu, Memory: memory, Headless: true, Username: b.SSHUsername, Password: string(b.SSHPassword), RestartPolicy: "Never", Suspendable: osname == "darwin", Labels: labels, Resources: map[string]int64{"org.cirruslabs.logical-cores": cpu, "org.cirruslabs.memory-mib": memory, "org.cirruslabs.tart-vms": macSlots}, StartupScript: backend.Script{Env: map[string]string{}}}
+	nativeRuntime := "tart"
+	if p.Config.Kind == "vz" {
+		nativeRuntime = "vz"
+	}
+	return backend.Spec{OS: osname, Arch: b.Architecture(), Runtime: nativeRuntime, Image: b.Image, CPU: cpu, Memory: memory, Headless: true, Username: b.SSHUsername, Password: string(b.SSHPassword), RestartPolicy: "Never", Suspendable: osname == "darwin", Labels: labels, Resources: map[string]int64{"org.cirruslabs.logical-cores": cpu, "org.cirruslabs.memory-mib": memory, "org.cirruslabs.tart-vms": macSlots}, StartupScript: backend.Script{Env: map[string]string{}}}
 }
 func (p *Provider) retain(ctx context.Context, name, uid string) error {
 	if b, ok := p.Backend.(interface {

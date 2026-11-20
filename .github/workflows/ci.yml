@@ -18,8 +18,16 @@ jobs:
           go-version: '1.27.3'
       - run: test -z "$(gofmt -l *.go internal guest)"
       - run: make test vet build
+      - run: CGO_ENABLED=0 go test ./...
+      - if: runner.os == 'macOS'
+        run: |
+          CGO_ENABLED=0 go build -o "$RUNNER_TEMP/pulse-vz" ./cmd/pulse-vz
+          codesign --force --entitlements cmd/pulse-vz/vz.entitlements -s - "$RUNNER_TEMP/pulse-vz"
+          codesign --verify --strict "$RUNNER_TEMP/pulse-vz"
   cross-build:
     runs-on: ubuntu-24.04
+    env:
+      CGO_ENABLED: '0'
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff

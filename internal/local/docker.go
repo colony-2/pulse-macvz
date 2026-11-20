@@ -1,4 +1,4 @@
-package tart
+package local
 
 import (
 	"context"
@@ -18,7 +18,7 @@ func (b *Client) Exec(ctx context.Context, name, uid string, script []byte) ([]b
 	}
 	key := append([]byte{}, b.records[name].HostKey...)
 	b.mu.Unlock()
-	data, e := b.command(ctx, "ip", name, "--wait", "5")
+	data, e := b.hypervisor().IP(ctx, name)
 	if e != nil {
 		return nil, failure("Exec IP command", e)
 	}
@@ -46,6 +46,6 @@ func (b *Client) Stop(ctx context.Context, name, uid string) error {
 	if v.Stopped() {
 		return nil
 	}
-	_, e = b.command(ctx, "stop", name)
+	e = b.hypervisor().Stop(ctx, name)
 	return e
 }

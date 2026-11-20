@@ -13,7 +13,7 @@ NATIVE_MARKERS = ("IMAGE_UPDATE_PASS:", "VM_PROPERTIES_RECOVERY_PASS:", "FAILED_
 
 def source_files(root):
     files = list(root.glob("*.go")) + [root / p for p in ("go.mod", "go.sum", "flake.nix", "flake.lock", "bases.json")]
-    for directory in ("internal", "guest", "scripts", "tests", "experimental"):
+    for directory in ("cmd", "internal", "guest", "scripts", "tests", "experimental"):
         files.extend(p for p in (root / directory).rglob("*")
                      if p.is_file() and "__pycache__" not in p.parts)
     return sorted(files)

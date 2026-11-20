@@ -10,7 +10,7 @@ import threading
 import time
 import unittest
 
-SCRIPT = Path(__file__).resolve().parent.parent / 'internal/tart/endpoint/bridge.py'
+SCRIPT = Path(__file__).resolve().parent.parent / 'internal/local/endpoint/bridge.py'
 
 class EchoAfterEOF(socketserver.BaseRequestHandler):
     def handle(self):

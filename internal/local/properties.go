@@ -1,4 +1,4 @@
-package tart
+package local
 
 import (
 	"bytes"
@@ -32,7 +32,7 @@ func (b *Client) lock(path string) error {
 	}
 	if err = unix.Flock(int(f.Fd()), unix.LOCK_EX|unix.LOCK_NB); err != nil {
 		f.Close()
-		return fmt.Errorf("another runtime owns this Tart pool: %w", err)
+		return fmt.Errorf("another runtime owns this %s pool: %w", b.kind, err)
 	}
 	b.locks = append(b.locks, f)
 	return nil

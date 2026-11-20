@@ -1,4 +1,4 @@
-package tart
+package local
 
 import (
 	"context"
@@ -19,7 +19,13 @@ import (
 //go:embed endpoint/bridge.py
 var endpointScript []byte
 
-func (b *Client) endpointLabel(uid string) string { return "dev.pulse-tart.engine." + uid }
+func (b *Client) endpointLabel(uid string) string {
+	kind := b.kind
+	if kind == "" {
+		kind = "tart"
+	}
+	return "dev.pulse-" + kind + ".engine." + uid
+}
 
 // Production endpoints live with their engine VM. The fallback supports the
 // VM-free launchd preflight only; it contains no pool or allocation state.
@@ -62,7 +68,7 @@ func (b *Client) Endpoint(ctx context.Context, name, uid string, port int) (bool
 	if e != nil || v.UID != uid || v.Stopped() {
 		return false, failure("Docker endpoint engine identity/state unavailable", e)
 	}
-	data, e := b.command(ctx, "ip", name, "--wait", "5")
+	data, e := b.hypervisor().IP(ctx, name)
 	if e != nil {
 		return false, fmt.Errorf("Docker endpoint engine IP unavailable: %w", e)
 	}
@@ -110,18 +116,24 @@ func (b *Client) ensureEndpoint(ctx context.Context, uid, target string, port in
 		}
 	}
 	_ = os.Remove(ready)
-	python := b.cfg.PythonBinary
-	if python == "" {
-		python = "/usr/bin/python3"
+	var args []string
+	if b.endpointArgs != nil {
+		args = b.endpointArgs(target, ready, port)
+	} else {
+		python := b.cfg.PythonBinary
+		if python == "" {
+			python = "/usr/bin/python3"
+		}
+		if !filepath.IsAbs(python) {
+			return false, failure("Docker endpoint Python path must be absolute", nil)
+		}
+		script := filepath.Join(dir, "bridge.py")
+		if e = os.WriteFile(script, endpointScript, 0600); e != nil {
+			return false, e
+		}
+		args = []string{python, script, "--target", target, "--ready", ready, "--port", strconv.Itoa(port)}
+
 	}
-	if !filepath.IsAbs(python) {
-		return false, failure("Docker endpoint Python path must be absolute", nil)
-	}
-	script := filepath.Join(dir, "bridge.py")
-	if e = os.WriteFile(script, endpointScript, 0600); e != nil {
-		return false, e
-	}
-	args := []string{python, script, "--target", target, "--ready", ready, "--port", strconv.Itoa(port)}
 	var arr strings.Builder
 	for _, a := range args {
 		arr.WriteString("<string>" + xmlEscape(a) + "</string>")

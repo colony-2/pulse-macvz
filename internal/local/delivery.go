@@ -1,4 +1,4 @@
-package tart
+package local
 
 import (
 	"bytes"
@@ -15,7 +15,7 @@ import (
 	"time"
 )
 
-var ErrDeliveryUnavailable = errors.New("Tart guest delivery unavailable")
+var ErrDeliveryUnavailable = errors.New("local guest delivery unavailable")
 
 // DeliveryStatus contains no credentials, scripts, leases, or remote error text.
 // ExecutionPossible is a durable fence written BEFORE requesting guest exec.
@@ -82,6 +82,9 @@ func (b *Client) deliveryStage(r *record, stage string) error {
 			return context.DeadlineExceeded
 		}
 		r.Delivery.ExecutionPossible = true
+		// Setup succeeded on this attempt. A previous connection failure must
+		// not make an executing script look uncertain before any new failure.
+		r.Delivery.Cause = ""
 	}
 	r.Delivery.Stage = stage
 	return b.save(r) // Never dispatch exec if the fence could not be saved.

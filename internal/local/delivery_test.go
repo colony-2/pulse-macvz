@@ -1,4 +1,4 @@
-package tart
+package local
 
 import (
 	"bytes"
@@ -181,6 +181,38 @@ func TestPossibleGuestExecutionIsNeverStoppedOrReplayedOnRestart(t *testing.T) {
 		if call[0] == "stop" || call[0] == "delete" {
 			t.Fatal("unsafe recovery", call)
 		}
+	}
+}
+
+func TestSuccessfulSetupClearsPreviousAttemptFailure(t *testing.T) {
+	b, m, spec := fixture(t)
+	if _, err := b.Create(t.Context(), spec); err != nil {
+		t.Fatal(err)
+	}
+	b.Close()
+	b = reopenProperties(t, b, m, "")
+	r := b.records[spec.Name]
+	r.Delivery.StartedAt = time.Now()
+	r.Delivery.Attempts = 2
+	r.Delivery.Cause = "timeout"
+	r.Delivery.ExecutionPossible = false
+	if err := b.deliveryStage(r, "guest_exec"); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.DeliveryHealth(t.Context()); err != nil {
+		t.Fatalf("successful retry inherited the earlier setup failure: %v", err)
+	}
+	data, err := os.ReadFile(b.artifact(spec.Name, "json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var saved vmFile
+	if err := json.Unmarshal(data, &saved); err != nil || !saved.Native.Delivery.ExecutionPossible || saved.Native.Delivery.Cause != "" {
+		t.Fatal("successful setup did not persist its execution fence and cleared failure", err)
+	}
+	b.deliveryFailed(r, io.EOF)
+	if err := b.DeliveryHealth(t.Context()); !errors.Is(err, ErrDeliveryUnavailable) {
+		t.Fatal("a new failure after dispatch must still be uncertain", err)
 	}
 }
 

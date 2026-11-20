@@ -22,6 +22,7 @@ import (
 	api "github.com/colony-2/pulse-provider-api"
 	"github.com/colony-2/pulse-tart/internal/backend"
 	"github.com/colony-2/pulse-tart/internal/config"
+	"github.com/colony-2/pulse-tart/internal/vz"
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/net/websocket"
 )
@@ -98,9 +99,7 @@ func testGuestExec(ctx context.Context, kind string, connection OrchardConfig, v
 			}
 		}
 	}
-	cmd := fixtureTartCommand(ctx, "ip", v.Name, "--wait", "5")
-	data, e := cmd.Output()
-	ip := strings.TrimSpace(string(data))
+	ip, e := fixtureGuestIP(ctx, kind, v.Name)
 	if e != nil || net.ParseIP(ip) == nil {
 		return nil, errGuestDiagnostic
 	}
@@ -298,7 +297,7 @@ func (r *liveReport) capture(t *testing.T, ctx context.Context, kind string, con
 			output = append(output, d)
 			continue
 		}
-		if kind == "tart" && config.Name(name) {
+		if (kind == "tart" || kind == "vz") && config.Name(name) {
 			f, e := os.Open(filepath.Join(runtime.p.Backend.(interface{ Home() string }).Home(), "vms", name, "pulse.run.log"))
 			if e == nil {
 				if st, e := f.Stat(); e == nil && st.Size() > 64000 {
@@ -542,9 +541,7 @@ func openFixtureSSH(ctx context.Context, kind string, connection OrchardConfig, 
 		ws.PayloadType = websocket.BinaryFrame
 		conn = ws
 	} else {
-		command := fixtureTartCommand(ctx, "ip", v.Name, "--wait", "5")
-		data, err := command.Output()
-		ip := strings.TrimSpace(string(data))
+		ip, err := fixtureGuestIP(ctx, kind, v.Name)
 		if err != nil || net.ParseIP(ip) == nil {
 			return nil, errGuestDiagnostic
 		}
@@ -659,4 +656,13 @@ func fixtureTartCommand(ctx context.Context, args ...string) *exec.Cmd {
 	}
 	command.Env = append(command.Env, "TART_HOME="+home)
 	return command
+}
+
+func fixtureGuestIP(ctx context.Context, kind, name string) (string, error) {
+	if kind == "vz" {
+		store := &vz.Store{Home: os.Getenv("PULSE_VZ_HOME")}
+		return store.IP(ctx, name)
+	}
+	data, err := fixtureTartCommand(ctx, "ip", name, "--wait", "5").Output()
+	return strings.TrimSpace(string(data)), err
 }

@@ -51,6 +51,16 @@ class QualificationReport(unittest.TestCase):
             self.assertEqual(self.result(backend='orchard'), 'incomplete')
             self.evidence['checks'][key] = True
 
+    def test_vz_requires_native_fault_evidence_and_matching_backend(self):
+        self.assertEqual(self.result(backend="vz"), "incomplete")
+        self.evidence["backend"] = "vz"
+        self.assertEqual(self.result(backend="vz"), "passed")
+        self.assertEqual(self.result(backend="tart"), "incomplete")
+        for key in report.CHECKS:
+            self.evidence["checks"][key] = False
+            self.assertEqual(self.result(backend="vz"), "incomplete")
+            self.evidence["checks"][key] = True
+
     def test_complete_evidence(self):
         self.assertEqual(self.result(), 'passed')
         self.assertEqual(self.result(1), 'incomplete')
