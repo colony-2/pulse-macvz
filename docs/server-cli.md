@@ -7,33 +7,94 @@ command owns transport and reconciliation when used as the standalone host.
 
 Long flags use `--full-name`; short aliases use one character, such as
 `-m outbound`, `-b vz`, `-l 4`, or `-h`. Run `pulse-tart server --help` for all
-options. There is no configuration file or new wire protocol.
+options. All three commands share a versioned JSON configuration file; transport
+uses the published SDK unchanged.
 
-## Build
+## Install and prepare
+
+On Apple Silicon macOS, package the main executable in an app bundle:
 
 ```sh
-./scripts/build-server.sh "$PWD/.local/bin/pulse-tart"
-.local/bin/pulse-tart server --help
+./scripts/build-server-app.sh "$HOME/Applications/PulseProvider.app"
+mkdir -p "$HOME/.local/bin"
+ln -s "$HOME/Applications/PulseProvider.app/Contents/MacOS/pulse-tart" \
+  "$HOME/.local/bin/pulse-tart"
+# Put ~/.local/bin on PATH, then run from any directory:
+pulse-tart setup --owner production --macos-capacity 2 --linux-capacity 4 \
+  --collector pulse.example.com:8443 \
+  --tls-ca /etc/pulse/ca.pem --tls-cert /etc/pulse/worker.pem \
+  --tls-key /etc/pulse/worker.key
+pulse-tart server
 ```
 
-The build is cgo-free. On Apple Silicon macOS, the script signs the binary
-with the virtualization entitlement and a fixed signing identifier. It uses
-`PULSE_CODESIGN_IDENTITY` or automatically selects a single Developer ID or
-Apple Development identity; without one, it falls back to ad-hoc signing.
-Persistent Local Network consent also requires correct app identity metadata.
-The live-qualified Docker configuration uses the bundled runner from
-`scripts/build-vz-app.sh`, passed through `--runner`; the bare server executable
-has not been qualified for launchd Local Network consent. See [VZ signing](vz-testing.md).
-It includes the VM runner: no second binary
-is required. Production packaging should sign with the application's release
-identity and preserve its other entitlements. `--runner /absolute/pulse-vz` can
-select a separate signed VZ runner instead. Linux builds can control Orchard;
-local VZ requires Apple Silicon macOS, and local Tart requires its supported host.
+The installed app contains one cgo-free executable. That same executable runs
+Cobra commands, VM children, and the Go Docker bridge through private child
+modes. It embeds the guest installation assets; production VZ operation needs
+neither a source checkout, host Python, nor a second signed helper. Python in
+the repository is for development/qualification tools and the legacy Tart bridge.
+Keep the app bundle intact even when invoking its executable through a symlink.
+Rebuilding with `build-server-app.sh` stages and verifies the entire signed app
+before atomically replacing the installed bundle. A build/signing failure leaves
+the installed app intact. Keep one installed production copy; development
+verification uses a separate identity and persistent installation.
+
+The build uses `PULSE_CODESIGN_IDENTITY` or selects a single Developer ID or
+Apple Development identity; otherwise it falls back to ad-hoc signing. Use a
+stable release identity for persistent Local Network consent and apply your
+release notarization policy before distribution. `setup`/`upgrade` register the
+app with LaunchServices when macOS Docker companions are configured. Run that
+installation step from an ordinary terminal; the server does not re-register on
+every startup. Allow macOS's Local Network prompt for Pulse Provider when it
+first connects. See [VZ signing and qualification](vz-testing.md).
+
+`setup` checks the backend, prepares missing images/templates/allocations, and
+saves settings after capacity is ready. It reuses prepared sources and does not
+connect to Pulse, so collector credentials may be omitted until serving. Pass
+collector/TLS flags to `setup` too if they should be saved. Downloads and guest
+preparation can take minutes on first use.
+
+`upgrade` waits for accepted jobs to finish, retires this owner's allocations,
+removes its inactive prepared images, and prepares fresh capacity using the
+selected c2j version. For example:
+
+```sh
+# Stop the provider server first; accepted VM jobs survive server shutdown.
+pulse-tart upgrade --c2j-version latest --timeout 2h
+pulse-tart server
+```
+
+Maintenance uses the normal ownership lock and refuses to race another server.
+A timeout or cancellation does not cancel accepted jobs. There is downtime for
+rebuilding capacity; once old sources have been removed, a preparation failure
+requires retrying. `upgrade` refreshes guest images/tools, not the host executable:
+install a newer signed app bundle separately, then run it. No background service
+is installed by these commands.
+
+All commands read `~/.pulse/provider.json`, or `--config/-f PATH`. Explicit flags
+win over saved settings. `setup` and successful `upgrade` save effective settings
+atomically with mode 0600; `server` does not rewrite them. The format is:
+
+```json
+{"version": 1, "flags": {"backend": "vz", "owner": "production", "macos-capacity": "2", "linux-capacity": "4"}}
+```
+
+Flag values are strings, using the same syntax as CLI arguments. Unknown options
+and versions fail validation. Relative paths in the file resolve against its
+directory; paths supplied on the command line resolve against the current
+directory. Generated configurations save absolute paths. Credentials remain in
+their certificate/key/token files; configuration stores those paths. A missing
+default config is allowed; an explicitly named missing file is allowed only for
+`setup`. An omitted `total-capacity` continues to follow macOS + Linux capacity.
+
+For a bare executable, use `scripts/build-server.sh OUTPUT`; Linux builds can
+control Orchard. Local VZ requires Apple Silicon macOS; local Tart requires its
+supported host. `--runner /absolute/runner` remains available for embedding or
+specialized installations, but is unnecessary with the bundled CLI.
 
 ## Outbound: provider connects to Pulse
 
 ```sh
-.local/bin/pulse-tart server \
+pulse-tart server \
   --collector pulse.example.com:8443 \
   --name mac-worker-01 \
   --tls-ca /etc/pulse/collector-ca.pem \
@@ -107,7 +168,7 @@ transport and parent-loss pipe. Invoke it through the SDK; running the command
 alone lacks the required handshake. Do not pass outbound `--collector`, `--name`,
 or `--tls-*` options in inbound mode. The host supplies its initialization name,
 an absolute base directory, and an explicit child environment, including HOME and
-PATH as needed. Provider configuration comes from the CLI flags; `ConfigYAML`
+PATH as needed. Provider configuration comes from the saved settings and CLI flags; `ConfigYAML`
 must be empty or `{}`. Executor-environment overrides are rejected explicitly.
 
 **Current upstream restriction:** the pinned SDK supports inbound `Start`/`Serve`
@@ -121,7 +182,9 @@ Use outbound on macOS. The requested Darwin safeguards work is tracked in the
 
 `--owner` defaults to `server`; keep it stable across restarts. The default state
 directory is `~/.pulse-tart/BACKEND/OWNER`, with `--state-dir` available to override
-it. VZ defaults to `~/.pulse-vz`, Tart to `~/.tart`; `--vm-home` overrides either.
+it. VZ defaults to `~/.pulse/vz`, Tart to `~/.tart`; `--vm-home` overrides either.
+Existing `~/.pulse-vz` and Tart data are not moved or deleted. To keep using an
+old VZ home, explicitly pass `--vm-home "$HOME/.pulse-vz"` to `setup`.
 Paths accept relative paths or `~/` and are resolved before serving. Orchard
 requires `--orchard-url` and `--orchard-worker`; its token is read from a file,
 not passed as the token value in argv. `--orchard-allow-http` is an explicit lab
@@ -148,7 +211,7 @@ companions still require launchd job creation in addition to VZ/network access.
 
 ```sh
 go test -race ./internal/servercli
-PULSE_TEST_SERVER_BINARY="$PWD/.local/bin/pulse-tart" CGO_ENABLED=0 \
+PULSE_TEST_SERVER_BINARY="$HOME/Applications/PulseProvider.app/Contents/MacOS/pulse-tart" CGO_ENABLED=0 \
   go test ./internal/servercli -run '^TestLiveVZServer$' -v -count=1
 ```
 

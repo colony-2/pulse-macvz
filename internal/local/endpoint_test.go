@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"os"
@@ -154,9 +155,18 @@ func TestEndpointMovesExistingHelperBesideVM(t *testing.T) {
 		t.Fatal(err)
 	}
 	calls := []string{}
+	missing := missingService(t)
+	removed := false
 	b.service = func(_ context.Context, args ...string) ([]byte, error) {
 		calls = append(calls, args[0])
+		if args[0] == "bootout" {
+			removed = true
+		}
+		if args[0] == "print" && removed {
+			return nil, missing
+		}
 		if args[0] == "bootstrap" {
+			removed = false
 			want := filepath.Join(b.path(spec.Name), "pulse-endpoint", "service.plist")
 			if args[2] != want {
 				t.Fatal("helper not moved into VM directory", args[2])
@@ -165,7 +175,7 @@ func TestEndpointMovesExistingHelperBesideVM(t *testing.T) {
 		return nil, nil
 	}
 	ready, err := b.ensureEndpoint(t.Context(), v.UID, "127.0.0.1:2222", 45100)
-	if ready || err != nil || strings.Join(calls, ",") != "print,bootout,bootstrap" {
+	if ready || err != nil || strings.Join(calls, ",") != "print,bootout,print,bootstrap" {
 		t.Fatal(ready, err, calls)
 	}
 	// A new helper with its plist present may still be starting; do not restart
@@ -173,5 +183,96 @@ func TestEndpointMovesExistingHelperBesideVM(t *testing.T) {
 	calls = nil
 	if _, err = b.ensureEndpoint(t.Context(), v.UID, "127.0.0.1:2222", 45100); err != nil || strings.Join(calls, ",") != "print" {
 		t.Fatal(err, calls)
+	}
+}
+
+func TestEndpointRemovalWaitsForConfirmedAbsence(t *testing.T) {
+	missing := missingService(t)
+	noProcess := exec.Command("/bin/sh", "-c", "exit 3").Run()
+	for _, bootErr := range []error{nil, noProcess, missing} {
+		t.Run(fmt.Sprint(bootErr), func(t *testing.T) {
+			b, _, _ := fixture(t)
+			dir := b.endpointDir("owned")
+			if err := os.MkdirAll(dir, 0700); err != nil {
+				t.Fatal(err)
+			}
+			prints, stops := 0, 0
+			b.service = func(_ context.Context, args ...string) ([]byte, error) {
+				if _, err := os.Stat(dir); err != nil {
+					t.Fatal("released state before confirmed absence", err)
+				}
+				switch args[0] {
+				case "print":
+					prints++
+					if prints >= 3 {
+						return nil, missing
+					}
+					return []byte("state = exiting"), nil
+				case "bootout":
+					stops++
+					return []byte("Boot-out failed: 3: No such process"), bootErr
+				}
+				t.Fatalf("unexpected launchctl %v", args)
+				return nil, nil
+			}
+			if err := b.RemoveEndpoint(t.Context(), "engine", "owned"); err != nil {
+				t.Fatal(err)
+			}
+			if stops != 1 || prints != 3 {
+				t.Fatal("did not wait for disappearance", stops, prints)
+			}
+			if _, err := os.Stat(dir); !os.IsNotExist(err) {
+				t.Fatal("state retained after confirmed removal", err)
+			}
+			b.service = func(_ context.Context, args ...string) ([]byte, error) {
+				if args[0] != "print" {
+					t.Fatalf("repeated removal mutated service: %v", args)
+				}
+				return nil, missing
+			}
+			if err := b.RemoveEndpoint(t.Context(), "engine", "owned"); err != nil {
+				t.Fatal("repeated removal", err)
+			}
+		})
+	}
+}
+
+func TestEndpointRemovalRetainsUncertainState(t *testing.T) {
+	noProcess := exec.Command("/bin/sh", "-c", "exit 3").Run()
+	denied := exec.Command("/bin/sh", "-c", "exit 5").Run()
+	for _, name := range []string{"still present", "observation denied", "bootout denied"} {
+		t.Run(name, func(t *testing.T) {
+			b, _, _ := fixture(t)
+			dir := b.endpointDir("owned")
+			if err := os.MkdirAll(dir, 0700); err != nil {
+				t.Fatal(err)
+			}
+			prints := 0
+			b.service = func(_ context.Context, args ...string) ([]byte, error) {
+				if args[0] == "bootout" {
+					if name == "bootout denied" {
+						return nil, denied
+					}
+					return nil, noProcess
+				}
+				prints++
+				if prints > 1 && name == "observation denied" {
+					return nil, denied
+				}
+				return nil, nil
+			}
+			ctx, cancel := context.WithTimeout(t.Context(), 25*time.Millisecond)
+			defer cancel()
+			err := b.RemoveEndpoint(ctx, "engine", "owned")
+			if err == nil {
+				t.Fatal("uncertain removal succeeded")
+			}
+			if name == "still present" && !errors.Is(err, context.DeadlineExceeded) {
+				t.Fatal(err)
+			}
+			if _, err := os.Stat(dir); err != nil {
+				t.Fatal("uncertain state deleted", err)
+			}
+		})
 	}
 }

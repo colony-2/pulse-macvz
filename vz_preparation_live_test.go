@@ -9,7 +9,7 @@ import (
 )
 
 // Preparation needs no host endpoint. Returning not-ready keeps ordinary pair
-// reconciliation from starting primary clones or registering launchd services.
+// reconciliation from configuring primaries or registering launchd services.
 // This is only a source-cache gate, never evidence for paired qualification.
 type preparationOnlyBackend struct{ *qualificationBackend }
 

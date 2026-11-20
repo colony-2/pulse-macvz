@@ -26,6 +26,11 @@ jobs:
           codesign --verify --strict "$RUNNER_TEMP/pulse-vz"
           ./scripts/build-server.sh "$RUNNER_TEMP/pulse-tart"
           "$RUNNER_TEMP/pulse-tart" server --help
+          if [[ $(uname -m) == arm64 ]]; then
+            ./scripts/build-server-app.sh "$RUNNER_TEMP/PulseProvider.app"
+            codesign --verify --deep --strict "$RUNNER_TEMP/PulseProvider.app"
+            "$RUNNER_TEMP/PulseProvider.app/Contents/MacOS/pulse-tart" setup --help
+          fi
   cross-build:
     runs-on: ubuntu-24.04
     env:

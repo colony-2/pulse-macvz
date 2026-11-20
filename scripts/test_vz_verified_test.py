@@ -44,6 +44,7 @@ class Verification(unittest.TestCase):
                  patch.dict(verified.os.environ, {'PULSE_VZ_TEST_CACHE':str(cache)}), \
                  patch.object(verified, 'select_linux_base', return_value=root/'linux'), \
                  patch.object(verified, 'identity', return_value={'uuid':'one','requirement':'certificate'}), \
+                 patch.object(verified, 'registration_evidence'), \
                  patch.object(verified.subprocess, 'run', side_effect=run), \
                  patch.object(verified.subprocess, 'call') as full, \
                  patch.object(verified, 'go_gate', side_effect=RuntimeError('launchd denied')):
@@ -52,7 +53,33 @@ class Verification(unittest.TestCase):
             self.assertFalse(any('start' in args for args in called))
             report=next((root/'test-results').glob('*/verification.json'))
             self.assertEqual(json.loads(report.read_text())['result'], 'incomplete')
+            self.assertIn('launchd denied', json.loads(report.read_text())['error'])
+            self.assertEqual(json.loads(report.read_text())['app'], str(root/'.local/vz-verification/PulseProvider.app'))
+            self.assertFalse(any('-u' in args for args in called))
             self.assertTrue(Path(str(report.parent)+'.tar.gz').exists())
+
+    def test_late_approval_cannot_mask_rebuild_failure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            stage=Path(tmp); report=stage/'endpoint-preflight.json'
+            for payload in ({}, {'service': {}}, {'service': {'service.log': 'bridge forwarding failed: no route to host'}}):
+                report.write_text(json.dumps(payload))
+                with self.assertRaises(RuntimeError):
+                    verified.require_no_forwarding_denials(stage)
+            report.write_text(json.dumps({'service': {'service.log': ''}}))
+            verified.require_no_forwarding_denials(stage)
+
+    def test_conflicting_registered_copy_fails_before_network(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            app=Path(tmp)/'App.app'; output=Path(tmp)/'registration.json'
+            for paths, allowed in (([str(app)], True), ([], False), ([str(app), '/other/App.app'], False)):
+                result=verified.subprocess.CompletedProcess([], 0, json.dumps(paths), '')
+                with patch.object(verified.subprocess, 'run', return_value=result):
+                    if allowed:
+                        verified.registration_evidence(app, output)
+                    else:
+                        with self.assertRaises(RuntimeError):
+                            verified.registration_evidence(app, output)
+                self.assertTrue(output.exists())
 
 
 if __name__ == '__main__':

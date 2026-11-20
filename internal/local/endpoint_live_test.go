@@ -117,6 +117,7 @@ func testLiveDockerEndpoint(t *testing.T, kind, runner string) {
 	client := &http.Client{Timeout: time.Second, Transport: &http.Transport{DisableKeepAlives: true}}
 	defer client.CloseIdleConnections()
 	var snapshot map[string]map[string]string
+	var passMarker string
 	defer func() {
 		cleanup, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancel()
@@ -140,6 +141,9 @@ func testLiveDockerEndpoint(t *testing.T, kind, runner string) {
 			t.Errorf("repeated endpoint cleanup: %v", err)
 		}
 		b.Close()
+		if passMarker != "" && !t.Failed() {
+			t.Log(passMarker)
+		}
 	}()
 	pid := func() int {
 		var ready struct{ PID int }
@@ -162,7 +166,7 @@ func testLiveDockerEndpoint(t *testing.T, kind, runner string) {
 						return
 					} else if time.Since(progress) >= 5*time.Second {
 						progress = time.Now()
-						t.Logf("waiting for guest SSH through launchd: %v (check the Pulse VZ Local Network prompt)", err)
+						t.Logf("waiting for guest SSH through launchd: %v (check the provider app's Local Network prompt)", err)
 					}
 				} else {
 					response, err := client.Get("http://127.0.0.1:" + strconv.Itoa(port))
@@ -208,8 +212,8 @@ func testLiveDockerEndpoint(t *testing.T, kind, runner string) {
 		t.Fatal("endpoint still accepts requests after removal")
 	}
 	if networkGate {
-		t.Log("DOCKER_NETWORK_ENDPOINT_PASS: guest SSH through launchd; Close/reopen; same-port restart; removal")
+		passMarker = "DOCKER_NETWORK_ENDPOINT_PASS: guest SSH through launchd; Close/reopen; same-port restart; removal"
 	} else {
-		t.Log("DOCKER_ENDPOINT_SERVICE_PASS: Background launchd; forwarding; Close/reopen; same-port restart; removal")
+		passMarker = "DOCKER_ENDPOINT_SERVICE_PASS: Background launchd; forwarding; Close/reopen; same-port restart; removal"
 	}
 }

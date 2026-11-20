@@ -28,7 +28,7 @@ func NewVZ(c Config, options VZConfig) (*Runtime, error) {
 		if err != nil {
 			return nil, err
 		}
-		options.Home = filepath.Join(home, ".pulse-vz")
+		options.Home = filepath.Join(home, ".pulse", "vz")
 	}
 	if !filepath.IsAbs(options.Home) {
 		return nil, ErrConfig

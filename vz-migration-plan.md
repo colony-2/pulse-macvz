@@ -91,7 +91,7 @@ The wrapper, run lock, `run.log` and exit file are kept as they are, because the
 
 ```go
 type VZConfig struct {
-    Home           string        // default ~/.pulse-vz
+    Home           string        // default ~/.pulse/vz
     Runner         string        // default os.Executable()
     CommandTimeout time.Duration // default 2m
     SSHTimeout     time.Duration // default 15s

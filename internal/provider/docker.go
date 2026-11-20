@@ -500,6 +500,39 @@ func (p *Provider) reconcilePairs(ctx context.Context) error {
 				continue
 			}
 			if pair.Phase == "engine-dispatch" {
+				// Both VMs were reserved together. Restore the primary while the
+				// engine boots; only configuration/readiness needs the endpoint.
+				if !pair.PrimaryDispatched {
+					available, err := p.canStartVMs(ctx)
+					if err != nil {
+						return err
+					}
+					if !available {
+						continue
+					}
+					pair.PrimaryDispatched = true
+					if err := p.Store.save(); err != nil {
+						return err
+					}
+					v, err := p.Backend.Create(ctx, pair.Primary)
+					if err == nil && p.pairMatches(pair, v, true) {
+						pair.PrimaryUID = v.UID
+					}
+					cause := err
+					if cause == nil && pair.PrimaryUID == "" {
+						cause = errors.New("Docker primary create identity mismatch")
+					}
+					p.pairPreparation(pair, true, cause)
+					if saveErr := p.Store.save(); saveErr != nil {
+						return combine("Docker primary create", cause, "save Docker preparation result", saveErr)
+					}
+					continue
+				}
+				// An ambiguous primary Create must first resolve to the owned VM.
+				// Keep its phase and diagnostic intact while waiting for that result.
+				if !hasPrimary {
+					continue
+				}
 				ready, e := p.pairEngineReady(ctx, pair)
 				if e != nil {
 					return e
@@ -514,29 +547,9 @@ func (p *Provider) reconcilePairs(ctx context.Context) error {
 				if !ready {
 					continue
 				}
-				available, e := p.canStartVMs(ctx)
-				if e != nil {
-					return e
-				}
-				if !available {
-					continue
-				}
 				pair.Phase = "primary-dispatch"
-				pair.PrimaryDispatched = true
 				if e = p.Store.save(); e != nil {
 					return e
-				}
-				v, e := p.Backend.Create(ctx, pair.Primary)
-				if e == nil && p.pairMatches(pair, v, true) {
-					pair.PrimaryUID = v.UID
-				}
-				cause := e
-				if cause == nil && pair.PrimaryUID == "" {
-					cause = errors.New("Docker primary create identity mismatch")
-				}
-				p.pairPreparation(pair, true, cause)
-				if saveErr := p.Store.save(); saveErr != nil {
-					return combine("Docker primary create", cause, "save Docker primary result", saveErr)
 				}
 				continue
 			}
@@ -599,13 +612,8 @@ func (p *Provider) reconcilePairs(ctx context.Context) error {
 	if p.Config.Docker == nil {
 		return nil
 	}
-	// Finish a partial pair before dispatching another; avoid filling a small
-	// worker with companions while all primaries wait for capacity.
-	for _, pair := range p.Store.data.Pairs {
-		if pair.Phase != "gone" && pair.Phase != "ready" && pair.Phase != "running" && pair.Phase != "handoff-intent" {
-			return nil
-		}
-	}
+	// Reservations include both VMs of every pair, so independent pairs can
+	// warm concurrently without exceeding job limits or the macOS ceiling.
 	for _, g := range p.Config.Slots {
 		if p.preferredGroup != "" && time.Now().Before(p.preferUntil) && g.Name != p.preferredGroup {
 			continue
@@ -646,7 +654,9 @@ func (p *Provider) reconcilePairs(ctx context.Context) error {
 				continue
 			}
 			p.Store.data.Pairs[pair.ID] = pair
-			return p.Store.save()
+			if e := p.Store.save(); e != nil {
+				return e
+			}
 		}
 	}
 	return nil

@@ -22,6 +22,8 @@ type serverOptions struct {
 	orchardTokenFile                                           string
 	config                                                     tart.Config
 	transport                                                  transportOptions
+	configPath                                                 string
+	managementTimeout                                          time.Duration
 	version                                                    string
 	log                                                        io.Writer
 }
@@ -35,13 +37,22 @@ func NewCommand(version string) *cobra.Command {
 
 func newCommand(run func(context.Context, serverOptions) error) *cobra.Command {
 	root := &cobra.Command{Use: "pulse-tart", Short: "Run a Pulse VM provider", SilenceUsage: true, SilenceErrors: true}
+	root.AddCommand(providerCommand("server", "Serve a VM provider through Pulse's outbound or inbound plugin", run))
+	root.AddCommand(providerCommand("setup", "Save configuration and prepare the configured VM capacity", runSetup))
+	root.AddCommand(providerCommand("upgrade", "Drain accepted work and rebuild this owner's prepared images", runUpgrade))
+	return root
+}
+
+func providerCommand(name, short string, run func(context.Context, serverOptions) error) *cobra.Command {
 	var o serverOptions
 	server := &cobra.Command{
-		Use:   "server",
-		Short: "Serve a VM provider through Pulse's outbound or inbound plugin",
-		Long:  "Run a VM provider and reconcile its images and jobs. Outbound mode connects to a Pulse collector using mutual TLS. Inbound mode is launched by the host through the plugin SDK (currently Linux only). Stopping the server leaves accepted VM jobs running for recovery on restart.",
+		Use:   name,
+		Short: short,
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			if err := loadConfiguration(cmd, &o); err != nil {
+				return err
+			}
 			o.capacity.totalSet = cmd.Flags().Changed("total-capacity")
 			o.version = cmd.Root().Version
 			if o.version == "" {
@@ -51,10 +62,20 @@ func newCommand(run func(context.Context, serverOptions) error) *cobra.Command {
 			if err := o.resolve(); err != nil {
 				return err
 			}
-			return run(cmd.Context(), o)
+			if err := run(cmd.Context(), o); err != nil {
+				return err
+			}
+			if name != "server" {
+				return saveConfiguration(cmd, o.configPath)
+			}
+			return nil
 		},
 	}
 	f := server.Flags()
+	f.StringVarP(&o.configPath, "config", "f", "", "Configuration file (default ~/.pulse/provider.json; explicit flags override saved settings)")
+	if name != "server" {
+		f.DurationVar(&o.managementTimeout, "timeout", 2*time.Hour, "Maximum preparation/drain time; timeout never cancels accepted jobs")
+	}
 	o.transport.flags(f)
 	f.StringVarP(&o.mode, "mode", "m", "outbound", "Plugin mode: outbound or inbound")
 	f.StringVarP(&o.backend, "backend", "b", "vz", "VM provider: vz, tart, or orchard")
@@ -79,8 +100,7 @@ func newCommand(run func(context.Context, serverOptions) error) *cobra.Command {
 	f.StringVar(&o.orchard.Username, "orchard-username", "", "Orchard API username")
 	f.StringVar(&o.orchardTokenFile, "orchard-token-file", "", "File containing the Orchard API token")
 	f.BoolVar(&o.orchard.AllowInsecureHTTP, "orchard-allow-http", false, "Allow unencrypted HTTP to an Orchard lab server")
-	root.AddCommand(server)
-	return root
+	return server
 }
 
 func (o *serverOptions) resolve() error {
@@ -102,7 +122,14 @@ func (o *serverOptions) resolve() error {
 		o.stateDir = filepath.Join(home, ".pulse-tart", o.backend, o.owner)
 	}
 	var err error
-	for _, value := range []*string{&o.stateDir, &o.vmHome, &o.runner, &o.orchardTokenFile} {
+	if o.vmHome == "" && o.backend == "vz" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return err
+		}
+		o.vmHome = filepath.Join(home, ".pulse", "vz")
+	}
+	for _, value := range []*string{&o.stateDir, &o.vmHome, &o.runner, &o.orchardTokenFile, &o.transport.ca, &o.transport.cert, &o.transport.key} {
 		if *value, err = absolutePath(*value); err != nil {
 			return err
 		}
@@ -131,5 +158,8 @@ func (o *serverOptions) resolve() error {
 		return fmt.Errorf("--runner requires --backend=vz")
 	}
 	o.orchard.DockerEndpoint = o.endpoint
+	if o.managementTimeout != 0 && o.mode == "outbound" && o.transport.address == "" && o.transport.name == "" && o.transport.ca == "" && o.transport.cert == "" && o.transport.key == "" && o.transport.serverName == "" {
+		return o.transport.validate("inbound", o.owner)
+	}
 	return o.transport.validate(o.mode, o.owner)
 }

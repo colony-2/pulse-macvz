@@ -8,6 +8,7 @@ import (
 )
 
 func TestCommandDefaultsAndFlags(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	for _, args := range [][]string{
 		{"server"},
 		{"server", "--mode", "inbound", "--backend", "tart", "--linux-capacity", "1", "--macos-capacity", "1", "--macos-docker-capacity", "1", "--total-capacity", "0"},
@@ -45,6 +46,7 @@ func TestCommandDefaultsAndFlags(t *testing.T) {
 }
 
 func TestInvalidFlagsNeverStartProvider(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	for _, args := range [][]string{
 		{"--mode", "typo"}, {"-mode", "inbound"}, {"--backend", "unknown"},
 		{"--macos-capacity", "3"}, {"--linux-capacity", "-1"}, {"--macos-docker-capacity", "3"},

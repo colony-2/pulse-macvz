@@ -133,7 +133,7 @@ type Tart struct {
 
 // VZ selects the independent, cgo-free Virtualization.framework provider.
 type VZ struct {
-	Home            string // Defaults to ~/.pulse-vz; separate from Tart's inventory.
+	Home            string // Defaults to ~/.pulse/vz; separate from Tart's inventory.
 	Runner          string // Defaults to this executable, whose main must call RunnerMain.
 	CommandTimeout  time.Duration
 	SSHTimeout      time.Duration

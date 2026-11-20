@@ -1,6 +1,6 @@
 # pulse-tart
 
-A Go library and standalone server implementing [`pulse-provider-api`](https://github.com/colony-2/pulse-provider-api) through local Tart, Orchard, or a cgo-free native VZ provider. Defaults support macOS jobs and Linux jobs with Docker. macOS Docker support adds a private Linux companion and is opt-in. Pulse imports the library and supplies complete job assignments. Use the typed Go API or the Cobra `pulse-tart server` command. The server defaults to outbound connections through the published provider plugin SDK; it also exposes the SDK’s inbound mode. See [server CLI setup and options](docs/server-cli.md), including the current upstream macOS inbound restriction.
+A Go library and standalone server implementing [`pulse-provider-api`](https://github.com/colony-2/pulse-provider-api) through local Tart, Orchard, or a cgo-free native VZ provider. Defaults support macOS jobs and Linux jobs with Docker. macOS Docker support adds a private Linux companion and is opt-in. Pulse imports the library and supplies complete job assignments. Use the typed Go API or the Cobra `pulse-tart setup`, `upgrade`, and `server` commands. The server defaults to outbound connections through the published provider plugin SDK; it also exposes the SDK’s inbound mode. See [server CLI setup and options](docs/server-cli.md), including the current upstream macOS inbound restriction.
 
 ## Images and jobs
 
@@ -39,7 +39,7 @@ Import `tart "github.com/colony-2/pulse-tart"`. Constructors validate/copy confi
 `NewVZ` selects Apple's Virtualization.framework on Apple Silicon with macOS 14
 or later. It uses `tmc/apple` and `purego`, builds with `CGO_ENABLED=0`, and needs
 neither Tart nor host Python. Tart and Orchard remain separate options; Pulse
-owns default-provider selection. VZ uses its own `~/.pulse-vz` home and `vz`
+owns default-provider selection. VZ uses its own `~/.pulse/vz` home and `vz`
 ownership scope. It does not coordinate admission with Tart.
 
 When embedding the runner, call the hook before other work in `main`:

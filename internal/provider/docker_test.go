@@ -19,15 +19,54 @@ type dockerFake struct {
 	deliveries                                  int
 	receipt, loseDelivery, failDelete, notReady bool
 	nixDenied                                   bool
+	engineBlocked                               bool
 	payload                                     envelope
 }
 
 func (f *dockerFake) Endpoint(context.Context, string, string, int) (bool, error) { return true, nil }
 func (f *dockerFake) Events(ctx context.Context, name string) ([]backend.Event, error) {
 	if strings.HasSuffix(name, "-engine") || strings.HasSuffix(name, "-primary") {
+		if f.engineBlocked && strings.HasSuffix(name, "-engine") {
+			return nil, nil
+		}
 		return []backend.Event{{Payload: "PULSE_DOCKER_ENGINE_READY private-engine"}}, nil
 	}
 	return f.fake.Events(ctx, name)
+}
+
+func TestDockerPairsRestoreBeforeEnginesReady(t *testing.T) {
+	p, f := dockerFixture(t, false)
+	p.Config.Slots[0].Count = 2
+	f.engineBlocked = true
+	for range 30 {
+		if err := p.Reconcile(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		started := 0
+		for _, pair := range p.Store.data.Pairs {
+			if pair.Phase == "ready" {
+				t.Fatal("admitted without engine readiness")
+			}
+			if pair.PrimaryUID != "" && pair.EngineUID != "" {
+				started++
+			}
+		}
+		if started == 2 {
+			f.engineBlocked = false
+			for range 10 {
+				if err := p.Reconcile(t.Context()); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for _, pair := range p.Store.data.Pairs {
+				if pair.Phase != "ready" {
+					t.Fatal("pair failed to converge", pair.Phase)
+				}
+			}
+			return
+		}
+	}
+	t.Fatal("independent pair restores waited for engine readiness")
 }
 func (f *dockerFake) Exec(_ context.Context, name, uid string, script []byte) ([]byte, error) {
 	s := string(script)

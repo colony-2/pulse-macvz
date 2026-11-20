@@ -7,7 +7,8 @@ paired Docker qualification checks have passed as recorded below.
 ## Setup and script map
 
 VZ is available through the library and the [standalone server CLI](server-cli.md).
-There is no VZ install daemon or separate provider setup command. An embedding host calls `NewVZ`, then drives `Run` or `Reconcile`. Guest
+The CLI provides `setup` and `upgrade` for installed operation; see its documentation
+for persistent settings and draining behavior. An embedding host calls `NewVZ`, then drives `Run` or `Reconcile`. Guest
 setup archives and image preparation run through that same lifecycle. Production
 hosts can embed `RunnerMain` in their signed executable; alternatively, build a
 standalone development runner and pass its absolute path in `VZConfig.Runner`:
@@ -52,6 +53,7 @@ prerequisite for running them.
 
 | Script | Purpose | Creates VMs? |
 | --- | --- | --- |
+| `scripts/build-server-app.sh OUTPUT.app` | Package/sign the main server, VM children, and Go bridge in one app | No |
 | `scripts/build-server.sh OUTPUT` | Build/sign the standalone CLI with embedded VM runner | No |
 | `scripts/build-vz-runner.sh OUTPUT` | Build/sign a development helper at an absolute path | No |
 | `scripts/build-vz-app.sh OUTPUT.app` | Package/sign a runner with app identity and Local Network usage metadata | No |
@@ -175,19 +177,55 @@ lifecycle, then starts a disposable Linux VM from the prepared-source cache and
 requires guest SSH through the actual launchd bridge. It checks service restart,
 stops the VM, rebuilds the app at the same path with a distinct UUID and matching
 signing requirement, and repeats the guest-network check. Approve the initial
-Pulse VZ Local Network prompt if shown; during the explicitly announced rebuild
+Pulse Provider Verification Local Network prompt if shown; during the explicitly announced rebuild
 check, do not approve another prompt, because that would mask failed consent
 persistence. A failure or skipped gate stops before the Docker matrix.
 
 Only after both gates pass does it invoke the full qualification driver with
 the verified app runner, leaving it at the same registered path. Cleanup stops
-the preflight VM, removes the test services, and unregisters the app. The final
+the preflight VM and removes the test services, retaining the single registered
+verification app for the next run. The final
 `Verification: passed` requires all gates and the full Docker report to pass.
 The `test-results/vz-verified.*.tar.gz` archive contains the verification results,
 frozen sources, stage logs, and nested Docker evidence, excluding VM disks and
 compiled binaries. Set `PULSE_VZ_NETWORK_BASE` to a cold prepared VZ Linux image
 directory if no Linux source exists in the qualification cache. An Apple-issued
 signing identity is required for the rebuild-consent gate.
+
+The main server verification uses one persistent app at
+`.local/vz-verification/PulseProvider.app` with the test-only bundle ID
+`dev.pulse.provider.qualification`. It stays registered between runs; reports
+contain evidence, not additional installed copies. Production keeps
+`dev.pulse.provider`. Apple documents unexpected privacy behavior with multiple
+copies of an app ([TN3179](https://developer.apple.com/documentation/technotes/tn3179-understanding-local-network-privacy)). The driver records LaunchServices resolution and
+rejects competing registered copies of its test identity. Its rebuild gate also
+rejects any bridge forwarding failures, even if subsequent retries succeed
+after a second approval. On failure it automatically captures relevant identity
+logs. Once the failed test ends, a lingering Local Network prompt for the
+verification app can be allowed; this does not turn the saved failure into a pass.
+
+`vz-verified.me0hx329` passed initial connectivity/restarts but failed after the
+main app rebuild, before the Docker suite. The two builds had matching signing
+requirements and distinct UUIDs. The old packaging rewrote a registered app
+in place, briefly invalidating its signature, and test builds reused the
+production identity across separate app copies. The packaging now signs a
+staged bundle and installs it with an atomic directory swap; verification uses
+the isolated persistent installation described above. These fixes address
+observed packaging/test defects. The subsequent `vz-verified.qw_kgw2e` run passed
+initial and rebuilt network gates, including the strict forwarding-log check.
+The earlier archive alone does not establish which defect caused its second
+prompt.
+
+`vz-verified._lkfct1m` then verified a single registered test app and passed
+loopback forwarding and service restart, but failed during repeated endpoint
+cleanup: `print` still found the service while `bootout` returned exit 3,
+“No such process.” No VM or consent check had started. Endpoint removal now
+waits for confirmed service absence after bootout, including this race, before
+releasing its files or reusing its label. Permission errors and unconfirmed
+removal still fail and retain recovery state. Regression tests cover delayed
+removal, repeated removal, timeout, and denied observation; the live pass marker
+is emitted only after deferred cleanup succeeds.
+
 
 The underlying Docker-only driver remains available:
 
@@ -348,6 +386,26 @@ clones from the published cache a second time before booting the imported image.
 
 ### Latest bundled verification result
 
+`test-results/vz-verified.qw_kgw2e.tar.gz` passed with the packaged main server
+executable, atomic app replacement, isolated persistent verification identity,
+parallel Docker preparation, and confirmed endpoint removal. Both initial and
+rebuilt launchd-to-guest connectivity/restart gates passed; the rebuilt bridge
+log contained no forwarding failures. LaunchServices resolved exactly the
+verification app. All twelve Docker qualification checks passed, four real
+JobDB jobs completed, and the peak running macOS count remained two.
+
+The four prepared bases/templates were cache hits. Two complete Docker
+allocations became ready in **20, 23, and 38 seconds** across the three
+generations, compared with **51, 49, and 49 seconds** in the earlier serialized
+run below. These are single-host observations, not latency guarantees. The full
+fault/pressure suite took **681.48 seconds (11m21s)**. Its report is
+`test-results/vz-verified.qw_kgw2e/source/test-results/vz-docker.n32keb/report.json`.
+The tested source manifest matches the implementation committed with this
+record. Go race tests, vet/build, cgo-free checks, and the Linux cross-build also
+passed after the endpoint-removal fix.
+
+### Earlier serialized allocation result
+
 `test-results/vz-verified.weziv5_q.tar.gz` passed both network gates and all
 twelve Docker qualification checks. Four real JobDB jobs completed; six fresh
 allocation identities across three generations were distinct, and at most two
@@ -369,15 +427,38 @@ Timing observations on this host:
 | Job exit and paired cleanup after engine VM loss | 100 seconds, including this fixture's failed-probe tolerance and exit behavior |
 | Cold preparation with the supplied macOS source already local | Earlier run: 1m42s fixture-base setup + 4m42s pool preparation; downloads can add substantially more |
 
-The provider prepares Docker pairs one at a time, starting the Linux engine
-and endpoint before restoring/configuring the macOS primary. The seven-second
+The implementation measured in that archive prepared Docker pairs one at a time,
+starting the Linux engine and endpoint before restoring/configuring the macOS
+primary. The current implementation overlaps independent pairs and restores
+macOS while its engine starts; endpoint readiness still gates guest configuration.
+The revised path is qualified in the latest result above. The seven-second
 engine figure therefore does not describe complete Docker allocation readiness.
 Keeping ready pairs available moves this preparation off the job admission path.
 Each used pair is replaced with fresh allocation state from reusable sources.
 The full suite intentionally waits for overlapping leases, executes fault and
 pressure checks, and includes a 65-second fixture delay for each completed job;
-its runtime is not a startup-latency benchmark. Standalone macOS snapshot resume
-is covered functionally, but no isolated end-to-end latency figure is recorded.
+its runtime is not a startup-latency benchmark.
+
+Standalone macOS measurements with the packaged main server executable, 4 vCPU
+and 8 GiB, are recorded in
+`test-results/macos-timing/vz-mac-timing-4200333887/timings.json`:
+
+| Scenario | Time |
+| --- | --- |
+| Cold clone/start through a guest command over SSH | 14.85 seconds |
+| Clone/restore through a guest command over SSH, three runs | 8.53, 8.50, 8.49 seconds |
+| Save a suspended snapshot | 2.02 seconds |
+
+These measurements include clone/dispatch and SSH readiness, but exclude c2j
+lease handoff and job execution. Reproduce with a stopped cold macOS base:
+
+```sh
+PULSE_TEST_VZ_TIMING=1 \
+PULSE_VZ_MACOS_BASE=/absolute/cold-macos-base \
+PULSE_VZ_RUNNER="$HOME/Applications/PulseProvider.app/Contents/MacOS/pulse-tart" \
+PULSE_VZ_RESULTS="$PWD/test-results/macos-timing" CGO_ENABLED=0 \
+  go test ./internal/vz -run '^TestLiveMacOSTiming$' -v -count=1 -timeout 10m
+```
 
 The preceding run,
 `test-results/vz-verified.eebzmuzb.tar.gz` passed both network gates, used all

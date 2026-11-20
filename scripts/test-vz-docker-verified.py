@@ -104,6 +104,43 @@ def go_gate(source, stage, env, test, marker):
         raise RuntimeError(stage.name+' failed; Docker qualification was not started. See '+str(stage))
 
 
+def registration_evidence(app, output):
+    # Query LaunchServices through its public API. Keep evidence even if the
+    # hosting session cannot reach LaunchServices (for example under Seatbelt).
+    code = r'''ObjC.import('AppKit');
+var urls = $.NSWorkspace.sharedWorkspace.URLsForApplicationsWithBundleIdentifier('dev.pulse.provider.qualification');
+var paths = [];
+for (var i = 0; i < urls.count; ++i) paths.push(ObjC.unwrap(urls.objectAtIndex(i).path));
+JSON.stringify(paths);'''
+    p = subprocess.run(['/usr/bin/osascript', '-l', 'JavaScript', '-e', code], capture_output=True, text=True, timeout=15)
+    evidence = {'expected': str(app), 'exit': p.returncode, 'stdout': p.stdout, 'stderr': p.stderr}
+    output.write_text(json.dumps(evidence, indent=2)+'\n')
+    if p.returncode == 0 and p.stdout.strip().startswith('['):
+        paths = json.loads(p.stdout)
+        if paths != [str(app)]:
+            raise RuntimeError('LaunchServices does not resolve exactly the verification app; see '+str(output))
+
+
+def require_no_forwarding_denials(stage):
+    # The VM tool has already established direct SSH readiness. Reject a
+    # connectivity failure even if a late Allow click makes a retry succeed.
+    diagnostics = json.loads((stage/'endpoint-preflight.json').read_text())
+    if not diagnostics or any('service.log' not in service for service in diagnostics.values()):
+        raise RuntimeError('Missing rebuilt bridge log; cannot verify consent persistence')
+    for service in diagnostics.values():
+        if 'bridge forwarding failed:' in service.get('service.log', ''):
+            raise RuntimeError('Rebuilt app required connectivity retries; consent persistence is not verified. See '+str(stage))
+
+
+def collect_identity_logs(out):
+    predicate = '(process == "nehelper" OR process == "tccd" OR process == "lsd") AND (eventMessage CONTAINS[c] "dev.pulse.provider.qualification" OR eventMessage CONTAINS[c] "PulseProvider.app")'
+    try:
+        with (out/'identity-system.log').open('w') as log:
+            subprocess.run(['/usr/bin/log', 'show', '--last', '3m', '--info', '--debug', '--style', 'compact', '--predicate', predicate], stdout=log, stderr=subprocess.STDOUT, timeout=20)
+    except Exception as error:
+        (out/'identity-log-error.txt').write_text(str(error)+'\n')
+
+
 def main():
     if platform.system() != 'Darwin' or platform.machine() != 'arm64' or len(sys.argv) != 2 or not Path(sys.argv[1]).is_absolute():
         raise ValueError('Usage: python3 scripts/test-vz-docker-verified.py /absolute/prepared-macos-base (Apple Silicon macOS)')
@@ -118,18 +155,26 @@ def main():
     (ROOT/'test-results').mkdir(exist_ok=True)
     out = Path(tempfile.mkdtemp(prefix='vz-verified.', dir=ROOT/'test-results'))
     print('Verification artifacts:', out, flush=True)
-    source, app, home = out/'source', out/'PulseVZ.app', out/'network-home'
-    runner, vmtool = app/'Contents/MacOS/pulse-vz', out/'network-vm'
-    env = dict(os.environ, CGO_ENABLED='0', GOWORK='off', PULSE_VZ_RUNNER=str(runner), PULSE_VZ_TEST_CACHE=str(cache))
-    result = {'result': 'incomplete', 'checks': {}, 'linux_source': str(base)}
-    vm_attempted = registered = False
+    source, home = out/'source', out/'network-home'
+    # One installation per checkout; archives must not become competing apps.
+    app_root = ROOT/'.local/vz-verification'
+    app_root.mkdir(parents=True, exist_ok=True)
+    app_lock = (app_root/'lock').open('a+')
+    fcntl.flock(app_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    app = app_root/'PulseProvider.app'
+    runner, vmtool = app/'Contents/MacOS/pulse-tart', out/'network-vm'
+    env = dict(os.environ, CGO_ENABLED='0', GOWORK='off', PULSE_VZ_RUNNER=str(runner), PULSE_VZ_TEST_CACHE=str(cache), PULSE_APP_FLAVOR='qualification')
+    result = {'result': 'incomplete', 'checks': {}, 'linux_source': str(base),
+              'app': str(app), 'bundle_id': 'dev.pulse.provider.qualification'}
+    vm_attempted = False
     status = 2
     def logged(command, log, **kwargs):
         with log.open('w') as stream:
             subprocess.run(command, stdout=stream, stderr=subprocess.STDOUT, check=True, **kwargs)
     def build(label):
-        logged(['bash', 'scripts/build-vz-app.sh', str(app)], out/(label+'-build.log'), cwd=source, env=env)
+        logged(['bash', 'scripts/build-server-app.sh', str(app)], out/(label+'-build.log'), cwd=source, env=env)
         subprocess.run([LSREGISTER, '-f', str(app)], check=True, stdout=subprocess.DEVNULL)
+        registration_evidence(app, out/(label+'-registration.json'))
         return identity(runner)
     def start_vm():
         nonlocal vm_attempted
@@ -144,20 +189,19 @@ def main():
     try:
         subprocess.run(['python3', 'scripts/test-report.py', 'snapshot', str(out)], cwd=ROOT, check=True)
         print('1/3 Building and checking the packaged launchd runner.', flush=True)
-        registered = True
         first = build('initial')
         result['initial_identity'] = first
         go_gate(source, out/'launchd', dict(env, PULSE_TEST_VZ_DOCKER_ENDPOINT='1'),
                 'TestLiveVZDockerEndpoint', 'DOCKER_ENDPOINT_SERVICE_PASS:')
         logged(['go', 'build', '-o', str(vmtool), './scripts/vz-network-vm'], out/'vm-build.log', cwd=source, env=env)
         seed_home(base, home)
-        print('Starting a disposable Linux VM; then allow Pulse VZ Local Network access if macOS asks.', flush=True)
+        print('Starting a disposable Linux VM; then allow Pulse Provider Verification Local Network access if macOS asks.', flush=True)
         target = start_vm()
         go_gate(source, out/'network-initial', dict(env, PULSE_TEST_VZ_NETWORK_ENDPOINT='1', PULSE_TEST_VZ_NETWORK_TARGET=target),
                 'TestLiveVZNetworkEndpoint', 'DOCKER_NETWORK_ENDPOINT_PASS:')
         result['checks']['initial_network_and_restart'] = True
         stop_vm()
-        print('2/3 Rebuilding at the same app path. Permission should persist; do not approve a second network prompt during this check.', flush=True)
+        print('2/3 Rebuilding at the same app path. Permission must persist. If another Local Network prompt appears, leave it unanswered until this check ends; the report will record the failure.', flush=True)
         second = build('rebuilt')
         result['rebuilt_identity'] = second
         if first['uuid'] == second['uuid'] or first['requirement'] != second['requirement']:
@@ -165,6 +209,7 @@ def main():
         target = start_vm()
         go_gate(source, out/'network-rebuilt', dict(env, PULSE_TEST_VZ_NETWORK_ENDPOINT='1', PULSE_TEST_VZ_NETWORK_TARGET=target, PULSE_TEST_VZ_NETWORK_TIMEOUT='20'),
                 'TestLiveVZNetworkEndpoint', 'DOCKER_NETWORK_ENDPOINT_PASS:')
+        require_no_forwarding_denials(out/'network-rebuilt')
         result['checks']['rebuilt_network_and_restart'] = True
         stop_vm()
         print('3/3 Network gates passed. Starting full Docker qualification with the verified runner and prepared-source cache.', flush=True)
@@ -185,15 +230,17 @@ def main():
             service = service_file.read_text().strip()
             if service.startswith(f'user/{os.getuid()}/dev.pulse-vz.engine.'):
                 subprocess.run(['/bin/launchctl', 'bootout', service], capture_output=True)
-        if registered:
-            subprocess.run([LSREGISTER, '-u', str(app)], capture_output=True)
+        # Keep this single installed app registered between runs. Unregistering
+        # or accumulating app copies is not representative of an app upgrade.
+        if status != 0:
+            collect_identity_logs(out)
         if cleanup_errors:
             status = 2; result['result'] = 'incomplete'; result['cleanup_errors'] = cleanup_errors
         (out/'verification.json').write_text(json.dumps(result, indent=2)+'\n')
         # Nested Docker qualification already has its own complete archive.
         def include(info):
             parts = Path(info.name).parts
-            if any(part in ('home', 'network-home', 'PulseVZ.app', 'network-vm') for part in parts):
+            if any(part in ('home', 'network-home', 'PulseProvider.app', 'network-vm') for part in parts):
                 return None
             if info.name.endswith('.tar.gz'):
                 return None
@@ -201,6 +248,9 @@ def main():
         with tarfile.open(str(out)+'.tar.gz', 'w:gz') as archive:
             archive.add(out, arcname=out.name, filter=include)
         print('Verification:', result['result'], '\nEvidence archive:', str(out)+'.tar.gz', flush=True)
+        if result['checks'].get('initial_network_and_restart') and not result['checks'].get('rebuilt_network_and_restart'):
+            print('The rebuild check has ended. If its Local Network prompt is still open for Pulse Provider Verification, you may Allow it now; the failed result is already saved.', flush=True)
+        app_lock.close()
         lock.close()
     return status
 

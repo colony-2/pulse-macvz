@@ -52,6 +52,37 @@ func serviceAbsent(err error) bool {
 	var exited *exec.ExitError
 	return errors.As(err, &exited) && exited.ExitCode() == 113
 }
+
+// bootout can finish asynchronously: print may briefly still find the service
+// after an earlier removal, while another bootout reports ESRCH. Do not release
+// its files or reuse its label until print confirms that it is actually absent.
+func (b *Client) stopEndpointService(ctx context.Context, dir, target string) error {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	output, err := b.service(ctx, "bootout", target)
+	if err != nil {
+		var exited *exec.ExitError
+		if !serviceAbsent(err) && !(errors.As(err, &exited) && exited.ExitCode() == 3) {
+			return endpointFailure(dir, "remove launchd service", output, err)
+		}
+	}
+	for {
+		if err := ctx.Err(); err != nil {
+			return endpointFailure(dir, "wait for launchd removal", nil, err)
+		}
+		output, err := b.service(ctx, "print", target)
+		if serviceAbsent(err) {
+			return nil
+		}
+		if err != nil {
+			return endpointFailure(dir, "confirm launchd removal", output, err)
+		}
+		select {
+		case <-ctx.Done():
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
+}
 func endpointFailure(dir, stage string, output []byte, err error) error {
 	if len(output) > 8192 {
 		output = output[len(output)-8192:]
@@ -143,8 +174,8 @@ func (b *Client) ensureEndpoint(ctx context.Context, uid, target string, port in
 		if !os.IsNotExist(plistErr) && (err != nil || state.Target == "" || state.Target == target) {
 			return false, nil
 		}
-		if output, e = b.service(ctx, "bootout", domain+"/"+label); e != nil {
-			return false, endpointFailure(dir, "stop old target", output, e)
+		if e = b.stopEndpointService(ctx, dir, domain+"/"+label); e != nil {
+			return false, e
 		}
 	}
 	_ = os.Remove(ready)
@@ -200,8 +231,8 @@ func (b *Client) RemoveEndpoint(ctx context.Context, name, uid string) error {
 	dir := b.endpointDir(uid)
 	output, err := b.service(ctx, "print", domain+"/"+label)
 	if err == nil {
-		if output, err = b.service(ctx, "bootout", domain+"/"+label); err != nil {
-			return endpointFailure(dir, "remove launchd service", output, err)
+		if err = b.stopEndpointService(ctx, dir, domain+"/"+label); err != nil {
+			return err
 		}
 	} else if !serviceAbsent(err) {
 		return endpointFailure(dir, "inspect before removal", output, err)

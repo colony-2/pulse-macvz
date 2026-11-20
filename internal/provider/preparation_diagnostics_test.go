@@ -63,7 +63,7 @@ func TestDiagnosticDockerPrimaryPreparationCauseAfterEngineGet(t *testing.T) {
 	if e := p.Reconcile(t.Context()); e != nil {
 		t.Fatal(e)
 	}
-	if pair.Phase != "primary-dispatch" {
+	if !pair.PrimaryDispatched || pair.Phase != "engine-dispatch" {
 		t.Fatalf("did not reach create: %s", pair.Phase)
 	}
 	if old, ok := p.preparationCauses["pair:"+pair.ID]; !ok || !strings.Contains(old.cause.Error(), diagnosticRaw) {

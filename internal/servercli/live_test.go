@@ -47,6 +47,7 @@ func TestLiveVZServer(t *testing.T) {
 	}
 	defer collector.Close()
 	dir := t.TempDir()
+	t.Setenv("HOME", dir) // Installed user settings must not affect this isolated smoke test.
 	home := filepath.Join(dir, "home")
 	args := append([]string{"server", "--collector", listener.Addr().String(), "--name", "worker", "--owner", "cli-smoke", "--vm-home", home, "--state-dir", filepath.Join(dir, "state"), "--macos-capacity", "0", "--linux-capacity", "0"}, flags...)
 	cmd := exec.CommandContext(ctx, binary, args...)
