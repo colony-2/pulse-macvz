@@ -319,6 +319,28 @@ pressure, container OOM, private-disk ENOSPC, and subsequent container execution
 Use an unallocated Linux base, not a disk from a previously used Docker companion.
 This narrow check does not exercise the macOS relay or peer isolation.
 
+### Nested Linux KVM
+
+On a host supporting nested virtualization, use a stopped **prepared Linux worker
+base** (with `/opt/pulse-tart/bin/c2j`), not a Docker-engine-only companion base:
+
+```sh
+mkdir -p "$HOME/.pulse/vz/diagnostics/kvm"
+PULSE_TEST_VZ_KVM=1 \
+PULSE_VZ_LINUX_BASE=/absolute/prepared-linux-worker-base \
+PULSE_VZ_RUNNER="$HOME/go/bin/pulse-tart" \
+PULSE_VZ_RESULTS="$HOME/.pulse/vz/diagnostics/kvm" CGO_ENABLED=0 \
+  go test ./internal/vz -run '^TestLiveLinuxLifecycle$' -v -count=1 -timeout=12m
+```
+
+The test uses a private clone, runs the production worker-permission setup, and
+creates a KVM VM as `pulseworker`. It installs QEMU and a minimal initramfs inside
+that disposable clone, then boots its installed ARM kernel using `-accel kvm` as
+the same unprivileged account. A successful API call alone is not a pass: the
+nested kernel must execute init and shut down. Software emulation is forbidden.
+The outer VM is stopped on success or failure. Allow downloads for test packages;
+QEMU is not added to production base images by this test.
+
 The next full run, `test-results/vz-docker.RcRbUS`, passed concurrent jobs and
 controller, guest-relay, host-endpoint, and Docker-daemon kill/recovery checks,
 with two macOS guests observed. It failed in the CPU/memory pressure script;

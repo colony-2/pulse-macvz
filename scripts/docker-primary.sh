@@ -10,6 +10,17 @@ if [[ $(uname -s) == Linux ]]; then
  install -d -m 700 -o pulseworker -g pulseworker /home/pulseworker/work /home/pulseworker/work/tmp
  if getent group nix-users >/dev/null; then usermod -aG nix-users pulseworker; fi
  sudo -n -H -u pulseworker /usr/bin/nix --extra-experimental-features nix-command store ping --store daemon
+ # Nested virtualization is a boot-time platform feature. All Linux workers
+ # with a KVM device grant access to the ordinary job account, without sudo.
+ # Apply this to each unused allocation so existing prepared images are reusable.
+ if [[ -c /dev/kvm ]]; then
+  getent group kvm >/dev/null || groupadd --system kvm
+  usermod -aG kvm pulseworker
+  install -d -m 755 /etc/udev/rules.d
+  printf 'KERNEL=="kvm", GROUP="kvm", MODE="0660"\n' > /etc/udev/rules.d/70-pulse-kvm.rules
+  chgrp kvm /dev/kvm
+  chmod 660 /dev/kvm
+ fi
  # Plain workers use the same prepared software, with no daemon or socket.
  if [[ ${1:-docker} == plain ]]; then
   ! systemctl is-active --quiet docker.service docker.socket containerd.service

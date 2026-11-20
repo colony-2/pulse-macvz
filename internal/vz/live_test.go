@@ -69,7 +69,11 @@ func TestLiveLinuxLifecycle(t *testing.T) {
 			_ = b.Close()
 		}
 	}()
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	limit := 2 * time.Minute
+	if os.Getenv("PULSE_TEST_VZ_KVM") == "1" {
+		limit = 10 * time.Minute
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), limit)
 	defer cancel()
 	if err = b.Info(ctx); err != nil {
 		t.Fatal(err)
@@ -86,7 +90,7 @@ func TestLiveLinuxLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() {
+	defer func() {
 		if b == nil {
 			return
 		}
@@ -111,7 +115,7 @@ func TestLiveLinuxLifecycle(t *testing.T) {
 			case <-time.After(100 * time.Millisecond):
 			}
 		}
-	})
+	}()
 	for {
 		events, e := b.Events(ctx, "job")
 		if e != nil {
@@ -178,6 +182,9 @@ func TestLiveLinuxLifecycle(t *testing.T) {
 	output, err := b.Exec(ctx, "job", v.UID, []byte("uname -s; uname -m"))
 	if err != nil || !strings.Contains(string(output), "Linux\naarch64") {
 		t.Fatal(string(output), err)
+	}
+	if os.Getenv("PULSE_TEST_VZ_KVM") == "1" {
+		verifyLiveKVM(t, ctx, b, v)
 	}
 	output, err = b.Exec(ctx, "job", v.UID, []byte(`set -eu
 mkdir -p /var/tmp/pulse-storage-check

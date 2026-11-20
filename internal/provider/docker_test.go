@@ -20,6 +20,7 @@ type dockerFake struct {
 	deliveries                                  int
 	receipt, loseDelivery, failDelete, notReady bool
 	nixDenied                                   bool
+	kvmDenied                                   bool
 	engineBlocked                               bool
 	engineStarts                                int
 	payload                                     envelope
@@ -98,6 +99,9 @@ func (f *dockerFake) Exec(_ context.Context, name, uid string, script []byte) ([
 		return nil, errors.New("no receipt")
 	}
 	if strings.Contains(s, "PULSE_DOCKER_PRIMARY_READY") {
+		if f.kvmDenied && strings.Contains(s, "PULSE_KVM_READY") {
+			return nil, errors.New("job user cannot create a KVM VM")
+		}
 		if f.nixDenied && strings.Contains(s, "'nix-command','store','ping','--store','daemon'") {
 			return nil, errors.New("getting status of /nix/var/nix/daemon-socket/socket: Permission denied")
 		}

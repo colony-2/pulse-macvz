@@ -25,18 +25,8 @@ func New(c config.VZ, common config.Config) (*local.Client, error) {
 	if !filepath.IsAbs(c.Home) {
 		return nil, config.Err
 	}
-	if c.Runner == "" {
-		var err error
-		c.Runner, err = os.Executable()
-		if err != nil {
-			return nil, err
-		}
-	}
-	runner, err := exec.LookPath(c.Runner)
-	if err != nil {
-		return nil, err
-	}
-	c.Runner, err = filepath.Abs(runner)
+	var err error
+	c.Runner, err = resolveRunner(c.Runner)
 	if err != nil {
 		return nil, err
 	}
@@ -53,4 +43,19 @@ func New(c config.VZ, common config.Config) (*local.Client, error) {
 			return []string{c.Runner, "__pulse-vm", "bridge", "--target", target, "--ready", ready, "--port", strconv.Itoa(port)}
 		},
 	}, common, store)
+}
+
+func resolveRunner(runner string) (string, error) {
+	var err error
+	if runner == "" {
+		runner, err = os.Executable()
+		if err != nil {
+			return "", err
+		}
+	}
+	runner, err = exec.LookPath(runner)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Abs(runner)
 }

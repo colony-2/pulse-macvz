@@ -106,6 +106,21 @@ existing suspended templates retain their original device graph when restored.
 Linux uses cached virtio disk I/O with full synchronization, matching
 [Tart's workaround for Linux filesystem corruption](https://github.com/cirruslabs/tart/pull/675).
 
+On hosts supporting nested virtualization (macOS 15+ on M3 or later), VZ enables
+it for every Linux ARM VM and automatically advertises the `kvm` execution
+capability for Linux ARM bases. No extra flag or configured capability is needed.
+A launch may request `kvm`, or both `docker` and `kvm`; jobs without either
+requirement can still access KVM. macOS bases and unsupported hosts do not
+advertise `kvm`. It accelerates ARM guests, not x86 guests.
+
+The Linux kernel must expose `/dev/kvm`. Before admission, the provider verifies
+that `pulseworker` can open it and create a KVM VM without elevated privileges.
+Existing prepared bases are reused; unused Linux allocations created without
+this capability are recycled, while accepted jobs finish normally. Update both
+the provider library and any separately configured VZ runner, then run `setup`
+with the server stopped. Containers launched by a job still need explicit device
+access, for example `docker run --device=/dev/kvm ...`.
+
 `upgrade` waits for accepted jobs to finish, retires this owner's allocations,
 removes its inactive prepared images, and prepares fresh capacity using the
 selected c2j version. For example:

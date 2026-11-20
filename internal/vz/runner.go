@@ -48,6 +48,11 @@ func runnerCommand(args []string) error {
 			return err
 		}
 		return json.NewEncoder(os.Stdout).Encode(runnerProtocol)
+	case "features":
+		if err := checkNative(); err != nil {
+			return err
+		}
+		return json.NewEncoder(os.Stdout).Encode(Features{Protocol: runnerProtocol, NestedVirtualization: nestedVirtualizationSupported()})
 	case "identity":
 		if err := checkNative(); err != nil {
 			return err

@@ -1,8 +1,10 @@
 package tart
 
 import (
+	"context"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/colony-2/pulse-tart/internal/config"
 	engine "github.com/colony-2/pulse-tart/internal/provider"
@@ -42,6 +44,19 @@ func NewVZ(c Config, options VZConfig) (*Runtime, error) {
 	b, err := vz.New(options, c)
 	if err != nil {
 		return nil, err
+	}
+	for _, base := range c.Bases {
+		if base.OS == "linux" {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			features, err := vz.RunnerFeatures(ctx, options.Runner)
+			cancel()
+			if err != nil {
+				b.Close()
+				return nil, err
+			}
+			c = vz.WithCapabilities(c, features)
+			break
+		}
 	}
 	settings := config.Settings{Config: c, Kind: "vz", Endpoint: options.Home, Worker: "local", DockerEndpoint: options.DockerEndpoint}
 	store, err := engine.OpenVMStore(c.StateDir, settings.Scope(), b)

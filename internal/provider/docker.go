@@ -298,6 +298,12 @@ assert r('/opt/pulse-tart/bin/c2j','version')
 		code += fmt.Sprintf("assert r('/usr/bin/sw_vers','-productVersion') == '%s'\nassert int(r('/usr/sbin/sysctl','-n','hw.ncpu')) == %d\nassert int(r('/usr/sbin/sysctl','-n','hw.memsize')) == %d\nsaved=json.load(open('/var/db/pulse-tart-template/ready'))\nassert r('/usr/sbin/sysctl','-n','kern.bootsessionuuid') == saved['boot_id']\nassert saved['mac'] in r('/sbin/ifconfig','en0')\n", b.OSVersion, g.CPU, g.MemoryMiB*(1<<20))
 	}
 	for _, cap := range b.Capabilities {
+		if cap == "kvm" {
+			// Test the actual job user's access and the KVM API, not merely a
+			// device-node name or a privileged root open. No guest is launched.
+			code += "assert r('sudo','-n','-H','-u','pulseworker','/opt/pulse-tart/bin/python3','-c'," + strconv.Quote(kvmReadinessProbe) + ") == 'PULSE_KVM_READY'\n"
+			continue
+		}
 		tool := cap
 		if tool == "python" {
 			tool = "python3"
@@ -321,6 +327,18 @@ assert r('/opt/pulse-tart/bin/c2j','version')
 	}
 	return nil
 }
+
+const kvmReadinessProbe = `import fcntl,os
+kvm=os.open('/dev/kvm',os.O_RDWR|os.O_CLOEXEC)
+try:
+    assert fcntl.ioctl(kvm,0xae00,0) == 12, 'unsupported KVM API'
+    vm=fcntl.ioctl(kvm,0xae01,0)
+    os.close(vm)
+finally:
+    os.close(kvm)
+print('PULSE_KVM_READY')
+`
+
 func (p *Provider) reclaimPair(ctx context.Context, pair *PairRecord) error {
 	b := p.Backend.(dockerBackend)
 	// In properties mode the last VM deletion also removes the recovery data.

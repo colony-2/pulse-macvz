@@ -88,7 +88,11 @@ func nativeConfig(c diskConfig, dir string) (vz.VZVirtualMachineConfiguration, e
 		}
 		boot.SetVariableStore(store)
 		cfg.SetBootLoader(boot)
-		cfg.SetPlatform(vz.NewVZGenericPlatformConfiguration())
+		platform := vz.NewVZGenericPlatformConfiguration()
+		if nestedVirtualizationSupported() {
+			platform.SetNestedVirtualizationEnabled(true)
+		}
+		cfg.SetPlatform(platform)
 		configx.SetEntropyDevices(cfg, vz.NewVZVirtioEntropyDeviceConfiguration())
 	} else {
 		return cfg, fmt.Errorf("unsupported guest OS %q", c.OS)
@@ -197,6 +201,17 @@ func (m *nativeVM) RestoreMachineStateFromURL(path string) error {
 // CF APIs expose some opaque references as uintptr and others as unsafe.Pointer.
 // Reinterpret the reference bits; no Go allocation or native memory is accessed.
 func cfReference(ref uintptr) cf.CFTypeRef { return *(*cf.CFTypeRef)(unsafe.Pointer(&ref)) }
+
+func nestedVirtualizationSupported() bool {
+	// The class property was introduced in macOS 15. Do not send the selector
+	// on macOS 14, which remains supported for ordinary VMs.
+	release, err := unix.Sysctl("kern.osrelease")
+	if err != nil {
+		return false
+	}
+	major, err := strconv.Atoi(strings.Split(release, ".")[0])
+	return err == nil && major >= 24 && vz.GetVZGenericPlatformConfigurationClass().IsNestedVirtualizationSupported()
+}
 
 func checkNative() error {
 	release, err := unix.Sysctl("kern.osrelease")

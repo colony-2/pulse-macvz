@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"testing"
 
 	"github.com/colony-2/pulse-tart/internal/config"
@@ -56,4 +57,43 @@ func TestVZConstructorAndScope(t *testing.T) {
 		t.Fatal(err)
 	}
 	reopened.Close()
+}
+
+func TestVZDiscoveryUsesSelectedRunnerKVMFeatures(t *testing.T) {
+	if runtime.GOOS != "darwin" || runtime.GOARCH != "arm64" {
+		t.Skip("VZ constructor")
+	}
+	for _, reply := range []string{"true", "false", "old-runner"} {
+		t.Run(reply, func(t *testing.T) {
+			runner := filepath.Join(t.TempDir(), "runner")
+			script := "#!/bin/sh\nprintf '%s\\n' '{\"protocol\":\"pulse-vz/1\",\"nested_virtualization\":" + reply + "}'\n"
+			if err := os.WriteFile(runner, []byte(script), 0700); err != nil {
+				t.Fatal(err)
+			}
+			c := Config{OwnerID: "feature-test", VMCounts: VMCounts{MacOS: VMCount(0), Linux: VMCount(1)}}
+			opts := VZConfig{Home: filepath.Join(t.TempDir(), "vz"), Runner: runner, DockerEndpoint: DockerEndpoint{Address: "192.0.2.1", PortMin: 45000, PortMax: 45010}}
+			r, err := NewVZ(c, opts)
+			if reply == "old-runner" {
+				if err == nil {
+					r.Close()
+					t.Fatal("accepted incompatible runner")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer r.Close()
+			caps, err := r.GetCapabilities(t.Context())
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, base := range caps.Bases {
+				want := reply == "true" && base.Name == DefaultLinuxBase().Name
+				if slices.Contains(base.Capabilities, "kvm") != want {
+					t.Fatal("wrong discovery", base.Name, base.Capabilities)
+				}
+			}
+		})
+	}
 }
