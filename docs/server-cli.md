@@ -64,6 +64,15 @@ other guest preparation and ready allocations can continue. Closing the
 provider cancels pending imports; completed registry cache entries are reused
 on restart. Import failures are reported by reconciliation and can be retried.
 
+Setup prints the owner, VM home, shared concurrency limits, and every requested
+slot. Progress updates appear on phase changes and at least every ten seconds
+while reconciliation is polling. They show base preparation, guest SSH/command
+stages, snapshot saving, and Docker allocation readiness. Registry imports show
+compressed bytes read versus the manifest's total, average throughput, and a
+rough transfer ETA. This is not the virtual disk size and the ETA excludes later
+guest installation and snapshot work. Unknown totals, stalled transfers, cache
+hits, and phases with no meaningful ETA are labeled explicitly.
+
 `upgrade` waits for accepted jobs to finish, retires this owner's allocations,
 removes its inactive prepared images, and prepares fresh capacity using the
 selected c2j version. For example:
@@ -138,23 +147,41 @@ submission, and starts a fresh runtime only after the previous session closes.
 
 | Flag | Default | Meaning |
 | --- | --- | --- |
-| `--macos-base` | `macos-26-arm64` | One macOS base; `macos-15-arm64` is also available |
+| `--macos-base` | `all` | Both `macos-26-arm64` and `macos-15-arm64`; accepts one name or a comma-separated selection |
 | `--macos-capacity` | 2 | Total concurrent macOS job slots, limited to 0–2 |
 | `--linux-capacity`, `-l` | 4 | Linux job VM slots; Docker runs inside each VM |
-| `--macos-docker-capacity`, `-d` | 0 | Part of macOS capacity configured with Docker companions |
+| `--macos-docker-capacity`, `-d` | 0 | Templates per macOS version configured with Docker companions, within `--macos-capacity`; running limits stay shared |
 | `--total-capacity`, `-c` | macOS + Linux | Shared job limit; explicitly setting 0 drains all capacity |
 
 For example, `--macos-capacity 2 --macos-docker-capacity 1 --linux-capacity 3`
-configures one ordinary macOS slot, one Docker-capable macOS slot, and three
-Linux/Docker slots. A Docker-capable macOS slot uses an additional private Linux
+configures one ordinary and one Docker-capable macOS template per selected
+version, with shared macOS concurrency of two, and three Linux/Docker slots.
+A Docker-capable macOS slot uses an additional private Linux
 companion. Companions and preparation builders are not job slots. Each job VM
 uses 4 vCPU / 8 GiB; a macOS Docker companion uses another 4 vCPU / 8 GiB.
 
-The CLI selects one macOS base so its ordinary/Docker slot counts are global,
-not multiplied across per-version pools. The library still supports multiple
-bases with shared OS limits. Linux uses the library's pinned Ubuntu ARM64 base.
+Each selected macOS version has its own prepared base and suspended templates.
+The running-job limits remain shared: the default creates two templates for
+macOS 26 and two for macOS 15, but runs at most two macOS jobs in total. Setup
+waits for every selected version's templates. Warm macOS Docker allocations also
+share the configured capacity; another version's prepared templates can supply
+allocations as demand changes. Pending template preparation may retire an idle
+macOS Docker worker when both physical VM positions are occupied; accepted jobs
+are preserved. Linux uses the library's pinned Ubuntu ARM64 base.
 Set either OS capacity to 0 to disable it. Reduced capacity is reconciled without
 terminating accepted work; it can take time to retire occupied allocations.
+
+Existing saved configurations keep their explicit base selection. To add both
+versions to an existing single-version setup, stop its controller and run:
+
+```sh
+pulse-tart setup --macos-base all
+```
+
+Keep the same configuration file, owner and VM home as the serving controller.
+When Pulse embeds the library, configure matching bases/slots in Pulse too;
+Pulse does not automatically read the CLI's saved configuration. Base selectors
+use advertised names (`macos-15*`, for example), not macOS point-version aliases.
 
 macOS Docker requires a worker address reachable by its guests. The defaults are
 `--docker-worker-address 192.168.64.1`, `--docker-port-min 45000`, and

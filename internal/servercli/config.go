@@ -4,13 +4,14 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	tart "github.com/colony-2/pulse-tart"
 )
 
 // capacityOptions describes job capacity, not image builders or Docker companions.
-// macDocker reserves part of the macOS capacity for paired Docker jobs.
+// macDocker selects the Docker portion of each version's macOS templates.
 type capacityOptions struct {
 	macBase                 string
 	macOS, linux, macDocker int
@@ -42,31 +43,41 @@ func (o capacityOptions) config(owner, stateDir, c2j string, poll, bootstrap tim
 	c := tart.Config{OwnerID: owner, StateDir: stateDir, C2JVersion: c2j, PollInterval: poll, BootstrapTimeout: bootstrap, VMCounts: counts}
 	engine := tart.DefaultDockerEngine()
 	macBases := tart.DefaultBases()
-	mac := macBases[0]
-	if o.macBase != "" {
-		found := false
+	selected := map[string]bool{}
+	if o.macBase == "" || o.macBase == "all" {
 		for _, b := range macBases {
-			if b.Name == o.macBase {
-				mac = b
-				found = true
-				break
-			}
+			selected[b.Name] = true
 		}
-		if !found {
-			return tart.Config{}, fmt.Errorf("unsupported --macos-base %q", o.macBase)
+	} else {
+		for _, name := range strings.Split(o.macBase, ",") {
+			name = strings.TrimSpace(name)
+			found := false
+			for _, b := range macBases {
+				found = found || b.Name == name
+			}
+			if !found || selected[name] {
+				return tart.Config{}, fmt.Errorf("unsupported or duplicate --macos-base %q", name)
+			}
+			selected[name] = true
 		}
 	}
-	c.Bases = []tart.Base{mac, tart.DefaultLinuxBase()}
+	// Catalog order keeps slot names stable when the flag order changes.
+	for _, b := range macBases {
+		if selected[b.Name] {
+			c.Bases = append(c.Bases, b)
+		}
+	}
+	c.Bases = append(c.Bases, tart.DefaultLinuxBase())
 	c.Docker = &tart.DockerConfig{Profiles: []tart.DockerEngineProfile{engine}}
 	// Keep stable pool names when capacity changes. Missing Docker groups retire
 	// through normal reconciliation when their count is reduced to zero.
-	for i, base := range c.Bases {
+	for _, base := range c.Bases {
 		if base.OS == "linux" {
 			c.Slots = append(c.Slots, tart.SlotGroup{Name: "linux", Base: base.Name, Count: min(o.linux, *counts.Total), DockerProfile: engine.Name})
 			continue
 		}
 		name := "standard"
-		if i > 0 {
+		if base.Name != macBases[0].Name {
 			name = "mac-" + base.Name
 		}
 		c.Slots = append(c.Slots, tart.SlotGroup{Name: name, Base: base.Name, Count: min(o.macOS-o.macDocker, *counts.Total)})

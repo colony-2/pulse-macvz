@@ -11,7 +11,9 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"time"
 
+	"github.com/colony-2/pulse-tart/internal/backend"
 	"github.com/google/go-containerregistry/pkg/authn"
 	"github.com/google/go-containerregistry/pkg/name"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
@@ -101,6 +103,7 @@ func Pull(ctx context.Context, reference, destination string) error {
 }
 
 func pull(ctx context.Context, reference, destination string, options []remote.Option) error {
+	backend.ReportProgress(ctx, backend.TransferProgress{Stage: "manifest"})
 	ref, err := name.NewDigest(reference, name.StrictValidation)
 	if err != nil {
 		return fmt.Errorf("digest-pinned base required: %w", err)
@@ -121,6 +124,11 @@ func pull(ctx context.Context, reference, destination string, options []remote.O
 	if err != nil {
 		return err
 	}
+	transfer := &transferCounter{ctx: ctx, total: plan.config.Size + plan.nvram.Size}
+	for _, layer := range plan.disk {
+		transfer.total += layer.descriptor.Size
+	}
+	transfer.report("downloading")
 	if err = os.Mkdir(destination, 0700); err != nil {
 		return err
 	}
@@ -138,7 +146,7 @@ func pull(ctx context.Context, reference, destination string, options []remote.O
 		if err != nil {
 			return err
 		}
-		err = fetchLayer(ctx, ref, item.descriptor, options, func(r io.Reader) error { _, err := io.Copy(f, r); return err })
+		err = fetchLayer(ctx, ref, item.descriptor, options, func(r io.Reader) error { _, err := io.Copy(f, r); return err }, transfer)
 		if err == nil {
 			err = f.Sync()
 		}
@@ -161,7 +169,7 @@ func pull(ctx context.Context, reference, destination string, options []remote.O
 		}
 		hash := sha256.New()
 		output := &limitedOutput{writer: io.MultiWriter(&sparseWriter{file: disk}, hash), remaining: layer.size}
-		err = fetchLayer(ctx, ref, layer.descriptor, options, func(r io.Reader) error { return readAppleLZ4(r, output) })
+		err = fetchLayer(ctx, ref, layer.descriptor, options, func(r io.Reader) error { return readAppleLZ4(r, output) }, transfer)
 		if err != nil {
 			return err
 		}
@@ -172,6 +180,7 @@ func pull(ctx context.Context, reference, destination string, options []remote.O
 			return errors.New("decoded disk chunk digest mismatch")
 		}
 	}
+	transfer.report("verifying")
 	if err = disk.Sync(); err != nil {
 		return err
 	}
@@ -182,7 +191,7 @@ func pull(ctx context.Context, reference, destination string, options []remote.O
 	return nil
 }
 
-func fetchLayer(ctx context.Context, ref name.Digest, desc v1.Descriptor, options []remote.Option, consume func(io.Reader) error) error {
+func fetchLayer(ctx context.Context, ref name.Digest, desc v1.Descriptor, options []remote.Option, consume func(io.Reader) error, transfer *transferCounter) error {
 	layer, err := remote.Layer(ref.Context().Digest(desc.Digest.String()), options...)
 	if err != nil {
 		return err
@@ -194,7 +203,7 @@ func fetchLayer(ctx context.Context, ref name.Digest, desc v1.Descriptor, option
 	defer body.Close()
 	hash := sha256.New()
 	bounded := &io.LimitedReader{R: body, N: desc.Size + 1}
-	counted := &countReader{reader: io.TeeReader(bounded, hash)}
+	counted := &countReader{reader: io.TeeReader(bounded, hash), transfer: transfer}
 	if err = consume(counted); err != nil {
 		return err
 	}
@@ -216,14 +225,32 @@ func fetchLayer(ctx context.Context, ref name.Digest, desc v1.Descriptor, option
 }
 
 type countReader struct {
-	reader io.Reader
-	n      int64
+	reader   io.Reader
+	n        int64
+	transfer *transferCounter
 }
 
 func (r *countReader) Read(p []byte) (int, error) {
 	n, err := r.reader.Read(p)
 	r.n += int64(n)
+	if r.transfer != nil {
+		r.transfer.current += int64(n)
+		if time.Since(r.transfer.last) >= 250*time.Millisecond {
+			r.transfer.report("downloading")
+		}
+	}
 	return n, err
+}
+
+type transferCounter struct {
+	ctx            context.Context
+	current, total int64
+	last           time.Time
+}
+
+func (t *transferCounter) report(stage string) {
+	t.last = time.Now()
+	backend.ReportProgress(t.ctx, backend.TransferProgress{Stage: stage, Current: t.current, Total: t.total})
 }
 
 type limitedOutput struct {

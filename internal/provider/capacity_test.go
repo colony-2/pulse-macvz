@@ -332,3 +332,41 @@ func TestMacDockerCanRebalanceBetweenVersions(t *testing.T) {
 	}
 	t.Fatal("secondary Docker base never became usable")
 }
+
+func TestAddingMacVersionPreservesAcceptedJobAndPreparesTemplates(t *testing.T) {
+	p, f := dockerFixture(t, false)
+	p.Config.Slots[0].Count = 2
+	warmCountPools(t, p, 2)
+	l := dockerLaunch()
+	got, err := p.Submit(t.Context(), []api.Launch{l})
+	if err != nil || got[0].Status != api.Accepted {
+		t.Fatal(got, err)
+	}
+	active := p.Store.data.Pairs[p.Store.data.Records[l.LaunchID].PairID]
+	second := p.Config.Bases[0]
+	second.Name = "macos-added"
+	p.Config.Bases = append(p.Config.Bases, second)
+	p.Config.Slots = append(p.Config.Slots, config.SlotGroup{Name: "added", Base: second.Name, Count: 2, CPU: 4, MemoryMiB: 8192, DockerProfile: "engine"})
+	for range 80 {
+		if err := p.Reconcile(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		if active.Phase != "running" || f.vms[active.Primary.Name].Stopped() {
+			t.Fatal("preparation interrupted accepted job")
+		}
+		mac := 0
+		for _, vm := range f.vms {
+			if vm.OS != "linux" && !vm.Stopped() {
+				mac++
+			}
+		}
+		if mac > 2 {
+			t.Fatal("preparation exceeded macOS ceiling", mac)
+		}
+		a, b := p.Store.data.Slots["added-0001"], p.Store.data.Slots["added-0002"]
+		if a != nil && b != nil && a.Phase == "ready" && b.Phase == "ready" {
+			return
+		}
+	}
+	t.Fatal("idle warm capacity prevented preparation of the new OS version")
+}

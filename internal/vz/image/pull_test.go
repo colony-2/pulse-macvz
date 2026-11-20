@@ -14,6 +14,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/colony-2/pulse-tart/internal/backend"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
 	"github.com/google/go-containerregistry/pkg/v1/types"
@@ -87,6 +88,8 @@ func TestPullVerifiedImage(t *testing.T) {
 			dest := filepath.Join(t.TempDir(), "image")
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
+			var updates []backend.TransferProgress
+			ctx = backend.WithProgress(ctx, func(p backend.TransferProgress) { updates = append(updates, p) })
 			if failure == "cancelled" {
 				cancel()
 			}
@@ -115,6 +118,18 @@ func TestPullVerifiedImage(t *testing.T) {
 			}
 			if err != nil {
 				t.Fatal(err)
+			}
+			last := updates[len(updates)-1]
+			wantBytes := config.Size + nvram.Size + disk.Size
+			if last.Stage != "verifying" || last.Current != wantBytes || last.Total != wantBytes {
+				t.Fatalf("progress must count compressed transfers, not sparse disk bytes: %+v want %d", last, wantBytes)
+			}
+			var previous int64
+			for _, update := range updates {
+				if update.Current < previous || update.Total > 0 && update.Current > update.Total {
+					t.Fatal("non-monotonic progress", updates)
+				}
+				previous = update.Current
 			}
 			for filename, want := range map[string][]byte{"config.json": cfg, "nvram.bin": []byte("firmware"), "disk.img": raw} {
 				got, err := os.ReadFile(filepath.Join(dest, filename))

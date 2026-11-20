@@ -46,7 +46,7 @@ func (f *maintenanceFake) List(context.Context, api.ListRequest) (api.ListRespon
 
 func maintenanceOptions(t *testing.T) serverOptions {
 	t.Helper()
-	c, err := (capacityOptions{macOS: 1}).config("test", "", "", 0, 0)
+	c, err := (capacityOptions{macOS: 1, macBase: "macos-26-arm64"}).config("test", "", "", 0, 0)
 	if err != nil {
 		t.Fatal(err)
 	}

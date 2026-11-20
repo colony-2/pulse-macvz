@@ -39,6 +39,7 @@ func manage(parent context.Context, o serverOptions, upgrade bool, open func(ser
 	}
 	ctx, cancel := context.WithTimeout(parent, o.managementTimeout)
 	defer cancel()
+	fmt.Fprintf(o.log, "Pool owner=%s backend=%s home=%s; shared running limits: macOS=%d Linux=%d total=%d\n", o.config.OwnerID, o.backend, o.vmHome, *o.config.VMCounts.MacOS, *o.config.VMCounts.Linux, *o.config.VMCounts.Total)
 	r, err := open(o)
 	if err != nil {
 		return fmt.Errorf("open provider for maintenance (stop its server first): %w", err)
@@ -58,22 +59,37 @@ func manage(parent context.Context, o serverOptions, upgrade bool, open func(ser
 	}
 	wait := func(stage string, ready func() (bool, error)) error {
 		fmt.Fprintln(o.log, stage)
+		reporter := &preparationReporter{}
+		preparing := stage == "Preparing configured capacity"
+		if preparing {
+			if err := reporter.print(o.log, o.config, r, true); err != nil {
+				return err
+			}
+		}
 		progress := time.Now()
 		for {
 			if err := ctx.Err(); err != nil {
 				return fmt.Errorf("%s: %w; accepted jobs were not cancelled", stage, err)
 			}
 			if err := r.Reconcile(ctx); err != nil {
+				if preparing {
+					_ = reporter.print(o.log, o.config, r, true)
+				}
 				return err
 			}
 			ok, err := ready()
 			if err != nil {
 				return err
 			}
+			if preparing {
+				if err := reporter.print(o.log, o.config, r, ok); err != nil {
+					return err
+				}
+			}
 			if ok {
 				return nil
 			}
-			if time.Since(progress) >= 30*time.Second {
+			if !preparing && time.Since(progress) >= 30*time.Second {
 				fmt.Fprintln(o.log, "Still waiting:", stage)
 				progress = time.Now()
 			}
@@ -148,30 +164,55 @@ func capacityReady(c tart.Config, r managedRuntime) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	ordinary := map[string]bool{}
+	// Every configured macOS version needs its suspended templates, even when
+	// their combined count exceeds the shared running-VM limit.
+	macBases := map[string]bool{}
+	for _, b := range c.Bases {
+		macBases[b.Name] = b.OS != "linux"
+	}
+	wanted := map[string]bool{}
+	dockerSlots := map[string]bool{}
+	linuxWanted, macDockerWanted := 0, 0
 	for _, g := range c.Slots {
-		if g.DockerProfile == "" {
-			for i := 1; i <= g.Count; i++ {
-				ordinary[fmt.Sprintf("%s-%04d", g.Name, i)] = true
+		for i := 1; i <= g.Count; i++ {
+			id := fmt.Sprintf("%s-%04d", g.Name, i)
+			if macBases[g.Base] {
+				wanted[id] = true
+			}
+			if g.DockerProfile != "" {
+				dockerSlots[id] = true
+			}
+		}
+		if g.DockerProfile != "" {
+			if macBases[g.Base] {
+				macDockerWanted += g.Count
+			} else {
+				linuxWanted += g.Count
 			}
 		}
 	}
-	ready := 0
 	for _, slot := range slots {
 		if slot.Phase == "failed" || slot.Phase == "quarantine" {
 			return false, fmt.Errorf("template preparation failed: %s", slot.ID)
 		}
-		if ordinary[slot.ID] && slot.Phase == "ready" {
-			ready++
+		if slot.Phase == "ready" {
+			delete(wanted, slot.ID)
 		}
 	}
+	if len(wanted) != 0 {
+		return false, nil
+	}
+	ready := map[string]bool{}
 	for _, pair := range pairs {
 		if pair.Phase == "quarantine" {
 			return false, fmt.Errorf("allocation preparation failed: %s", pair.Slot)
 		}
-		if pair.Phase == "ready" || pair.Phase == "running" {
-			ready++
+		if dockerSlots[pair.Slot] && (pair.Phase == "ready" || pair.Phase == "running") {
+			ready[pair.Slot] = true
 		}
 	}
-	return ready >= min(c.Capacity(), *c.VMCounts.Total), nil
+	// Versions share one warm macOS Docker budget. Other version templates
+	// remain suspended and can supply allocations as demand changes.
+	warm := min(min(linuxWanted, *c.VMCounts.Linux)+min(macDockerWanted, *c.VMCounts.MacOS), *c.VMCounts.Total)
+	return len(ready) >= warm, nil
 }

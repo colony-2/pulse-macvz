@@ -26,6 +26,7 @@ type ImageRecord struct {
 }
 
 type ImageStatus struct {
+	Base      string `json:"base,omitempty"` // Configured base, when this is a base image.
 	UID       string `json:"uid"`
 	Name      string `json:"name"`
 	Kind      string `json:"kind"`
@@ -45,7 +46,16 @@ func (p *Provider) Images() ([]ImageStatus, error) {
 	}
 	out := []ImageStatus{}
 	for _, r := range p.Store.data.Images {
-		out = append(out, ImageStatus{UID: r.UID, Name: r.Name, Kind: r.Kind, Phase: r.Phase, Worker: r.Worker, LocalName: r.LocalName})
+		base := ""
+		if r.Kind == "base" {
+			for _, b := range p.Config.Bases {
+				if p.baseImageName(b.Name) == r.Name {
+					base = b.Name
+					break
+				}
+			}
+		}
+		out = append(out, ImageStatus{Base: base, UID: r.UID, Name: r.Name, Kind: r.Kind, Phase: r.Phase, Worker: r.Worker, LocalName: r.LocalName})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out, nil

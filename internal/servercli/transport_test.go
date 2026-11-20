@@ -123,6 +123,7 @@ func (l *faultListener) disconnect() {
 }
 
 func TestOutboundSDKReconnectAndCalls(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
 	defer cancel()
 	hostTLS, flags := fixtureTrust(t)

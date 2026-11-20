@@ -72,3 +72,33 @@ func TestInvalidCapacities(t *testing.T) {
 		}
 	}
 }
+
+func TestMultipleMacOSBasesAndStableSlotNames(t *testing.T) {
+	for _, selection := range []string{"", "all", "macos-15-arm64,macos-26-arm64"} {
+		c, err := (capacityOptions{macBase: selection, macOS: 2, linux: 4}).config("server", "", "", 0, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(c.Bases) != 3 || *c.VMCounts.MacOS != 2 || *c.VMCounts.Total != 6 {
+			t.Fatal("versions multiplied running capacity", c.VMCounts)
+		}
+		groups := map[string]string{}
+		for _, g := range c.Slots {
+			groups[g.Base] = g.Name
+		}
+		if groups["macos-26-arm64"] != "standard" || groups["macos-15-arm64"] != "mac-macos-15-arm64" {
+			t.Fatal("unstable slot names", groups)
+		}
+	}
+	for _, selection := range []string{"macos-15-arm64", "macos-26-arm64"} {
+		c, err := (capacityOptions{macBase: selection, macOS: 2}).config("server", "", "", 0, 0)
+		if err != nil || len(c.Bases) != 2 || c.Bases[0].Name != selection {
+			t.Fatal("single base selection broken", selection, err)
+		}
+	}
+	for _, selection := range []string{"macos-15-arm64,macos-15-arm64", "all,macos-15-arm64", "macos-15-arm64,"} {
+		if _, err := (capacityOptions{macBase: selection, macOS: 2}).config("server", "", "", 0, 0); err == nil {
+			t.Fatal("invalid selection accepted", selection)
+		}
+	}
+}

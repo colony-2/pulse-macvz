@@ -396,6 +396,36 @@ func (p *Provider) reconcilePairs(ctx context.Context) error {
 		ids = append(ids, id)
 	}
 	sort.Strings(ids)
+	// Idle macOS pairs must not occupy the physical VM positions needed to
+	// prepare another configured OS version. Accepted jobs keep their VMs.
+	templatesPending := p.macTemplatesPending()
+	releaseMacPosition := false
+	if templatesPending {
+		used, err := p.vmReservations(ctx)
+		if err != nil {
+			return err
+		}
+		preparing := false
+		for name, os := range used {
+			if os == "linux" {
+				continue
+			}
+			if image := p.Store.data.Images[name]; image != nil && image.Phase != "ready" {
+				preparing = true
+			}
+			for _, slot := range p.Store.data.Slots {
+				if slot.Name == name && slot.Phase != "ready" {
+					preparing = true
+				}
+			}
+		}
+		releaseMacPosition = !preparing && macOSCount(used) >= 2
+		for _, pair := range p.Store.data.Pairs {
+			if pair.Primary.OS == "darwin" && pair.Phase == "reclaiming" {
+				releaseMacPosition = false
+			}
+		}
+	}
 	// Lower limits retire idle workers before accepting more work. Active jobs
 	// keep their reservations until cleanup, even if the new limit is smaller.
 	if !p.fitsJobCounts(p.jobReservations()) {
@@ -428,7 +458,10 @@ func (p *Provider) reconcilePairs(ctx context.Context) error {
 		}
 		g := p.dockerGroup(pair.SlotID)
 		// Configuration changes drain unused warm capacity; never kill an active job.
-		if pair.LaunchID == "" && (g.Count == 0 || pair.ConfigHash != p.dockerHash(g) || time.Since(pair.Created) > p.dockerReadyTimeout() && pair.Phase != "ready") {
+		if pair.LaunchID == "" && (g.Count == 0 || pair.ConfigHash != p.dockerHash(g) || releaseMacPosition && pair.Primary.OS == "darwin" || time.Since(pair.Created) > p.dockerReadyTimeout() && pair.Phase != "ready") {
+			if pair.Primary.OS == "darwin" {
+				releaseMacPosition = false
+			}
 			pair.Phase = "reclaiming"
 			if e := p.Store.save(); e != nil {
 				return e
@@ -621,6 +654,9 @@ func (p *Provider) reconcilePairs(ctx context.Context) error {
 		if g.DockerProfile == "" {
 			continue
 		}
+		if templatesPending && p.base(g.Base).OS != "linux" {
+			continue
+		}
 		for i := 1; i <= g.Count; i++ {
 			slot := fmt.Sprintf("%s-%04d", g.Name, i)
 			if p.slotBusy(slot) {
@@ -660,6 +696,21 @@ func (p *Provider) reconcilePairs(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+func (p *Provider) macTemplatesPending() bool {
+	for _, g := range p.Config.Slots {
+		if p.base(g.Base).OS == "linux" {
+			continue
+		}
+		for i := 1; i <= g.Count; i++ {
+			s := p.Store.data.Slots[fmt.Sprintf("%s-%04d", g.Name, i)]
+			if s == nil || s.Phase != "ready" {
+				return true
+			}
+		}
+	}
+	return false
 }
 func (p *Provider) submitDocker(ctx context.Context, l api.Launch, hash string) (api.Submission, bool) {
 	wants := slices.Contains(l.Capabilities, "docker")

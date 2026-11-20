@@ -5,6 +5,8 @@ import (
 	"errors"
 	"testing"
 	"time"
+
+	"github.com/colony-2/pulse-tart/internal/backend"
 )
 
 type preparingHypervisor struct {
@@ -20,6 +22,7 @@ func TestSourceImportDoesNotBlockDeliveryOrInventory(t *testing.T) {
 	b, _, spec := fixture(t)
 	started, release := make(chan struct{}), make(chan struct{})
 	b.native = preparingHypervisor{b.hypervisor(), func(ctx context.Context, _ string) error {
+		backend.ReportProgress(ctx, backend.TransferProgress{Stage: "downloading", Current: 123, Total: 1000})
 		close(started)
 		select {
 		case <-release:
@@ -35,6 +38,10 @@ func TestSourceImportDoesNotBlockDeliveryOrInventory(t *testing.T) {
 	}
 	cancel() // Returning from a reconciliation must not cancel its import.
 	<-started
+	progress := b.PreparationProgress()
+	if len(progress.Sources) != 1 || progress.Sources[0].Current != 123 || progress.Sources[0].Total != 1000 || progress.Sources[0].Stage != "downloading" {
+		t.Fatal("live transfer progress missing", progress)
+	}
 	if ready, err = b.PrepareSource(t.Context(), spec.Image); err != nil || ready {
 		t.Fatal("pending import was not shared", ready, err)
 	}

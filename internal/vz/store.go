@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/colony-2/pulse-tart/internal/backend"
 	"github.com/colony-2/pulse-tart/internal/config"
 	"github.com/colony-2/pulse-tart/internal/local"
 	"github.com/colony-2/pulse-tart/internal/vz/image"
@@ -256,6 +257,7 @@ func (s *Store) PrepareSource(ctx context.Context, reference string) error {
 }
 
 func (s *Store) cache(ctx context.Context, reference string) (string, error) {
+	backend.ReportProgress(ctx, backend.TransferProgress{Stage: "waiting_cache"})
 	sum := sha256.Sum256([]byte(reference))
 	key := hex.EncodeToString(sum[:])
 	root := filepath.Join(s.Home, "cache")
@@ -273,6 +275,7 @@ func (s *Store) cache(ctx context.Context, reference string) (string, error) {
 		if json.Unmarshal(data, &saved) != nil || saved != reference {
 			return "", errors.New("cache provenance mismatch")
 		}
+		backend.ReportProgress(ctx, backend.TransferProgress{Stage: "cached"})
 		return dst, nil
 	} else if !os.IsNotExist(err) {
 		return "", err

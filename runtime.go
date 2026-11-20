@@ -14,6 +14,7 @@ import (
 	"time"
 
 	api "github.com/colony-2/pulse-provider-api"
+	"github.com/colony-2/pulse-tart/internal/backend"
 	"github.com/colony-2/pulse-tart/internal/bundle"
 	"github.com/colony-2/pulse-tart/internal/config"
 	"github.com/colony-2/pulse-tart/internal/local"
@@ -221,6 +222,26 @@ func (r *Runtime) Images() ([]ImageStatus, error) {
 		return nil, ErrClosed
 	}
 	return r.p.Images()
+}
+
+type PreparationProgress = backend.PreparationProgress
+type SourceProgress = backend.SourceProgress
+type VMProgress = backend.VMProgress
+
+// PreparationProgress returns bounded, credential-free observations. Backends
+// without transfer telemetry return an empty snapshot; no readiness is inferred.
+func (r *Runtime) PreparationProgress() (PreparationProgress, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if r.closed {
+		return PreparationProgress{}, ErrClosed
+	}
+	if b, ok := r.p.Backend.(interface {
+		PreparationProgress() backend.PreparationProgress
+	}); ok {
+		return b.PreparationProgress(), nil
+	}
+	return PreparationProgress{}, nil
 }
 func (r *Runtime) Reconcile(ctx context.Context) error {
 	r.mu.RLock()
