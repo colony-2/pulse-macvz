@@ -18,6 +18,31 @@ type progressRuntime struct {
 	progress tart.PreparationProgress
 }
 
+func TestGuestObservationProgressShowsActivityAndReboots(t *testing.T) {
+	got := vmStage("preparing", tart.VMProgress{Stage: "base_preparing", LogBytes: 2048, Reboots: 2, ObservedAt: time.Now()})
+	for _, want := range []string{"preparation in progress", "2.0 KiB", "observed", "restarts observed: 2", "ETA unavailable"} {
+		if !strings.Contains(got, want) {
+			t.Fatal(got)
+		}
+	}
+}
+
+func TestSetupReportsObservedFailureOnlyForRequiredImages(t *testing.T) {
+	c, err := (capacityOptions{macOS: 1, linux: 1}).config("test", "", "", 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := &progressRuntime{images: []tart.ImageStatus{{Name: "base15", Phase: "preparing"}},
+		progress: tart.PreparationProgress{VMs: []tart.VMProgress{{Name: "base15", Stage: "base_failed", Cause: "guest_reboot_loop", Reboots: 3}}}}
+	if _, err := capacityReady(c, f); err == nil || !strings.Contains(err.Error(), "guest_reboot_loop") {
+		t.Fatal(err)
+	}
+	f.images[0].Obsolete = true
+	if _, err := capacityReady(c, f); err != nil {
+		t.Fatal("obsolete observation blocked setup", err)
+	}
+}
+
 func (f *progressRuntime) Images() ([]tart.ImageStatus, error)             { return f.images, nil }
 func (f *progressRuntime) Slots() ([]tart.SlotStatus, error)               { return f.slots, nil }
 func (f *progressRuntime) DockerAllocations() ([]tart.DockerStatus, error) { return f.pairs, nil }

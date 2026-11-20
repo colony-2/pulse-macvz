@@ -18,6 +18,40 @@ type preparingBackend struct {
 	calls int
 }
 
+type observingBaseBackend struct {
+	*fake
+	calls int
+	err   error
+}
+
+func (b *observingBaseBackend) ObserveBasePreparation(context.Context, string, string, string) error {
+	b.calls++
+	return b.err
+}
+
+func TestObserveBaseRequiresMatchingIdentityAndReportsGuestFailure(t *testing.T) {
+	for _, mismatch := range []bool{false, true} {
+		p, f := fixture(t)
+		b := &observingBaseBackend{fake: f, err: errors.New("guest reboot loop")}
+		p.Backend = b
+		r := p.Store.data.Images[f.baseVM.Name]
+		r.Phase = "preparing"
+		f.baseVM.PowerState = "running"
+		f.baseVM.Conditions = []backend.Condition{{Type: "running", State: "true"}}
+		if mismatch {
+			f.baseVM.UID = "replacement"
+		}
+		err := p.reconcileImages(t.Context())
+		if mismatch {
+			if b.calls != 0 || r.Phase != "quarantine" {
+				t.Fatal("observed replacement VM", b.calls, r.Phase)
+			}
+		} else if b.calls != 1 || err != nil || !errors.Is(p.preparationCauses["image:"+r.Name].cause, b.err) {
+			t.Fatal("base failure must be scoped without blocking other capacity", b.calls, err)
+		}
+	}
+}
+
 func (b *preparingBackend) PrepareSource(context.Context, string) (bool, error) {
 	b.calls++
 	return b.ready, b.err

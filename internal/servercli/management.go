@@ -83,6 +83,9 @@ func manage(parent context.Context, o serverOptions, upgrade bool, open func(ser
 			}
 			ok, err := ready()
 			if err != nil {
+				if preparing {
+					_ = reporter.print(o.log, o.config, r, true)
+				}
 				return err
 			}
 			if preparing {
@@ -151,6 +154,27 @@ func capacityReady(c tart.Config, r managedRuntime) (bool, error) {
 	images, err := r.Images()
 	if err != nil {
 		return false, err
+	}
+	// A failed guest observation belongs to its base; it must not prevent
+	// reconciliation of unrelated ready capacity. Setup still fails explicitly.
+	if observer, ok := r.(interface {
+		PreparationProgress() (tart.PreparationProgress, error)
+	}); ok {
+		progress, err := observer.PreparationProgress()
+		if err != nil {
+			return false, err
+		}
+		wanted := map[string]bool{}
+		for _, image := range images {
+			if !image.Obsolete && image.Phase != "ready" {
+				wanted[image.Name] = true
+			}
+		}
+		for _, vm := range progress.VMs {
+			if wanted[vm.Name] && vm.Stage == "base_failed" {
+				return false, fmt.Errorf("image preparation failed: %s: %s", vm.Name, vmStage("preparing", vm))
+			}
+		}
 	}
 	for _, image := range images {
 		if image.Obsolete {

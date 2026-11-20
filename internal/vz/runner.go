@@ -104,6 +104,20 @@ func validateSnapshot(dir string, c diskConfig) error {
 type runControl struct{ Socket, Token string }
 type controlRequest struct{ Token, Operation string }
 
+// Cirrus macOS images include a guest agent which SIGTERMs its parent (launchd)
+// when the Tart version console is absent. Persist the compatibility device
+// choice so snapshots always restore the graph they were saved with.
+func prepareColdBootConfig(dir string, c diskConfig) (diskConfig, error) {
+	if c.OS != "darwin" || c.RestoreRequired || c.TartGuestCompatibility {
+		return c, nil
+	}
+	if _, err := os.Lstat(filepath.Join(dir, "state.vzvmsave")); !os.IsNotExist(err) {
+		return c, errors.New("untracked snapshot; refusing to change cold-boot devices")
+	}
+	c.TartGuestCompatibility = true
+	return c, atomicJSON(filepath.Join(dir, "config.json"), c)
+}
+
 func controlPath(dir string) (string, error) {
 	root := filepath.Join("/tmp", "pulse-vz-"+strconv.Itoa(os.Getuid()))
 	if err := os.Mkdir(root, 0700); err != nil && !os.IsExist(err) {
@@ -150,6 +164,9 @@ func runVM(dir string) error {
 		if err = validateSnapshot(dir, c); err != nil {
 			return err
 		}
+	}
+	if c, err = prepareColdBootConfig(dir, c); err != nil {
+		return err
 	}
 	socket, err := controlPath(dir)
 	if err != nil {

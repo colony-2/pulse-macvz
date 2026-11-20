@@ -21,6 +21,9 @@ type SourceProgress struct {
 // VMProgress deliberately excludes credentials, scripts and guest output.
 type VMProgress struct {
 	Name, Stage, Cause string
+	ObservedAt         time.Time
+	LogBytes           int64
+	Reboots            int
 }
 
 type PreparationProgress struct {

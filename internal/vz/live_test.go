@@ -69,7 +69,7 @@ func TestLiveLinuxLifecycle(t *testing.T) {
 			_ = b.Close()
 		}
 	}()
-	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 	if err = b.Info(ctx); err != nil {
 		t.Fatal(err)
@@ -179,6 +179,17 @@ func TestLiveLinuxLifecycle(t *testing.T) {
 	if err != nil || !strings.Contains(string(output), "Linux\naarch64") {
 		t.Fatal(string(output), err)
 	}
+	output, err = b.Exec(ctx, "job", v.UID, []byte(`set -eu
+mkdir -p /var/tmp/pulse-storage-check
+cd /var/tmp/pulse-storage-check
+dd if=/dev/urandom of=data bs=1M count=128 status=none
+sha256sum data > expected
+sync
+sha256sum -c expected
+`))
+	if err != nil || !strings.Contains(string(output), "data: OK") {
+		t.Fatal("guest disk write verification", string(output), err)
+	}
 	if err = b.Stop(ctx, "job", v.UID); err != nil {
 		t.Fatal(err)
 	}
@@ -194,6 +205,42 @@ func TestLiveLinuxLifecycle(t *testing.T) {
 		case <-ctx.Done():
 			t.Fatal(ctx.Err())
 		case <-time.After(100 * time.Millisecond):
+		}
+	}
+	if err = b.RetainSource(ctx, "job", v.UID); err != nil {
+		t.Fatal(err)
+	}
+	verify := job
+	verify.Name, verify.Image = "verify", "job"
+	verify.StartupScript.Content = "set -eu\ncd /var/tmp/pulse-storage-check\nsha256sum -c expected\necho PULSE_HANDOFF_OK\n"
+	check, err := b.Create(ctx, verify)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		cleanup, stop := context.WithTimeout(context.Background(), 20*time.Second)
+		defer stop()
+		if err := b.Stop(cleanup, check.Name, check.UID); err != nil {
+			t.Errorf("storage verification cleanup: %v", err)
+		}
+	}()
+	for {
+		events, err := b.Events(ctx, check.Name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		verified := false
+		for _, event := range events {
+			verified = verified || strings.Contains(event.Payload, "PULSE_HANDOFF_OK")
+		}
+		if verified {
+			t.Log("guest disk checksum survived stop, clone, and cold boot")
+			break
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatal("disk verification after cold boot:", ctx.Err())
+		case <-time.After(200 * time.Millisecond):
 		}
 	}
 	if err = b.Delete(ctx, "job"); err != nil {

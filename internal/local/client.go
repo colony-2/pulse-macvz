@@ -82,6 +82,7 @@ type Client struct {
 	cancel              context.CancelFunc
 	workers             map[string]bool
 	sources             map[string]*sourcePreparation
+	basePreparations    map[string]*basePreparation
 	wg                  sync.WaitGroup
 	closed              bool
 	lastDeliveryFailure error
@@ -801,7 +802,10 @@ func (b *Client) deliver(r *record) {
 				return
 			}
 			if r.Delivery.ExecutionPossible {
-				r.Delivery.Stage, r.Delivery.Cause = "uncertain", "guest_execution_may_have_started"
+				r.Delivery.Stage = "uncertain"
+				if r.Delivery.Cause == "" {
+					r.Delivery.Cause = "guest_execution_may_have_started"
+				}
 				_ = b.save(r)
 				b.mu.Unlock()
 				return

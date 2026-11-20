@@ -312,6 +312,16 @@ func (p *Provider) reconcileImages(ctx context.Context) error {
 				}
 				continue
 			}
+			if base.OS != "linux" && v.PowerState == "running" {
+				if observer, ok := p.Backend.(interface {
+					ObserveBasePreparation(context.Context, string, string, string) error
+				}); ok {
+					if err := observer.ObserveBasePreparation(ctx, name, v.UID, base.OSVersion); err != nil {
+						p.preparation("image:"+name, err)
+						continue
+					}
+				}
+			}
 			events, err := p.Backend.(templateBackend).Events(ctx, name)
 			if err != nil {
 				return backendError("prepared base Events", err)

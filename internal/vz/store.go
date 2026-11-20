@@ -40,6 +40,8 @@ type diskConfig struct {
 	Arch            string    `json:"arch,omitempty"`
 	RestoreRequired bool      `json:"restoreRequired,omitempty"`
 	Snapshot        *snapshot `json:"snapshot,omitempty"`
+	// Optional so existing snapshots retain their original device graph and hash.
+	TartGuestCompatibility bool `json:"tartGuestCompatibility,omitempty"`
 }
 type snapshot struct{ Host, Layout, ConfigHash string }
 

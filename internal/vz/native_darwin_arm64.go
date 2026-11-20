@@ -72,6 +72,14 @@ func nativeConfig(c diskConfig, dir string) (vz.VZVirtualMachineConfiguration, e
 		configx.SetMacGraphicsDevices(cfg, graphics)
 		configx.SetKeyboards(cfg, vz.NewVZMacKeyboardConfiguration())
 		configx.SetPointingDevices(cfg, []vz.IVZPointingDeviceConfiguration{vz.NewVZMacTrackpadConfiguration()})
+		if c.TartGuestCompatibility {
+			// Only the image's disk-layout guard is supported, not Tart RPC or clipboard.
+			port := vz.NewVZVirtioConsolePortConfiguration()
+			port.SetName("tart-version-2.0.0-pulse-vz")
+			console := vz.NewVZVirtioConsoleDeviceConfiguration()
+			console.Ports().SetObjectAtIndexedSubscript(port, 0)
+			cfg.SetConsoleDevices([]vz.VZConsoleDeviceConfiguration{vz.VZConsoleDeviceConfigurationFromID(console.ID)})
+		}
 	} else if c.OS == "linux" {
 		boot := vz.NewVZEFIBootLoader()
 		store := vz.NewEFIVariableStoreWithURL(foundation.NewURLFileURLWithPath(filepath.Join(dir, "nvram.bin")))
@@ -85,8 +93,15 @@ func nativeConfig(c diskConfig, dir string) (vz.VZVirtualMachineConfiguration, e
 	} else {
 		return cfg, fmt.Errorf("unsupported guest OS %q", c.OS)
 	}
+	caching, synchronization := vz.VZDiskImageCachingModeUncached, vz.VZDiskImageSynchronizationModeFsync
+	if c.OS == "linux" {
+		// Match Tart's workaround for Linux virtio disk corruption with uncached I/O.
+		// https://github.com/cirruslabs/tart/pull/675
+		// macOS retains its existing attachment settings for snapshot compatibility.
+		caching, synchronization = vz.VZDiskImageCachingModeCached, vz.VZDiskImageSynchronizationModeFull
+	}
 	disk, err := vz.NewDiskImageStorageDeviceAttachmentWithURLReadOnlyCachingModeSynchronizationModeError(
-		foundation.NewURLFileURLWithPath(filepath.Join(dir, "disk.img")), false, vz.VZDiskImageCachingModeUncached, vz.VZDiskImageSynchronizationModeFsync)
+		foundation.NewURLFileURLWithPath(filepath.Join(dir, "disk.img")), false, caching, synchronization)
 	if err != nil {
 		return cfg, err
 	}

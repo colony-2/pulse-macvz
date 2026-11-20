@@ -92,6 +92,10 @@ func (b *Client) PreparationProgress() backend.PreparationProgress {
 		if r.Delivery != nil {
 			v.Stage, v.Cause = r.Delivery.Stage, r.Delivery.Cause
 		}
+		if s := b.basePreparations[name]; s != nil && s.uid == r.UID {
+			v.Stage, v.Cause = s.stage, s.cause
+			v.ObservedAt, v.LogBytes, v.Reboots = s.observed, s.logBytes, s.reboots
+		}
 		out.VMs = append(out.VMs, v)
 	}
 	return out

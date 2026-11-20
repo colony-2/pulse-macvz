@@ -173,12 +173,27 @@ func vmStage(phase string, v tart.VMProgress) string {
 		"ssh_session": "opening guest session", "guest_exec": "running guest preparation command (ETA unavailable)",
 		"delivered":           "guest command completed; waiting for readiness / shutdown",
 		"expired_before_exec": "guest connection deadline expired", "uncertain": "guest execution outcome uncertain",
+		"base_observing": "reconnecting to guest preparation service",
+		"base_absent":    "guest preparation state not yet observed",
+		"base_preparing": "guest preparation in progress (ETA unavailable)",
+		"base_ready":     "guest preparation ready; waiting for shutdown",
+		"base_failed":    "guest preparation failed",
 	}[v.Stage]
 	if stage == "" {
 		stage = phase
 	}
 	if v.Cause != "" {
-		stage += "; last connection result: " + v.Cause
+		if v.Cause == "guest_reboot_loop" || v.Cause == "preparation_timeout" {
+			stage += "; cause: " + v.Cause
+		} else {
+			stage += "; last connection result: " + v.Cause
+		}
+	}
+	if !v.ObservedAt.IsZero() {
+		stage += fmt.Sprintf("; guest log %s; observed %s", size(v.LogBytes), v.ObservedAt.Local().Format("15:04:05"))
+	}
+	if v.Reboots > 0 {
+		stage += fmt.Sprintf("; guest restarts observed: %d", v.Reboots)
 	}
 	return stage
 }

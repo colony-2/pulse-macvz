@@ -2,7 +2,9 @@ package vz
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net"
 	"os"
@@ -11,6 +13,58 @@ import (
 	"testing"
 	"time"
 )
+
+func TestColdBootCompatibilityPreservesExistingSnapshots(t *testing.T) {
+	legacy := `{"os":"darwin","cpuCount":4,"memorySize":8589934592,"macAddress":"02:00:00:00:00:01","vzVersion":1,"arch":"arm64"}`
+	var c diskConfig
+	if err := json.Unmarshal([]byte(legacy), &c); err != nil {
+		t.Fatal(err)
+	}
+	oldHash := fmt.Sprintf("%x", sha256.Sum256([]byte(legacy)))
+	if configHash(c) != oldHash {
+		t.Fatal("legacy snapshot configuration hash changed")
+	}
+	for _, restore := range []bool{false, true} {
+		t.Run(fmt.Sprint("restore=", restore), func(t *testing.T) {
+			dir := t.TempDir()
+			before := c
+			before.RestoreRequired = restore
+			if err := atomicJSON(filepath.Join(dir, "config.json"), before); err != nil {
+				t.Fatal(err)
+			}
+			after, err := prepareColdBootConfig(dir, before)
+			if err != nil {
+				t.Fatal(err)
+			}
+			stored, err := readConfig(dir)
+			if err != nil || stored.TartGuestCompatibility != !restore || after.TartGuestCompatibility != !restore {
+				t.Fatal("wrong durable compatibility mode", stored, err)
+			}
+			if restore && configHash(stored) != oldHash {
+				t.Fatal("changed the device graph of an existing snapshot")
+			}
+			if !restore && configHash(stored) == oldHash {
+				t.Fatal("new device missing from snapshot compatibility hash")
+			}
+		})
+	}
+}
+
+func TestColdBootCompatibilityRefusesUntrackedSnapshot(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "state.vzvmsave"), []byte("saved state"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := prepareColdBootConfig(dir, diskConfig{OS: "darwin"}); err == nil {
+		t.Fatal("changed devices despite an untracked snapshot")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "config.json")); !os.IsNotExist(err) {
+		t.Fatal("wrote configuration before rejecting snapshot")
+	}
+	if c, err := prepareColdBootConfig(dir, diskConfig{OS: "linux"}); err != nil || c.TartGuestCompatibility {
+		t.Fatal("changed Linux device graph", err)
+	}
+}
 
 func TestControlAuthenticatesAndRestrictsOperations(t *testing.T) {
 	for _, tc := range []struct {

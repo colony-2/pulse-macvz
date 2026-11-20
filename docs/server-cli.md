@@ -88,6 +88,24 @@ rough transfer ETA. This is not the virtual disk size and the ETA excludes later
 guest installation and snapshot work. Unknown totals, stalled transfers, cache
 hits, and phases with no meaningful ETA are labeled explicitly.
 
+For local macOS base builders, a separate SSH observer reports the last guest
+observation, preparation log size, and observed restarts. Log size indicates
+activity, not download completion. After a lost preparation connection, the
+observer checks the guest's durable readiness marker, expected OS version, and
+installed tools before recording readiness and requesting shutdown. It never
+replays a job command. Three observed guest restarts before readiness cause setup
+to fail explicitly; the preparation deadline also remains anchored to VM creation
+across controller restarts. A failed base does not block reconciliation of other
+capacity.
+
+VZ cold boots of macOS images expose a minimal guest compatibility console. Some
+Cirrus images contain a Tart guest agent that signals `launchd` to reboot if
+that console is missing. This does not require the Tart executable or enable
+Tart RPC/clipboard services. The device choice is persisted with the VM;
+existing suspended templates retain their original device graph when restored.
+Linux uses cached virtio disk I/O with full synchronization, matching
+[Tart's workaround for Linux filesystem corruption](https://github.com/cirruslabs/tart/pull/675).
+
 `upgrade` waits for accepted jobs to finish, retires this owner's allocations,
 removes its inactive prepared images, and prepares fresh capacity using the
 selected c2j version. For example:

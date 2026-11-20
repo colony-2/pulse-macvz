@@ -160,6 +160,7 @@ func TestPossibleGuestExecutionIsNeverStoppedOrReplayedOnRestart(t *testing.T) {
 	r.Delivery.ExecutionPossible = true
 	r.Delivery.StartedAt = time.Now().Add(-time.Hour)
 	r.Delivery.Stage = "guest_exec"
+	r.Delivery.Cause = "timeout"
 	if err := b.save(r); err != nil {
 		t.Fatal(err)
 	}
@@ -168,6 +169,9 @@ func TestPossibleGuestExecutionIsNeverStoppedOrReplayedOnRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitDelivery(t, b, spec.Name)
+	if b.records[spec.Name].Delivery.Cause != "timeout" {
+		t.Fatal("recovery lost the original delivery failure")
+	}
 	if err := b.Recover(t.Context()); err != nil {
 		t.Fatal(err)
 	}
