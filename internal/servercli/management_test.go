@@ -87,3 +87,27 @@ func TestSetupReusesReadySources(t *testing.T) {
 		t.Fatal("setup replaced prepared sources")
 	}
 }
+
+type historicalDeliveryRuntime struct{ progressRuntime }
+
+func (f *historicalDeliveryRuntime) Reconcile(context.Context) error {
+	return errors.New("historical delivery failure")
+}
+func (f *historicalDeliveryRuntime) ReconcileMaintenance(context.Context) error {
+	f.steps++
+	return nil
+}
+func TestSetupIgnoresSupersededSourceFailureButRequiresCurrentSources(t *testing.T) {
+	for _, phase := range []string{"ready", "failed"} {
+		t.Run(phase, func(t *testing.T) {
+			f := &historicalDeliveryRuntime{progressRuntime: progressRuntime{images: []tart.ImageStatus{
+				{Name: "old-base", Phase: "failed", Obsolete: true},
+				{Name: "current-base", Phase: phase},
+			}, slots: []tart.SlotStatus{{ID: "standard-0001", Phase: "ready"}}}}
+			err := manage(t.Context(), maintenanceOptions(t), false, func(serverOptions) (managedRuntime, error) { return f, nil })
+			if (err == nil) != (phase == "ready") || f.steps == 0 {
+				t.Fatal("incorrect setup readiness", err, f.steps)
+			}
+		})
+	}
+}

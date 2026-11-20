@@ -365,6 +365,9 @@ func (p *Provider) Reconcile(ctx context.Context) error {
 		return e
 	}
 
+	if e := p.retireObsoleteBuilders(ctx, vms); e != nil {
+		return e
+	}
 	if e := p.reconcileImages(ctx); e != nil {
 		return e
 	}

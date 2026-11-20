@@ -244,6 +244,18 @@ func (r *Runtime) PreparationProgress() (PreparationProgress, error) {
 	return PreparationProgress{}, nil
 }
 func (r *Runtime) Reconcile(ctx context.Context) error {
+	return r.reconcile(ctx, true)
+}
+
+// ReconcileMaintenance advances cleanup and preparation without treating a
+// retained delivery-health observation as a reconciliation failure. Setup must
+// still check required Images/Slots/allocation readiness before reporting success.
+// Recovery and reconciliation errors remain fatal; DeliveryHealth stays available.
+func (r *Runtime) ReconcileMaintenance(ctx context.Context) error {
+	return r.reconcile(ctx, false)
+}
+
+func (r *Runtime) reconcile(ctx context.Context, reportHealth bool) error {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	if r.closed {
@@ -257,7 +269,7 @@ func (r *Runtime) Reconcile(ctx context.Context) error {
 	// owned instances. The host can report this error while continuing maintenance.
 	reconciled := r.p.Reconcile(ctx)
 	var health error
-	if b, ok := r.p.Backend.(interface{ DeliveryHealth(context.Context) error }); ok {
+	if b, ok := r.p.Backend.(interface{ DeliveryHealth(context.Context) error }); ok && reportHealth {
 		health = b.DeliveryHealth(ctx)
 	}
 	return errors.Join(recovery, reconciled, health)

@@ -71,7 +71,11 @@ func manage(parent context.Context, o serverOptions, upgrade bool, open func(ser
 			if err := ctx.Err(); err != nil {
 				return fmt.Errorf("%s: %w; accepted jobs were not cancelled", stage, err)
 			}
-			if err := r.Reconcile(ctx); err != nil {
+			reconcile := r.Reconcile
+			if maintenance, ok := r.(interface{ ReconcileMaintenance(context.Context) error }); ok {
+				reconcile = maintenance.ReconcileMaintenance
+			}
+			if err := reconcile(ctx); err != nil {
 				if preparing {
 					_ = reporter.print(o.log, o.config, r, true)
 				}
@@ -149,6 +153,9 @@ func capacityReady(c tart.Config, r managedRuntime) (bool, error) {
 		return false, err
 	}
 	for _, image := range images {
+		if image.Obsolete {
+			continue
+		}
 		if image.Phase == "failed" || image.Phase == "quarantine" {
 			return false, fmt.Errorf("image preparation failed: %s", image.Name)
 		}

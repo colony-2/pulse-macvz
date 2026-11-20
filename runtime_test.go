@@ -148,3 +148,27 @@ func TestEmbeddedBundleMatchesPreparationScript(t *testing.T) {
 		t.Fatal("launch payload embedded")
 	}
 }
+
+func TestMaintenanceDoesNotConflateHistoricalHealthWithReconciliation(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	store, err := engine.OpenStore(dir, "maintenance")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	b := &failingRecoveryBackend{inventory: errors.New("inventory failed"), health: errors.New("historical delivery failed")}
+	r := &Runtime{p: &engine.Provider{Store: store, Backend: b}}
+	err = r.ReconcileMaintenance(t.Context())
+	if !errors.Is(err, b.inventory) || errors.Is(err, b.health) {
+		t.Fatal("maintenance lost reconciliation error or included stale health", err)
+	}
+	if !reflect.DeepEqual(b.calls, []string{"recover", "reconcile"}) {
+		t.Fatal(b.calls)
+	}
+	if err := r.DeliveryHealth(t.Context()); !errors.Is(err, b.health) {
+		t.Fatal("delivery health hidden", err)
+	}
+}

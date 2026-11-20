@@ -81,7 +81,7 @@ func preparationRows(c tart.Config, r managedRuntime, now time.Time) ([]progress
 	}
 	bases := map[string]tart.ImageStatus{}
 	for _, image := range images {
-		if image.Base != "" {
+		if !image.Obsolete && image.Base != "" {
 			bases[image.Base] = image
 		}
 	}
@@ -120,7 +120,7 @@ func preparationRows(c tart.Config, r managedRuntime, now time.Time) ([]progress
 	}
 	// Separate Docker companion software bases have no configured base label.
 	for _, image := range images {
-		if image.Kind == "base" && image.Base == "" {
+		if image.Companion && !image.Obsolete {
 			v := vms[image.Name]
 			rows = append(rows, progressRow{"Base images", "companion " + image.Name, image.Phase + ":" + v.Stage, vmStage(image.Phase, v)})
 		}

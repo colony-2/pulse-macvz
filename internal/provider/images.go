@@ -26,7 +26,9 @@ type ImageRecord struct {
 }
 
 type ImageStatus struct {
-	Base      string `json:"base,omitempty"` // Configured base, when this is a base image.
+	Obsolete  bool   `json:"obsolete,omitempty"`  // Not required by the current configuration; retained sources may still be reusable.
+	Companion bool   `json:"companion,omitempty"` // A configured Linux Docker-engine base.
+	Base      string `json:"base,omitempty"`      // Configured base, when this is a base image.
 	UID       string `json:"uid"`
 	Name      string `json:"name"`
 	Kind      string `json:"kind"`
@@ -44,6 +46,16 @@ func (p *Provider) Images() ([]ImageStatus, error) {
 	if err := p.Store.refresh(); err != nil {
 		return nil, err
 	}
+	wanted := p.requiredBaseImages()
+	engines := p.engineBases()
+	targets, err := p.slotTargets()
+	if err != nil {
+		return nil, err
+	}
+	wantedSlots := map[string]bool{}
+	for _, target := range targets {
+		wantedSlots[target.spec.Name] = true
+	}
 	out := []ImageStatus{}
 	for _, r := range p.Store.data.Images {
 		base := ""
@@ -55,7 +67,10 @@ func (p *Provider) Images() ([]ImageStatus, error) {
 				}
 			}
 		}
-		out = append(out, ImageStatus{Base: base, UID: r.UID, Name: r.Name, Kind: r.Kind, Phase: r.Phase, Worker: r.Worker, LocalName: r.LocalName})
+		_, requiredBase := wanted[r.Name]
+		_, companion := engines[r.Name]
+		obsolete := r.Kind == "base" && !requiredBase || r.Kind == "slot" && !wantedSlots[r.Name]
+		out = append(out, ImageStatus{Obsolete: obsolete, Companion: companion, Base: base, UID: r.UID, Name: r.Name, Kind: r.Kind, Phase: r.Phase, Worker: r.Worker, LocalName: r.LocalName})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out, nil
@@ -196,10 +211,9 @@ func baseStartup(setup, script []byte, seconds int, osVersion string, reuse bool
 	}
 	return fmt.Sprintf("#!/bin/bash\nset -eu\nwork=$(mktemp -d)\ntrap 'rm -rf \"$work\"' EXIT\n/usr/bin/base64 -D > \"$work/setup.tar.gz\" <<'PULSE_SETUP'\n%s\nPULSE_SETUP\n/usr/bin/tar -xzf \"$work/setup.tar.gz\" -C \"$work\"\nsudo -n /bin/bash \"$work/prepare-base.sh\" \"$work\" %d %s\n", base64.StdEncoding.EncodeToString(setup), seconds, args)
 }
-func (p *Provider) reconcileImages(ctx context.Context) error {
+func (p *Provider) requiredBaseImages() map[string]config.Base {
 	wanted := map[string]config.Base{}
-	engines := p.engineBases()
-	for name, ep := range engines {
+	for name, ep := range p.engineBases() {
 		wanted[name] = engineBase(ep)
 	}
 	for _, g := range p.Config.Slots {
@@ -208,6 +222,60 @@ func (p *Provider) reconcileImages(ctx context.Context) error {
 			wanted[p.baseImageName(b.Name)] = b
 		}
 	}
+	return wanted
+}
+
+// Retire only failed, terminated builders superseded by configuration changes.
+// Published caches, running builders, uncertain identities and referenced sources
+// remain intact. These source builders have never held an accepted job lease.
+func (p *Provider) retireObsoleteBuilders(ctx context.Context, inventory []backend.VM) error {
+	wanted := p.requiredBaseImages()
+	changed := false
+	for name, r := range p.Store.data.Images {
+		if _, required := wanted[name]; required || r.Kind != "base" || r.Phase == "ready" || r.Phase == "quarantine" || r.UID == "" {
+			continue
+		}
+		referenced := false
+		for _, vm := range inventory {
+			if vm.Name != name && (vm.Image == name || r.LocalName != "" && vm.Image == r.LocalName) {
+				referenced = true
+			}
+		}
+		for _, pair := range p.Store.data.Pairs {
+			if pair.Phase != "gone" && (pair.Primary.Image == name || pair.Engine.Image == name || r.LocalName != "" && (pair.Primary.Image == r.LocalName || pair.Engine.Image == r.LocalName)) {
+				referenced = true
+			}
+		}
+		if referenced {
+			continue
+		}
+		vm, err := p.Backend.Get(ctx, name)
+		if backend.IsStatus(err, 404) {
+			delete(p.Store.data.Images, name)
+			changed = true
+			continue
+		}
+		if err != nil {
+			return backendError("obsolete builder Get", err)
+		}
+		if !p.imageMatches(r, vm) || !vm.Stopped() || vm.Status != "failed" {
+			continue
+		}
+		if err := p.Backend.Delete(ctx, name); err != nil {
+			return backendError("retire obsolete builder", err)
+		}
+		delete(p.Store.data.Images, name)
+		changed = true
+	}
+	if changed {
+		return p.Store.save()
+	}
+	return nil
+}
+
+func (p *Provider) reconcileImages(ctx context.Context) error {
+	wanted := p.requiredBaseImages()
+	engines := p.engineBases()
 	names := []string{}
 	for name := range wanted {
 		names = append(names, name)

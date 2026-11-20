@@ -152,3 +152,67 @@ func TestDrainClearsFailedSourceProbeFallback(t *testing.T) {
 		t.Fatal("drain retained a deleted source probe")
 	}
 }
+
+func TestRetireOnlyUnusedFailedSupersededBase(t *testing.T) {
+	for _, mode := range []string{"expired", "ready", "running", "referenced", "identity-changed", "required"} {
+		t.Run(mode, func(t *testing.T) {
+			p, f := dockerFixture(t, false)
+			spec := p.sourceSpec(p.Config.Bases[0], 4, 8192)
+			spec.Name = "old-ordinary-base"
+			if mode == "required" {
+				spec.Name = p.baseImageName(p.Config.Bases[0].Name)
+			}
+			vm := backend.VM{Spec: spec, UID: "old-uid", Status: "failed", PowerState: "stopped", LocalName: spec.Name, Conditions: []backend.Condition{{Type: "running", State: "false"}}}
+			record := &ImageRecord{Name: spec.Name, UID: vm.UID, NativeHash: p.Store.hash(normalized(spec)), LocalName: spec.Name, Kind: "base", Phase: "preparing"}
+			if mode == "ready" {
+				record.Phase = "ready"
+			}
+			if mode == "running" {
+				vm.Status = "running"
+				vm.PowerState = "running"
+				vm.Conditions = []backend.Condition{{Type: "running", State: "true"}}
+			}
+			if mode == "identity-changed" {
+				vm.UID = "replacement"
+			}
+			f.vms[spec.Name] = vm
+			p.Store.data.Images[spec.Name] = record
+			inventory := []backend.VM{vm}
+			if mode == "referenced" {
+				inventory = append(inventory, backend.VM{Spec: backend.Spec{Name: "accepted-job", Image: spec.Name}})
+			}
+			if err := p.retireObsoleteBuilders(t.Context(), inventory); err != nil {
+				t.Fatal(err)
+			}
+			_, exists := p.Store.data.Images[spec.Name]
+			if exists != (mode != "expired") {
+				t.Fatal("incorrect retirement", mode, exists)
+			}
+		})
+	}
+}
+
+func TestImageStatusDistinguishesSupersededBaseFromCompanion(t *testing.T) {
+	p, _ := dockerFixture(t, false)
+	old := "old-ordinary-base"
+	current := p.baseImageName(p.Config.Bases[0].Name)
+	companion := p.engineBaseName(p.Config.Engine("engine"))
+	for _, name := range []string{old, current, companion} {
+		p.Store.data.Images[name] = &ImageRecord{Name: name, Kind: "base", Phase: "preparing"}
+	}
+	images, err := p.Images()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, image := range images {
+		if image.Name == old && (!image.Obsolete || image.Companion) {
+			t.Fatal("old base labeled as companion", image)
+		}
+		if image.Name == current && (image.Obsolete || image.Companion || image.Base == "") {
+			t.Fatal("current base mislabeled", image)
+		}
+		if image.Name == companion && (image.Obsolete || !image.Companion) {
+			t.Fatal("companion mislabeled", image)
+		}
+	}
+}
