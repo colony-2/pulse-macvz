@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	tart "github.com/colony-2/pulse-tart"
+	macvz "github.com/colony-2/pulse-macvz"
 )
 
 type progressRow struct{ section, name, phase, detail string }
@@ -22,7 +22,7 @@ type preparationReporter struct {
 	previous         map[string]string
 }
 
-func (p *preparationReporter) print(w io.Writer, c tart.Config, r managedRuntime, force bool) error {
+func (p *preparationReporter) print(w io.Writer, c macvz.Config, r managedRuntime, force bool) error {
 	now := time.Now()
 	if p.started.IsZero() {
 		p.started = now
@@ -49,7 +49,7 @@ func (p *preparationReporter) print(w io.Writer, c tart.Config, r managedRuntime
 	return nil
 }
 
-func preparationRows(c tart.Config, r managedRuntime, now time.Time) ([]progressRow, error) {
+func preparationRows(c macvz.Config, r managedRuntime, now time.Time) ([]progressRow, error) {
 	images, err := r.Images()
 	if err != nil {
 		return nil, err
@@ -62,34 +62,34 @@ func preparationRows(c tart.Config, r managedRuntime, now time.Time) ([]progress
 	if err != nil {
 		return nil, err
 	}
-	var progress tart.PreparationProgress
+	var progress macvz.PreparationProgress
 	if observer, ok := r.(interface {
-		PreparationProgress() (tart.PreparationProgress, error)
+		PreparationProgress() (macvz.PreparationProgress, error)
 	}); ok {
 		progress, err = observer.PreparationProgress()
 		if err != nil {
 			return nil, err
 		}
 	}
-	sources := map[string]tart.SourceProgress{}
+	sources := map[string]macvz.SourceProgress{}
 	for _, s := range progress.Sources {
 		sources[s.Source] = s
 	}
-	vms := map[string]tart.VMProgress{}
+	vms := map[string]macvz.VMProgress{}
 	for _, v := range progress.VMs {
 		vms[v.Name] = v
 	}
-	bases := map[string]tart.ImageStatus{}
+	bases := map[string]macvz.ImageStatus{}
 	for _, image := range images {
 		if !image.Obsolete && image.Base != "" {
 			bases[image.Base] = image
 		}
 	}
-	templates := map[string]tart.SlotStatus{}
+	templates := map[string]macvz.SlotStatus{}
 	for _, slot := range slots {
 		templates[slot.ID] = slot
 	}
-	allocations := map[string]tart.DockerStatus{}
+	allocations := map[string]macvz.DockerStatus{}
 	for _, pair := range pairs {
 		allocations[pair.Slot] = pair
 	}
@@ -159,7 +159,7 @@ func preparationRows(c tart.Config, r managedRuntime, now time.Time) ([]progress
 	return rows, nil
 }
 
-func vmStage(phase string, v tart.VMProgress) string {
+func vmStage(phase string, v macvz.VMProgress) string {
 	if phase == "ready" || phase == "failed" || phase == "quarantine" {
 		return phase
 	}
@@ -198,7 +198,7 @@ func vmStage(phase string, v tart.VMProgress) string {
 	return stage
 }
 
-func transferDetail(s tart.SourceProgress, now time.Time) string {
+func transferDetail(s macvz.SourceProgress, now time.Time) string {
 	switch s.Stage {
 	case "cached":
 		return "registry cache hit; waiting to prepare guest"

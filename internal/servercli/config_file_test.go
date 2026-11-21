@@ -174,3 +174,80 @@ func TestManagementHelpNeverCreatesStorage(t *testing.T) {
 		t.Fatal("help created state")
 	}
 }
+
+func TestConfigurationLocationMigration(t *testing.T) {
+	for _, tc := range []struct {
+		name, modern, legacy, explicit string
+		wantOwner                      string
+		warning, wantError             bool
+	}{
+		{name: "fresh defaults", wantOwner: "server"},
+		{name: "legacy fallback", legacy: `{"version":1,"flags":{"owner":"old","state-dir":"relative","backend":"vz","tart-binary":"tart","orchard-url":"","orchard-allow-http":"false"}}`, wantOwner: "old", warning: true},
+		{name: "new takes precedence", modern: `{"version":1,"flags":{"owner":"new"}}`, legacy: `{"version":1,"flags":{"owner":"old"}}`, wantOwner: "new"},
+		{name: "invalid new never falls back", modern: `invalid`, legacy: `{"version":1,"flags":{}}`, wantError: true},
+		{name: "explicit path never falls back", legacy: `{"version":1,"flags":{"owner":"old"}}`, explicit: "custom.json", wantOwner: "server"},
+		{name: "removed backend rejected", legacy: `{"version":1,"flags":{"backend":"tart"}}`, warning: true, wantError: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			modern := filepath.Join(home, ".pulse", "vz", "provider.json")
+			legacy := filepath.Join(home, ".pulse", "provider.json")
+			if err := os.MkdirAll(filepath.Dir(modern), 0700); err != nil {
+				t.Fatal(err)
+			}
+			for path, body := range map[string]string{modern: tc.modern, legacy: tc.legacy} {
+				if body != "" {
+					if err := os.WriteFile(path, []byte(body), 0600); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			called := false
+			var stderr bytes.Buffer
+			cmd := providerCommand("setup", "test", func(_ context.Context, o serverOptions) error {
+				called = true
+				if o.owner != tc.wantOwner {
+					t.Fatalf("owner=%s want %s", o.owner, tc.wantOwner)
+				}
+				if tc.name == "legacy fallback" && o.stateDir != filepath.Join(home, ".pulse", "relative") {
+					t.Fatalf("legacy relative path changed: %s", o.stateDir)
+				}
+				return nil
+			})
+			cmd.SetErr(&stderr)
+			cmd.SilenceErrors = true
+			cmd.SilenceUsage = true
+			args := []string{}
+			if tc.explicit != "" {
+				args = []string{"--config", filepath.Join(home, tc.explicit)}
+			}
+			cmd.SetArgs(args)
+			err := cmd.Execute()
+			if (err != nil) != tc.wantError {
+				t.Fatalf("error=%v", err)
+			}
+			if called == tc.wantError {
+				t.Fatalf("run called=%v", called)
+			}
+			if strings.Contains(stderr.String(), "Warning: using legacy") != tc.warning {
+				t.Fatalf("warning: %s", stderr.String())
+			}
+			if tc.legacy != "" {
+				data, _ := os.ReadFile(legacy)
+				if string(data) != tc.legacy {
+					t.Fatal("legacy file changed")
+				}
+			}
+			if !tc.wantError && tc.explicit == "" {
+				data, err := os.ReadFile(modern)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if strings.Contains(string(data), "tart-binary") || strings.Contains(string(data), "orchard-") {
+					t.Fatal("removed defaults persisted")
+				}
+			}
+		})
+	}
+}

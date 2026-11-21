@@ -6,15 +6,16 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/colony-2/pulse-tart/internal/backend"
-	"github.com/colony-2/pulse-tart/internal/config"
-	"github.com/colony-2/pulse-tart/internal/vz"
 	"io"
 	"net"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/colony-2/pulse-macvz/internal/backend"
+	"github.com/colony-2/pulse-macvz/internal/config"
+	"github.com/colony-2/pulse-macvz/internal/vz"
 )
 
 // This helper operates only on a disposable private home supplied by the

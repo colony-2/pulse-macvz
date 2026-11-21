@@ -1,24 +1,25 @@
-package tart
+package macvz
 
 import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	api "github.com/colony-2/pulse-provider-api"
-	"github.com/colony-2/pulse-tart/internal/backend"
-	"github.com/colony-2/pulse-tart/internal/config"
 	"os"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/colony-2/pulse-macvz/internal/backend"
+	"github.com/colony-2/pulse-macvz/internal/config"
+	api "github.com/colony-2/pulse-provider-api"
 )
 
 // Explicit opt-in: real public API, fresh paired provisioning and real JobDB.
 func TestLiveDockerLibrary(t *testing.T) {
 	kind := os.Getenv("PULSE_TEST_DOCKER_LIBRARY")
 	if kind == "" {
-		t.Skip("set PULSE_TEST_DOCKER_LIBRARY=orchard, tart, or vz")
+		t.Skip("set PULSE_TEST_DOCKER_LIBRARY=vz")
 	}
 	osname := os.Getenv("PULSE_TEST_DOCKER_OS")
 	if osname == "" {
@@ -40,15 +41,10 @@ func TestLiveDockerLibrary(t *testing.T) {
 	factory := func() (*Runtime, error) {
 		var r *Runtime
 		var e error
-		if kind == "orchard" {
-			r, e = NewOrchard(cfg, OrchardConfig{URL: os.Getenv("PULSE_TEST_ORCHARD_URL"), Worker: os.Getenv("PULSE_TEST_ORCHARD_WORKER"), AllowInsecureHTTP: true, DockerEndpoint: endpoint})
-		} else if kind == "vz" {
-			r, e = NewVZ(cfg, VZConfig{Home: os.Getenv("PULSE_VZ_HOME"), Runner: os.Getenv("PULSE_VZ_RUNNER"), DockerEndpoint: endpoint})
-		} else if kind == "tart" {
-			r, e = NewTart(cfg, TartConfig{Home: os.Getenv("PULSE_TEST_TART_HOME"), DockerEndpoint: endpoint})
-		} else {
-			return nil, fmt.Errorf("invalid backend")
+		if kind != "vz" {
+			return nil, fmt.Errorf("invalid backend: only vz is supported")
 		}
+		r, e = NewVZ(cfg, VZConfig{Home: os.Getenv("PULSE_VZ_HOME"), Runner: os.Getenv("PULSE_VZ_RUNNER"), DockerEndpoint: endpoint})
 		if e == nil {
 			r.profile = "docker-integration"
 		}
@@ -62,7 +58,6 @@ func TestLiveDockerLibrary(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 40*time.Minute)
 	defer cancel()
 	report := newLiveReport(t, string(base.SSHPassword))
-	connect := OrchardConfig{URL: os.Getenv("PULSE_TEST_ORCHARD_URL"), Worker: os.Getenv("PULSE_TEST_ORCHARD_WORKER"), AllowInsecureHTTP: true}
 	t.Logf("backend=%s OS=%s private state=%s", kind, osname, dir)
 	ops := r.p.Backend.(interface {
 		Exec(context.Context, string, string, []byte) ([]byte, error)
@@ -71,7 +66,7 @@ func TestLiveDockerLibrary(t *testing.T) {
 	defer func() {
 		clean, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 		defer cancel()
-		report.capture(t, clean, kind, connect, r, dir)
+		report.capture(t, clean, kind, r, dir)
 		_ = r.Drain(clean)
 		// Source builders contain no lease; explicit cleanup of this test's exact UIDs.
 		images, _ := r.Images()
@@ -162,7 +157,7 @@ func TestLiveDockerLibrary(t *testing.T) {
 		t.Fatal("invalid version inventory")
 	}
 	report.write(t, "docker-library-"+osname+"-versions.json", versions)
-	contract, e := os.ReadFile("scripts/docker-prototype/engine-contract.sh")
+	contract, e := os.ReadFile("scripts/docker-qualification/engine-contract.sh")
 	if e != nil {
 		t.Fatal(e)
 	}

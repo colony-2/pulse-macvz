@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"time"
 
+	macvz "github.com/colony-2/pulse-macvz"
 	api "github.com/colony-2/pulse-provider-api"
-	tart "github.com/colony-2/pulse-tart"
 )
 
 type managedRuntime interface {
@@ -16,9 +16,9 @@ type managedRuntime interface {
 	Drain(context.Context) error
 	PurgeImages(context.Context) error
 	Close() error
-	Slots() ([]tart.SlotStatus, error)
-	Images() ([]tart.ImageStatus, error)
-	DockerAllocations() ([]tart.DockerStatus, error)
+	Slots() ([]macvz.SlotStatus, error)
+	Images() ([]macvz.ImageStatus, error)
+	DockerAllocations() ([]macvz.DockerStatus, error)
 	List(context.Context, api.ListRequest) (api.ListResponse, error)
 }
 
@@ -150,7 +150,7 @@ func manage(parent context.Context, o serverOptions, upgrade bool, open func(ser
 	return nil
 }
 
-func capacityReady(c tart.Config, r managedRuntime) (bool, error) {
+func capacityReady(c macvz.Config, r managedRuntime) (bool, error) {
 	images, err := r.Images()
 	if err != nil {
 		return false, err
@@ -158,7 +158,7 @@ func capacityReady(c tart.Config, r managedRuntime) (bool, error) {
 	// A failed guest observation belongs to its base; it must not prevent
 	// reconciliation of unrelated ready capacity. Setup still fails explicitly.
 	if observer, ok := r.(interface {
-		PreparationProgress() (tart.PreparationProgress, error)
+		PreparationProgress() (macvz.PreparationProgress, error)
 	}); ok {
 		progress, err := observer.PreparationProgress()
 		if err != nil {

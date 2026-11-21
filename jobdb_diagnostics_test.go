@@ -1,4 +1,4 @@
-package tart
+package macvz
 
 import (
 	"context"
@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/colony-2/pulse-tart/internal/backend"
+	"github.com/colony-2/pulse-macvz/internal/backend"
 )
 
 func TestQualificationObserverCapturesEarlyExit(t *testing.T) {
@@ -116,7 +116,7 @@ func TestQualificationDiagnosticsPreserveSetupPermissions(t *testing.T) {
 func TestFixtureTunnelStopsOnNativeFailure(t *testing.T) {
 	worker := backend.VM{Spec: backend.Spec{Name: "worker"}, UID: "original"}
 	calls := 0
-	_, err := attachFixtureTunnel(t.Context(), "tart", OrchardConfig{}, backend.VM{}, worker,
+	_, err := attachFixtureTunnel(t.Context(), "vz", backend.VM{}, worker,
 		func(context.Context, string) (backend.VM, error) {
 			calls++
 			v := worker

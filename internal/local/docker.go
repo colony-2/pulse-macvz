@@ -2,9 +2,10 @@ package local
 
 import (
 	"context"
-	"github.com/colony-2/pulse-tart/internal/guestconn"
 	"net"
 	"strings"
+
+	"github.com/colony-2/pulse-macvz/internal/guestconn"
 )
 
 func (b *Client) Exec(ctx context.Context, name, uid string, script []byte) ([]byte, error) {

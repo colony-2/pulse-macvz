@@ -1,19 +1,17 @@
-# Pulse provider for Orchard, Tart and VZ
+# Pulse macOS Virtualization.framework provider
 
-This cell owns `github.com/colony-2/pulse-tart`, an importable Go library and standalone server implementing the shared cell API that executes c2j workers in disposable VMs. `SPEC.md` defines the implementation contract.
+This repository owns `github.com/colony-2/pulse-macvz`: an importable Go library
+and `pulse-macvz` Cobra CLI implementing the shared Pulse provider API. It runs
+macOS and Linux ARM64 jobs on Apple Silicon using cgo-free native VZ bindings.
+Tart and Orchard providers are removed; compatible OCI images remain supported.
 
-Support Orchard's public REST API, direct local Tart, and native VZ as independent provider options. VZ uses Virtualization.framework through cgo-free Go bindings on Apple Silicon; it does not require Tart or host Python. Provider selection belongs to the embedding host; the standalone server defaults to VZ. Preserve existing Tart and Orchard behavior. Support macOS and Linux guests within each backend's architecture limits; shared host volumes remain unsupported.
+Own image preparation, suspended macOS templates, Linux workers, Docker
+companions, capability admission, durable guest delivery, recovery, and cleanup.
+Pulse owns scheduling and leases; c2j owns execution and secret retrieval. Pass
+opaque leases through stdin and never log their contents. Accepting a launch
+means native dispatch succeeded, not that guest execution completed.
 
-Own approved image mapping, provisioning, automatic guest bootstrap, process and lease delivery, admission, active owned-instance listing, durable reconciliation, cleanup, packaging, and automated integration tests. Install Nix on the base VM, then use a locked Nix environment for c2j, the guest runner, and execution tools. Each phase 1 VM has its own Nix store and caches. Support unattended bootstrap through Orchard so routine tests need no manual guest setup.
-
-Use `github.com/colony-2/pulse-provider-api`; do not copy private protocols or import Pulse internals. Pulse owns scheduling, placement, lease acquisition, provider lifecycle, and failed-deployment retries. c2j owns execution, lease renewal, and retrieving application secrets using the supplied lease. JobDB owns durable job state. The provider does not provision the Mac fleet or build another scheduler.
-
-Construct the same c2j supplied-lease execution mode as Docker from JobRef and lease. Pass the lease unchanged through stdin as the only worker credential; never inject application secrets or log lease bytes. Acceptance means native provisioning was dispatched successfully, not that the VM booted or c2j started. Ambiguous provisioning remains unknown without replay or fallback; repeated launch IDs never start another worker.
-
-Expose one shared typed configuration API for bases, slot counts, CPU/memory sizes, state and bootstrap. Orchard adds connectivity and worker placement. Provide a first-class Cobra server CLI with long --word flags and single-character short aliases, defaulting to the published provider SDK’s outbound mode and supporting its inbound mode within upstream platform limits. Keep the typed library API and use shared Cobra flags and versioned JSON settings for standalone setup, upgrade, and serving; do not invent a separate protocol. Each slot owns a distinct suspended template with a unique MAC; at most one disposable job clone may use it at a time. Preserve ownership and reservations across library/host restarts.
-
-Use durable ownership and reservations across library instances. Listing is observational, includes only active owned instances, and supports exact launch filters and pagination. Unsupported requirements must be declined before dispatch. Accepted execution survives library closure. After startup grace, clean up when c2j is confirmed absent; a running zero-timeout worker has no implicit runtime cap. Confirm Orchard API-record deletion to complete cleanup; physical removal remains Orchard's responsibility. Never delete unrelated resources.
-
-Require deterministic API/HTTP/state tests and automated real Orchard tests covering bootstrap, supplied-lease execution, Nix-managed tools, listing, failures, restart recovery, and cleanup. Deferred features are not phase 1 release gates. The development implementation and measured compatibility are documented in `README.md` and `compatibility.json`.
-
-Implementation releases use the Apache License, Version 2.0, with appropriate attribution. Retain upstream notices for copied material and recheck actual release/dependency licenses before distribution. Third-party tools and dependencies retain their own licenses.
+Preserve VZ storage and owner identities across restarts. Never replay ambiguous
+native starts, delete unrelated VMs, or terminate accepted jobs for maintenance.
+Keep the library and Cobra setup/upgrade/server behavior shared. Defaults and
+configuration migration are documented in README.md and docs/server-cli.md.

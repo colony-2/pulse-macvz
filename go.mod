@@ -1,4 +1,4 @@
-module github.com/colony-2/pulse-tart
+module github.com/colony-2/pulse-macvz
 
 go 1.26.0
 
@@ -17,7 +17,6 @@ require (
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/pflag v1.0.9
 	github.com/tmc/apple v0.6.19-0.20260907023617-4c51c1664813
-	golang.org/x/net v0.60.0
 )
 
 require (
@@ -42,6 +41,7 @@ require (
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/sirupsen/logrus v1.9.3 // indirect
 	github.com/vbatts/tar-split v0.12.1 // indirect
+	golang.org/x/net v0.60.0 // indirect
 	golang.org/x/sync v0.24.0 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20240814211410-ddb44dafa142 // indirect
 	google.golang.org/grpc v1.67.1 // indirect

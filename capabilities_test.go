@@ -1,4 +1,4 @@
-package tart
+package macvz
 
 import (
 	"context"
@@ -26,7 +26,7 @@ func TestUbuntu2604DockerDiscovery(t *testing.T) {
 			c.Bases[0].OS, c.Bases[0].OSVersion = "linux", "26.04"
 			c.Bases[0].Arch = arch
 			c.Slots = nil // Linux conventions must supply Docker without macOS opt-in.
-			r, err := NewOrchard(c, OrchardConfig{URL: "https://orchard.example.test", Worker: "worker"})
+			r, err := newTestRuntime(c)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -57,7 +57,7 @@ func TestGetCapabilities(t *testing.T) {
 	c.Bases = append(c.Bases, second)
 	c.Slots[0].Base = c.Bases[0].Name
 	c.Slots = append(c.Slots, SlotGroup{Name: "disabled", Base: second.Name, Count: 0})
-	r, err := NewOrchard(c, OrchardConfig{URL: server.URL, Worker: "mac", AllowInsecureHTTP: true})
+	r, err := newTestRuntime(c)
 	if err != nil {
 		t.Fatal(err)
 	}

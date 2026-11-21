@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/colony-2/pulse-tart/internal/backend"
+	"github.com/colony-2/pulse-macvz/internal/backend"
 )
 
 type engineImageTracker struct {

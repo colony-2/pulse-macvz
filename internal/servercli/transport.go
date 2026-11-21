@@ -88,7 +88,7 @@ func (o *transportOptions) validate(mode, owner string) error {
 }
 
 func (o transportOptions) serveOptions(version string) plugin.ServeOptions {
-	return plugin.ServeOptions{Implementation: "pulse-tart", Version: version, Concurrency: o.concurrency, MaxMessageBytes: o.messageBytes, FactoryTimeout: o.startup, ShutdownTimeout: o.shutdown}
+	return plugin.ServeOptions{Implementation: "pulse-macvz", Version: version, Concurrency: o.concurrency, MaxMessageBytes: o.messageBytes, FactoryTimeout: o.startup, ShutdownTimeout: o.shutdown}
 }
 
 func (o transportOptions) tlsConfig() (*tls.Config, error) {

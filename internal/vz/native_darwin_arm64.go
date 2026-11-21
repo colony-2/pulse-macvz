@@ -5,7 +5,6 @@ package vz
 import (
 	"errors"
 	"fmt"
-	"golang.org/x/sys/unix"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -13,6 +12,8 @@ import (
 	"strings"
 	"time"
 	"unsafe"
+
+	"golang.org/x/sys/unix"
 
 	cf "github.com/tmc/apple/corefoundation"
 	"github.com/tmc/apple/foundation"

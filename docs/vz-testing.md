@@ -160,8 +160,7 @@ The standalone diagnostic builds its own runner:
 This VM-free test passed in `test-results/vz-endpoint.WgtkR2` (2.50 seconds):
 launchd startup, forwarding, client closure/reopening, same-port process restart,
 and service removal. Safehouse denies `job-creation` in the current agent policy,
-so the successful run used an ordinary terminal. The Go bridge requires the same
-launchd job-registration ability as Tart's existing Python bridge.
+so the successful run used an ordinary terminal. The Go bridge requires launchd job-registration access.
 
 ## Full Docker qualification
 
@@ -328,7 +327,7 @@ base** (with `/opt/pulse-tart/bin/c2j`), not a Docker-engine-only companion base
 mkdir -p "$HOME/.pulse/vz/diagnostics/kvm"
 PULSE_TEST_VZ_KVM=1 \
 PULSE_VZ_LINUX_BASE=/absolute/prepared-linux-worker-base \
-PULSE_VZ_RUNNER="$HOME/go/bin/pulse-tart" \
+PULSE_VZ_RUNNER="$HOME/go/bin/pulse-macvz" \
 PULSE_VZ_RESULTS="$HOME/.pulse/vz/diagnostics/kvm" CGO_ENABLED=0 \
   go test ./internal/vz -run '^TestLiveLinuxLifecycle$' -v -count=1 -timeout=12m
 ```
@@ -477,7 +476,7 @@ lease handoff and job execution. Reproduce with a stopped cold macOS base:
 ```sh
 PULSE_TEST_VZ_TIMING=1 \
 PULSE_VZ_MACOS_BASE=/absolute/cold-macos-base \
-PULSE_VZ_RUNNER="$HOME/Applications/PulseProvider.app/Contents/MacOS/pulse-tart" \
+PULSE_VZ_RUNNER="$HOME/Applications/PulseProvider.app/Contents/MacOS/pulse-macvz" \
 PULSE_VZ_RESULTS="$PWD/test-results/macos-timing" CGO_ENABLED=0 \
   go test ./internal/vz -run '^TestLiveMacOSTiming$' -v -count=1 -timeout 10m
 ```

@@ -8,9 +8,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/colony-2/pulse-macvz/internal/backend"
+	"github.com/colony-2/pulse-macvz/internal/config"
 	compute "github.com/colony-2/pulse-provider-api"
-	"github.com/colony-2/pulse-tart/internal/backend"
-	"github.com/colony-2/pulse-tart/internal/config"
 )
 
 // Emulate guest preparation and the suspended state; job VMs stay pending.

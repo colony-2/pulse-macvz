@@ -1,4 +1,4 @@
-module github.com/colony-2/pulse-tart/guest
+module github.com/colony-2/pulse-macvz/guest
 
 go 1.26.0
 

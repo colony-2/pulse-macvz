@@ -6,20 +6,20 @@ import (
 	"testing"
 	"time"
 
-	tart "github.com/colony-2/pulse-tart"
-	"github.com/colony-2/pulse-tart/internal/backend"
+	macvz "github.com/colony-2/pulse-macvz"
+	"github.com/colony-2/pulse-macvz/internal/backend"
 )
 
 type progressRuntime struct {
 	maintenanceFake
-	images   []tart.ImageStatus
-	slots    []tart.SlotStatus
-	pairs    []tart.DockerStatus
-	progress tart.PreparationProgress
+	images   []macvz.ImageStatus
+	slots    []macvz.SlotStatus
+	pairs    []macvz.DockerStatus
+	progress macvz.PreparationProgress
 }
 
 func TestGuestObservationProgressShowsActivityAndReboots(t *testing.T) {
-	got := vmStage("preparing", tart.VMProgress{Stage: "base_preparing", LogBytes: 2048, Reboots: 2, ObservedAt: time.Now()})
+	got := vmStage("preparing", macvz.VMProgress{Stage: "base_preparing", LogBytes: 2048, Reboots: 2, ObservedAt: time.Now()})
 	for _, want := range []string{"preparation in progress", "2.0 KiB", "observed", "restarts observed: 2", "ETA unavailable"} {
 		if !strings.Contains(got, want) {
 			t.Fatal(got)
@@ -32,8 +32,8 @@ func TestSetupReportsObservedFailureOnlyForRequiredImages(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	f := &progressRuntime{images: []tart.ImageStatus{{Name: "base15", Phase: "preparing"}},
-		progress: tart.PreparationProgress{VMs: []tart.VMProgress{{Name: "base15", Stage: "base_failed", Cause: "guest_reboot_loop", Reboots: 3}}}}
+	f := &progressRuntime{images: []macvz.ImageStatus{{Name: "base15", Phase: "preparing"}},
+		progress: macvz.PreparationProgress{VMs: []macvz.VMProgress{{Name: "base15", Stage: "base_failed", Cause: "guest_reboot_loop", Reboots: 3}}}}
 	if _, err := capacityReady(c, f); err == nil || !strings.Contains(err.Error(), "guest_reboot_loop") {
 		t.Fatal(err)
 	}
@@ -43,10 +43,10 @@ func TestSetupReportsObservedFailureOnlyForRequiredImages(t *testing.T) {
 	}
 }
 
-func (f *progressRuntime) Images() ([]tart.ImageStatus, error)             { return f.images, nil }
-func (f *progressRuntime) Slots() ([]tart.SlotStatus, error)               { return f.slots, nil }
-func (f *progressRuntime) DockerAllocations() ([]tart.DockerStatus, error) { return f.pairs, nil }
-func (f *progressRuntime) PreparationProgress() (tart.PreparationProgress, error) {
+func (f *progressRuntime) Images() ([]macvz.ImageStatus, error)             { return f.images, nil }
+func (f *progressRuntime) Slots() ([]macvz.SlotStatus, error)               { return f.slots, nil }
+func (f *progressRuntime) DockerAllocations() ([]macvz.DockerStatus, error) { return f.pairs, nil }
+func (f *progressRuntime) PreparationProgress() (macvz.PreparationProgress, error) {
 	return f.progress, nil
 }
 
@@ -55,17 +55,17 @@ func TestSetupWaitsForEveryMacVersionTemplate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	f := &progressRuntime{images: []tart.ImageStatus{{Phase: "ready"}}, slots: []tart.SlotStatus{
+	f := &progressRuntime{images: []macvz.ImageStatus{{Phase: "ready"}}, slots: []macvz.SlotStatus{
 		{ID: "standard-0001", Phase: "ready"}, {ID: "standard-0002", Phase: "ready"},
 	}}
 	for _, id := range []string{"linux-0001", "linux-0002", "linux-0003", "linux-0004"} {
-		f.pairs = append(f.pairs, tart.DockerStatus{Slot: id, Phase: "ready"})
+		f.pairs = append(f.pairs, macvz.DockerStatus{Slot: id, Phase: "ready"})
 	}
 	if ready, err := capacityReady(c, f); err != nil || ready {
 		t.Fatal("one OS version incorrectly completed setup", ready, err)
 	}
 	for _, id := range []string{"mac-macos-15-arm64-0001", "mac-macos-15-arm64-0002"} {
-		f.slots = append(f.slots, tart.SlotStatus{ID: id, Phase: "ready"})
+		f.slots = append(f.slots, macvz.SlotStatus{ID: id, Phase: "ready"})
 	}
 	if ready, err := capacityReady(c, f); err != nil || !ready {
 		t.Fatal("all versions not recognized ready", ready, err)
@@ -82,11 +82,11 @@ func TestPreparationProgressShowsSlotsDownloadAndGuestStages(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := time.Now()
-	f := &progressRuntime{images: []tart.ImageStatus{{Base: c.Bases[1].Name, Name: "mac15", Phase: "preparing", Kind: "base"}},
-		progress: tart.PreparationProgress{
-			Sources: []tart.SourceProgress{{Source: c.Bases[0].Image, Started: now.Add(-10 * time.Second), Updated: now,
+	f := &progressRuntime{images: []macvz.ImageStatus{{Base: c.Bases[1].Name, Name: "mac15", Phase: "preparing", Kind: "base"}},
+		progress: macvz.PreparationProgress{
+			Sources: []macvz.SourceProgress{{Source: c.Bases[0].Image, Started: now.Add(-10 * time.Second), Updated: now,
 				TransferProgress: backend.TransferProgress{Stage: "downloading", Current: 10 << 20, Total: 100 << 20}}},
-			VMs: []tart.VMProgress{{Name: "mac15", Stage: "guest_exec"}},
+			VMs: []macvz.VMProgress{{Name: "mac15", Stage: "guest_exec"}},
 		}}
 	var output bytes.Buffer
 	r := &preparationReporter{}
@@ -116,7 +116,7 @@ func TestPreparationProgressShowsSlotsDownloadAndGuestStages(t *testing.T) {
 
 func TestDownloadEstimatesHandleUnknownTotalAndStalls(t *testing.T) {
 	now := time.Now()
-	p := tart.SourceProgress{Started: now.Add(-10 * time.Second), Updated: now,
+	p := macvz.SourceProgress{Started: now.Add(-10 * time.Second), Updated: now,
 		TransferProgress: backend.TransferProgress{Stage: "downloading", Current: 10 << 20, Total: 100 << 20}}
 	if got := transferDetail(p, now); !strings.Contains(got, "ETA ~1m30s") {
 		t.Fatal(got)

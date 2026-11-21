@@ -5,7 +5,7 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/colony-2/pulse-tart/internal/config"
+	"github.com/colony-2/pulse-macvz/internal/config"
 )
 
 func TestRunnerFeaturesRequireExplicitCompatibleReply(t *testing.T) {

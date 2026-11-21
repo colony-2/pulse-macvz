@@ -1,4 +1,4 @@
-package tart
+package macvz
 
 import (
 	"bytes"
@@ -9,96 +9,28 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"net/http"
-	"net/url"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/colony-2/pulse-macvz/internal/backend"
+	"github.com/colony-2/pulse-macvz/internal/config"
+	"github.com/colony-2/pulse-macvz/internal/vz"
 	api "github.com/colony-2/pulse-provider-api"
-	"github.com/colony-2/pulse-tart/internal/backend"
-	"github.com/colony-2/pulse-tart/internal/config"
-	"github.com/colony-2/pulse-tart/internal/vz"
 	"golang.org/x/crypto/ssh"
-	"golang.org/x/net/websocket"
 )
 
 var errGuestDiagnostic = errors.New("guest diagnostic connection unavailable")
 
 // Only fixed test commands use this channel. Lease responses remain in memory;
 // errors never contain response bodies, passwords, or serialized assignments.
-func testGuestExec(ctx context.Context, kind string, connection OrchardConfig, v backend.VM, command string) ([]byte, error) {
+func testGuestExec(ctx context.Context, kind string, v backend.VM, command string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
-	if kind == "orchard" {
-		base, e := config.NormalizeURL(connection.URL, connection.AllowInsecureHTTP)
-		if e != nil {
-			return nil, errGuestDiagnostic
-		}
-		u, e := url.Parse(base + "/vms/" + url.PathEscape(v.Name) + "/exec")
-		if e != nil {
-			return nil, errGuestDiagnostic
-		}
-		origin := u.Scheme + "://" + u.Host
-		if u.Scheme == "https" {
-			u.Scheme = "wss"
-		} else {
-			u.Scheme = "ws"
-		}
-		q := url.Values{"command": {command}, "wait": {"5"}}
-		u.RawQuery = q.Encode()
-		cfg, e := websocket.NewConfig(u.String(), origin)
-		if e != nil {
-			return nil, errGuestDiagnostic
-		}
-		cfg.Dialer = &net.Dialer{Timeout: 10 * time.Second}
-		if connection.Token != "" {
-			req, _ := http.NewRequest("GET", origin, nil)
-			req.SetBasicAuth(connection.Username, string(connection.Token))
-			cfg.Header = req.Header
-		}
-		ws, e := websocket.DialConfig(cfg)
-		if e != nil {
-			return nil, errGuestDiagnostic
-		}
-		defer ws.Close()
-		stop := context.AfterFunc(ctx, func() { ws.Close() })
-		defer stop()
-		ws.MaxPayloadBytes = 1 << 20
-		deadline, _ := ctx.Deadline()
-		_ = ws.SetDeadline(deadline)
-		var out bytes.Buffer
-		for {
-			var f struct {
-				Type string `json:"type"`
-				Data []byte `json:"data"`
-				Exit *struct {
-					Code int `json:"code"`
-				} `json:"exit"`
-			}
-			if websocket.JSON.Receive(ws, &f) != nil {
-				return nil, errGuestDiagnostic
-			}
-			switch f.Type {
-			case "stdout":
-				if out.Len()+len(f.Data) > 256<<10 {
-					return nil, errGuestDiagnostic
-				}
-				out.Write(f.Data)
-			case "exit":
-				if f.Exit != nil && f.Exit.Code == 0 {
-					return out.Bytes(), nil
-				}
-				return nil, errGuestDiagnostic
-			case "error":
-				return nil, errGuestDiagnostic
-			}
-		}
-	}
+
 	ip, e := fixtureGuestIP(ctx, kind, v.Name)
 	if e != nil || net.ParseIP(ip) == nil {
 		return nil, errGuestDiagnostic
@@ -234,7 +166,7 @@ func (r *liveReport) write(t *testing.T, name string, value any) {
 		t.Error("cannot save diagnostic report")
 	}
 }
-func (r *liveReport) capture(t *testing.T, ctx context.Context, kind string, connection OrchardConfig, runtime *Runtime, stateDir string) {
+func (r *liveReport) capture(t *testing.T, ctx context.Context, kind string, runtime *Runtime, stateDir string) {
 	t.Helper()
 	if r.dir == "" || runtime == nil {
 		return
@@ -248,10 +180,11 @@ func (r *liveReport) capture(t *testing.T, ctx context.Context, kind string, con
 		}
 		r.write(t, fmt.Sprintf("endpoint-diagnostics-%d.json", time.Now().UnixNano()), data)
 	}
-	if data, err := runtime.DeliveryObservations(ctx); err == nil {
-		r.write(t, fmt.Sprintf("delivery-diagnostics-%d.json", time.Now().UnixNano()), data)
+	observations, observationErr := runtime.DeliveryObservations(ctx)
+	if observationErr == nil {
+		r.write(t, fmt.Sprintf("delivery-diagnostics-%d.json", time.Now().UnixNano()), observations)
 	} else {
-		t.Logf("delivery diagnostics: %v", err)
+		t.Logf("delivery diagnostics: %v", observationErr)
 	}
 	if data, err := runtime.DockerAllocations(); err == nil {
 		r.write(t, fmt.Sprintf("allocation-diagnostics-%d.json", time.Now().UnixNano()), data)
@@ -263,6 +196,11 @@ func (r *liveReport) capture(t *testing.T, ctx context.Context, kind string, con
 		t.Logf("VM properties diagnostics: %v", err)
 	}
 	owned := map[string]string{}
+	// Fixture builders have native ownership/delivery records before they have
+	// a published image entry. Include their runner errors on early failures.
+	for _, observation := range observations {
+		owned[observation.Name] = observation.UID
+	}
 	for _, v := range journal.Records {
 		owned[v.Name] = v.UID
 	}
@@ -307,7 +245,7 @@ func (r *liveReport) capture(t *testing.T, ctx context.Context, kind string, con
 			output = append(output, d)
 			continue
 		}
-		if (kind == "tart" || kind == "vz") && config.Name(name) {
+		if kind == "vz" && config.Name(name) {
 			f, e := os.Open(filepath.Join(runtime.p.Backend.(interface{ Home() string }).Home(), "vms", name, "pulse.run.log"))
 			if e == nil {
 				if st, e := f.Stat(); e == nil && st.Size() > 64000 {
@@ -328,7 +266,7 @@ func (r *liveReport) capture(t *testing.T, ctx context.Context, kind string, con
 			}
 		}
 		if !v.Stopped() {
-			logs, e := testGuestExec(ctx, kind, connection, v, `for f in /var/log/pulse-tart-build.log /var/log/pulse-tart-base.log /var/log/pulse-tart-docker.log /var/tmp/pulse-docker-contract.log /var/log/pulse-tart-template.log /var/log/pulse-tart-bootstrap.log /var/log/pulse-tart-guest.log /var/log/pulse-fixture.log /var/db/pulse-tart/worker.log; do if sudo -n test -f "$f"; then printf '\n%s\n' "$f"; sudo -n tail -c 16000 "$f"; fi; done
+			logs, e := testGuestExec(ctx, kind, v, `for f in /var/log/pulse-tart-build.log /var/log/pulse-tart-base.log /var/log/pulse-tart-docker.log /var/tmp/pulse-docker-contract.log /var/log/pulse-tart-template.log /var/log/pulse-tart-bootstrap.log /var/log/pulse-tart-guest.log /var/log/pulse-fixture.log /var/db/pulse-tart/worker.log; do if sudo -n test -f "$f"; then printf '\n%s\n' "$f"; sudo -n tail -c 16000 "$f"; fi; done
 if command -v systemctl >/dev/null 2>&1; then
  sudo -n systemctl show pulse-docker-prepare.service -p LoadState -p ActiveState -p SubState -p Result -p ExecMainStatus || true
  sudo -n journalctl -u pulse-docker-prepare.service --no-pager -o cat -n 160 | tail -c 32000 || true
@@ -373,7 +311,7 @@ type fixtureStatus struct {
 	SecretCalls int    `json:"secret_calls"`
 }
 
-func exerciseJobDB(t *testing.T, ctx context.Context, kind string, connection OrchardConfig, r *Runtime, owner, stateDir string, report *liveReport, done func([]api.Launch)) {
+func exerciseJobDB(t *testing.T, ctx context.Context, kind string, r *Runtime, owner, stateDir string, report *liveReport, done func([]api.Launch)) {
 	t.Helper()
 	slots, e := r.Slots()
 	if e != nil || len(slots) != 2 {
@@ -398,7 +336,7 @@ func exerciseJobDB(t *testing.T, ctx context.Context, kind string, connection Or
 	defer func() {
 		clean, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer cancel()
-		report.capture(t, clean, kind, connection, r, stateDir)
+		report.capture(t, clean, kind, r, stateDir)
 		for clean.Err() == nil {
 			v, e := r.p.Backend.Get(clean, coordinator.Name)
 			if backend.IsStatus(e, 404) {
@@ -428,12 +366,12 @@ func exerciseJobDB(t *testing.T, ctx context.Context, kind string, connection Or
 	coordinator = created
 	report.extra[coordinator.Name] = coordinator.UID
 	waitLive(t, ctx, "JobDB service", 3*time.Minute, func(ctx context.Context) bool {
-		data, e := testGuestExec(ctx, kind, connection, coordinator, "/usr/bin/curl --silent --fail --max-time 10 http://127.0.0.1:18881/health")
+		data, e := testGuestExec(ctx, kind, coordinator, "/usr/bin/curl --silent --fail --max-time 10 http://127.0.0.1:18881/health")
 		return e == nil && bytes.Contains(data, []byte(`"ready":true`))
 	})
 	fetch := func(path string, out any) {
 		t.Helper()
-		data, e := testGuestExec(ctx, kind, connection, coordinator, "/usr/bin/curl --silent --fail --max-time 15 'http://127.0.0.1:18881/"+path+"'")
+		data, e := testGuestExec(ctx, kind, coordinator, "/usr/bin/curl --silent --fail --max-time 15 'http://127.0.0.1:18881/"+path+"'")
 		if e != nil || json.Unmarshal(data, out) != nil {
 			t.Fatal("fixture control request failed")
 		}
@@ -468,7 +406,7 @@ func exerciseJobDB(t *testing.T, ctx context.Context, kind string, connection Or
 			t.Fatal(e)
 		}
 		t.Logf("connecting JobDB SSH tunnel for %s", l.LaunchID)
-		tunnel, err := attachFixtureTunnel(ctx, kind, connection, coordinator, worker, r.p.Backend.Get)
+		tunnel, err := attachFixtureTunnel(ctx, kind, coordinator, worker, r.p.Backend.Get)
 		if err != nil {
 			t.Fatalf("fixture SSH tunnel unavailable: %v (see vm-diagnostics-*.json for native run logs)", err)
 		}
@@ -521,48 +459,17 @@ func fixtureSpecBytes(spec backend.Spec) []byte {
 
 // Both sides connect outward from the test host via SSH. JobDB and Git remain
 // on guest loopback addresses; no guest-to-guest route or exposed host port is needed.
-func openFixtureSSH(ctx context.Context, kind string, connection OrchardConfig, v backend.VM) (*ssh.Client, error) {
+func openFixtureSSH(ctx context.Context, kind string, v backend.VM) (*ssh.Client, error) {
 	var conn net.Conn
 	var e error
-	if kind == "orchard" {
-		base, err := config.NormalizeURL(connection.URL, connection.AllowInsecureHTTP)
-		if err != nil {
-			return nil, errGuestDiagnostic
-		}
-		u, _ := url.Parse(base + "/vms/" + url.PathEscape(v.Name) + "/port-forward")
-		origin := u.Scheme + "://" + u.Host
-		if u.Scheme == "https" {
-			u.Scheme = "wss"
-		} else {
-			u.Scheme = "ws"
-		}
-		u.RawQuery = url.Values{"port": {"22"}, "wait": {"5"}}.Encode()
-		cfg, err := websocket.NewConfig(u.String(), origin)
-		if err != nil {
-			return nil, errGuestDiagnostic
-		}
-		cfg.Dialer = &net.Dialer{Timeout: 10 * time.Second}
-		cfg.Header.Set("User-Agent", "pulse-cell-integration")
-		if connection.Token != "" {
-			req, _ := http.NewRequest("GET", origin, nil)
-			req.SetBasicAuth(connection.Username, string(connection.Token))
-			cfg.Header.Set("Authorization", req.Header.Get("Authorization"))
-		}
-		ws, err := websocket.DialConfig(cfg)
-		if err != nil {
-			return nil, errGuestDiagnostic
-		}
-		ws.PayloadType = websocket.BinaryFrame
-		conn = ws
-	} else {
-		ip, err := fixtureGuestIP(ctx, kind, v.Name)
-		if err != nil || net.ParseIP(ip) == nil {
-			return nil, errGuestDiagnostic
-		}
-		conn, e = (&net.Dialer{Timeout: 5 * time.Second}).DialContext(ctx, "tcp", net.JoinHostPort(ip, "22"))
-		if e != nil {
-			return nil, errGuestDiagnostic
-		}
+
+	ip, err := fixtureGuestIP(ctx, kind, v.Name)
+	if err != nil || net.ParseIP(ip) == nil {
+		return nil, errGuestDiagnostic
+	}
+	conn, e = (&net.Dialer{Timeout: 5 * time.Second}).DialContext(ctx, "tcp", net.JoinHostPort(ip, "22"))
+	if e != nil {
+		return nil, errGuestDiagnostic
 	}
 	stop := context.AfterFunc(ctx, func() { conn.Close() })
 	_ = conn.SetDeadline(time.Now().Add(10 * time.Second))
@@ -589,7 +496,7 @@ func fixtureWorkerAlive(ctx context.Context, worker backend.VM, get func(context
 	return nil
 }
 
-func attachFixtureTunnel(ctx context.Context, kind string, connection OrchardConfig, coordinator, worker backend.VM, get func(context.Context, string) (backend.VM, error)) (func(), error) {
+func attachFixtureTunnel(ctx context.Context, kind string, coordinator, worker backend.VM, get func(context.Context, string) (backend.VM, error)) (func(), error) {
 	ctx, cancel := context.WithCancel(ctx)
 	var workerSSH *ssh.Client
 	deadline := time.Now().Add(time.Minute)
@@ -598,7 +505,7 @@ func attachFixtureTunnel(ctx context.Context, kind string, connection OrchardCon
 			cancel()
 			return nil, err
 		}
-		c, e := openFixtureSSH(ctx, kind, connection, worker)
+		c, e := openFixtureSSH(ctx, kind, worker)
 		if e == nil {
 			workerSSH = c
 			break
@@ -614,7 +521,7 @@ func attachFixtureTunnel(ctx context.Context, kind string, connection OrchardCon
 		cancel()
 		return nil, errGuestDiagnostic
 	}
-	coordinatorSSH, e := openFixtureSSH(ctx, kind, connection, coordinator)
+	coordinatorSSH, e := openFixtureSSH(ctx, kind, coordinator)
 	if e != nil {
 		cancel()
 		workerSSH.Close()
@@ -656,27 +563,6 @@ func attachFixtureTunnel(ctx context.Context, kind string, connection OrchardCon
 	return func() { cancel(); listener.Close(); workerSSH.Close(); coordinatorSSH.Close(); wg.Wait() }, nil
 }
 
-func fixtureTartCommand(ctx context.Context, args ...string) *exec.Cmd {
-	command := exec.CommandContext(ctx, "tart", args...)
-	home := os.Getenv("PULSE_TEST_TART_HOME")
-	if home == "" {
-		userHome, _ := os.UserHomeDir()
-		home = filepath.Join(userHome, ".tart")
-	}
-	for _, value := range os.Environ() {
-		if !strings.HasPrefix(value, "TART_HOME=") {
-			command.Env = append(command.Env, value)
-		}
-	}
-	command.Env = append(command.Env, "TART_HOME="+home)
-	return command
-}
-
 func fixtureGuestIP(ctx context.Context, kind, name string) (string, error) {
-	if kind == "vz" {
-		store := &vz.Store{Home: os.Getenv("PULSE_VZ_HOME")}
-		return store.IP(ctx, name)
-	}
-	data, err := fixtureTartCommand(ctx, "ip", name, "--wait", "5").Output()
-	return strings.TrimSpace(string(data)), err
+	return (&vz.Store{Home: os.Getenv("PULSE_VZ_HOME")}).IP(ctx, name)
 }

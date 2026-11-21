@@ -1,4 +1,4 @@
-package tart
+package macvz
 
 import (
 	"os"
@@ -72,13 +72,13 @@ func TestCountsAndSizingRejectedBeforeOpeningState(t *testing.T) {
 	}
 }
 
-func TestDefaultOrchardAndCountCopies(t *testing.T) {
+func TestDefaultRuntimeAndCountCopies(t *testing.T) {
 	counts := VMCounts{MacOS: VMCount(1), Linux: VMCount(2), Total: VMCount(2)}
 	dir := t.TempDir()
 	if err := os.Chmod(dir, 0700); err != nil {
 		t.Fatal(err)
 	}
-	r, err := NewOrchard(Config{OwnerID: "defaults", StateDir: dir, VMCounts: counts}, OrchardConfig{URL: "https://orchard.example.test", Worker: "worker", DockerEndpoint: DockerEndpoint{Address: "192.0.2.1", PortMin: 45000, PortMax: 45010}})
+	r, err := newTestRuntime(Config{OwnerID: "defaults", StateDir: dir, VMCounts: counts})
 	if err != nil {
 		t.Fatal(err)
 	}

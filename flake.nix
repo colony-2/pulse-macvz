@@ -1,5 +1,5 @@
 {
-  description = "Execution environments for Pulse Tart and Orchard guests";
+  description = "Execution environments for Pulse VZ guests";
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/a033e66ab94a6bedf2c3d58d93a36319d3cbbbaf";
   # The preparer selects a release at runtime; Pulse does not pin c2j.
   inputs.c2j.url = "github:colony-2/c2j";

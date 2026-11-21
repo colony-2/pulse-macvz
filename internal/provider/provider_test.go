@@ -14,9 +14,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/colony-2/pulse-macvz/internal/backend"
+	"github.com/colony-2/pulse-macvz/internal/config"
 	compute "github.com/colony-2/pulse-provider-api"
-	"github.com/colony-2/pulse-tart/internal/backend"
-	"github.com/colony-2/pulse-tart/internal/config"
 )
 
 type fake struct {
@@ -82,7 +82,7 @@ func fixture(t *testing.T) (*Provider, *fake) {
 		t.Fatal(e)
 	}
 	f := &fake{vms: map[string]backend.VM{}}
-	p, e := New(config.Settings{Config: c, Kind: "orchard", Endpoint: "http://example.test/v1", Worker: "mac-1"}, f)
+	p, e := New(config.Settings{Config: c, Kind: "vz", Endpoint: "/test/vz", Worker: "mac-1"}, f)
 	if e != nil {
 		t.Fatal(e)
 	}

@@ -1,35 +1,27 @@
-// Package tart provides macOS ARM64 and Linux ARM64/AMD64 concurrency slots
-// through Orchard, local Tart, or native VZ. It implements the Pulse provider API as an
+// Package macvz provides macOS and Linux ARM64 concurrency slots through
+// Virtualization.framework. It implements the Pulse provider API as an
 // in-process Go library.
-package tart
+package macvz
 
 import (
 	"context"
 	"errors"
-	"maps"
-	"os"
-	"path/filepath"
-	"slices"
 	"sync"
 	"time"
 
+	"github.com/colony-2/pulse-macvz/internal/backend"
+	"github.com/colony-2/pulse-macvz/internal/bundle"
+	"github.com/colony-2/pulse-macvz/internal/config"
+	"github.com/colony-2/pulse-macvz/internal/local"
+	engine "github.com/colony-2/pulse-macvz/internal/provider"
+	"github.com/colony-2/pulse-macvz/internal/releases"
 	api "github.com/colony-2/pulse-provider-api"
-	"github.com/colony-2/pulse-tart/internal/backend"
-	"github.com/colony-2/pulse-tart/internal/bundle"
-	"github.com/colony-2/pulse-tart/internal/config"
-	"github.com/colony-2/pulse-tart/internal/local"
-	"github.com/colony-2/pulse-tart/internal/orchard"
-	engine "github.com/colony-2/pulse-tart/internal/provider"
-	"github.com/colony-2/pulse-tart/internal/releases"
-	nativeTart "github.com/colony-2/pulse-tart/internal/tart"
 )
 
 type Config = config.Config
 type Base = config.Base
 type SlotGroup = config.SlotGroup
 type VMCounts = config.VMCounts
-type OrchardConfig = config.Orchard
-type TartConfig = config.Tart
 type DockerConfig = config.Docker
 type DockerEngineProfile = config.EngineProfile
 type DockerEndpoint = config.Endpoint
@@ -51,8 +43,8 @@ var _ api.Provider = (*Runtime)(nil)
 // and cleans up completed instances. GetCapabilities, Submit and List implement
 // the shared API.
 // Close releases local resources; running VMs survive it. A new Runtime using
-// the same Tart home and owner recovers properties from existing VM directories.
-// Orchard instead recovers its private StateDir journal. Never run two hosts for
+// the same VZ home and owner recovers properties from existing VM directories.
+// Never run two hosts for
 // the same backend/owner scope.
 type Runtime struct {
 	mu      sync.RWMutex
@@ -87,79 +79,7 @@ func newRuntime(p *engine.Provider, c Config) *Runtime {
 	}
 	return r
 }
-func NewOrchard(c Config, connection OrchardConfig) (*Runtime, error) {
-	if !filepath.IsAbs(c.StateDir) {
-		return nil, ErrConfig
-	}
-	c, e := prepare(c)
-	if e != nil {
-		return nil, e
-	}
-	if !config.Name(connection.Worker) {
-		return nil, ErrConfig
-	}
-	if c.NeedsDockerEndpoint() {
-		if e := connection.DockerEndpoint.Validate(); e != nil {
-			return nil, e
-		}
-	}
-	connection.WorkerLabels = maps.Clone(connection.WorkerLabels)
-	connection.CACert = slices.Clone(connection.CACert)
-	client, e := orchard.New(connection)
-	if e != nil {
-		return nil, e
-	}
-	client.GuestKeys = map[string][]byte{}
-	for _, b := range c.Bases {
-		client.GuestKeys[b.Image] = b.SSHHostKey
-	}
-	if c.Docker != nil {
-		for _, p := range c.Docker.Profiles {
-			if len(client.GuestKeys[p.Image]) == 0 {
-				client.GuestKeys[p.Image] = p.SSHHostKey
-			}
-		}
-	}
-	settings := config.Settings{Config: c, Kind: "orchard", Endpoint: client.Base, Worker: connection.Worker, WorkerLabels: connection.WorkerLabels, DockerEndpoint: connection.DockerEndpoint}
-	p, e := engine.New(settings, client)
-	if e != nil {
-		return nil, e
-	}
-	return newRuntime(p, c), nil
-}
-func NewTart(c Config, options TartConfig) (*Runtime, error) {
-	c, e := prepare(c)
-	if e != nil {
-		return nil, e
-	}
-	if options.Home == "" {
-		home, e := os.UserHomeDir()
-		if e != nil {
-			return nil, e
-		}
-		options.Home = filepath.Join(home, ".tart")
-	}
-	if !filepath.IsAbs(options.Home) {
-		return nil, ErrConfig
-	}
-	options.Home = filepath.Clean(options.Home)
-	if c.NeedsDockerEndpoint() {
-		if e := options.DockerEndpoint.Validate(); e != nil {
-			return nil, e
-		}
-	}
-	settings := config.Settings{Config: c, Kind: "tart", Endpoint: options.Home, Worker: "local", DockerEndpoint: options.DockerEndpoint}
-	b, e := nativeTart.New(options, c)
-	if e != nil {
-		return nil, e
-	}
-	store, e := engine.OpenVMStore(c.StateDir, settings.Scope(), b)
-	if e != nil {
-		b.Close()
-		return nil, e
-	}
-	return newRuntime(engine.Attach(settings, b, store), c), nil
-}
+
 func (r *Runtime) Submit(ctx context.Context, launches []api.Launch) ([]api.Submission, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()

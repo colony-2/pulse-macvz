@@ -1,4 +1,4 @@
-package tart
+package macvz
 
 import (
 	"context"
@@ -7,23 +7,21 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/colony-2/pulse-macvz/internal/backend"
+	"github.com/colony-2/pulse-macvz/internal/config"
 	api "github.com/colony-2/pulse-provider-api"
-	"github.com/colony-2/pulse-tart/internal/backend"
-	"github.com/colony-2/pulse-tart/internal/config"
-	"github.com/colony-2/pulse-tart/internal/orchard"
 )
 
 // TestLive exercises slot lifecycle and real JobDB jobs through the public API.
 func TestLive(t *testing.T) {
 	kind := os.Getenv("PULSE_TEST_BACKEND")
 	if kind == "" {
-		t.Skip("set PULSE_TEST_BACKEND=orchard, tart, or vz; see README")
+		t.Skip("set PULSE_TEST_BACKEND=vz; see README")
 	}
 	var nonce [8]byte
 	_, _ = rand.Read(nonce[:])
@@ -63,22 +61,8 @@ func TestLive(t *testing.T) {
 	t.Logf("testing base %s; guest macOS %s; image %s", base.Name, base.OSVersion, base.Image)
 	c.C2JVersion = os.Getenv("PULSE_TEST_C2J_VERSION")
 	report := newLiveReport(t, password)
-	connect := OrchardConfig{URL: os.Getenv("PULSE_TEST_ORCHARD_URL"), Worker: os.Getenv("PULSE_TEST_ORCHARD_WORKER"), AllowInsecureHTTP: true}
-	tartBinary := ""
 	factory := func() (*Runtime, error) {
 		switch kind {
-		case "orchard":
-			r, err := NewOrchard(c, connect)
-			if err == nil {
-				r.profile = "integration"
-			}
-			return r, err
-		case "tart":
-			r, err := NewTart(c, TartConfig{Home: os.Getenv("PULSE_TEST_TART_HOME"), Binary: tartBinary})
-			if err == nil {
-				r.profile = "integration"
-			}
-			return r, err
 		case "vz":
 			r, err := NewVZ(c, VZConfig{Home: os.Getenv("PULSE_VZ_HOME"), Runner: os.Getenv("PULSE_VZ_RUNNER")})
 			if err == nil {
@@ -104,7 +88,7 @@ func TestLive(t *testing.T) {
 	defer func() {
 		clean, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 		defer cancel()
-		report.capture(t, clean, kind, connect, r, dir)
+		report.capture(t, clean, kind, r, dir)
 		_ = r.Drain(clean)
 		for clean.Err() == nil {
 			if e := r.Reconcile(clean); e != nil {
@@ -191,9 +175,9 @@ func TestLive(t *testing.T) {
 	if e = r.Close(); e != nil {
 		t.Fatal(e)
 	}
-	if kind == "tart" || kind == "vz" {
+	if kind == "vz" {
 		if _, err := os.Stat(filepath.Join(dir, "state.json")); !os.IsNotExist(err) {
-			t.Fatal("direct Tart unexpectedly needs a separate journal", err)
+			t.Fatal("VZ unexpectedly needs a separate journal", err)
 		}
 		if err := os.RemoveAll(dir); err != nil {
 			t.Fatal(err)
@@ -205,7 +189,7 @@ func TestLive(t *testing.T) {
 		t.Fatal(e)
 	}
 	assertRecoveredLaunches(t, ctx, r, dir, []api.Launch{a, b})
-	if kind == "tart" || kind == "vz" {
+	if kind == "vz" {
 		if _, err := os.Stat(dir); !os.IsNotExist(err) {
 			t.Fatal("restart recreated the old state directory", err)
 		}
@@ -281,77 +265,7 @@ func TestLive(t *testing.T) {
 	if e = r.Reconcile(ctx); e != nil {
 		t.Fatal(e)
 	}
-	if kind == "tart" {
-		// Exercise the original failure with real suspended Tart clones. Only
-		// this runtime's run command is replaced; get/clone/delete use real Tart.
-		binary, err := exec.LookPath("tart")
-		if err != nil {
-			t.Fatal(err)
-		}
-		binary, err = filepath.Abs(binary)
-		if err != nil {
-			t.Fatal(err)
-		}
-		wrapper := filepath.Join(t.TempDir(), "tart-failed-restore")
-		script := "#!/bin/sh\nif [ \"$1\" = run ]; then echo 'injected snapshot restore failure' >&2; exit 1; fi\nexec '" + strings.ReplaceAll(binary, "'", "'\"'\"'") + "' \"$@\"\n"
-		if err = os.WriteFile(wrapper, []byte(script), 0700); err != nil {
-			t.Fatal(err)
-		}
-		if err = r.Close(); err != nil {
-			t.Fatal(err)
-		}
-		tartBinary = wrapper
-		r, e = factory()
-		if e != nil {
-			t.Fatal(e)
-		}
-		failed := []api.Launch{launch("restore-failure-a"), launch("restore-failure-b")}
-		out, err := r.Submit(ctx, failed)
-		if err != nil || len(out) != 2 || out[0].Status != api.Accepted || out[1].Status != api.Accepted {
-			t.Fatal("failed-restore dispatch", out, err)
-		}
-		state, err := readLiveState(r, dir)
-		if err != nil {
-			t.Fatal(err)
-		}
-		for _, l := range failed {
-			name := state.Records[l.LaunchID].Name
-			waitLive(t, ctx, "exited suspended restore: "+name, time.Minute, func(ctx context.Context) bool {
-				v, err := r.p.Backend.Get(ctx, name)
-				if err != nil {
-					t.Fatal(err)
-				}
-				return v.PowerState == "suspended" && v.Status == "failed" && v.Stopped()
-			})
-		}
-		report.capture(t, ctx, kind, connect, r, dir)
-		if err = r.Close(); err != nil {
-			t.Fatal(err)
-		}
-		tartBinary = ""
-		r, e = factory()
-		if e != nil {
-			t.Fatal(e)
-		}
-		if err = r.Reconcile(ctx); err != nil {
-			t.Fatal(err)
-		}
-		for _, l := range failed {
-			if _, err = r.p.Backend.Get(ctx, state.Records[l.LaunchID].Name); !backend.IsStatus(err, 404) {
-				t.Fatal("failed suspended clone retained", err)
-			}
-		}
-		slots, err := r.Slots()
-		if err != nil || len(slots) != 2 {
-			t.Fatal("lost reusable templates", err)
-		}
-		for _, slot := range slots {
-			if slot.Busy || slot.Phase != "ready" {
-				t.Fatal("failed restore stranded capacity", slot)
-			}
-		}
-		t.Log("FAILED_RESTORE_RECOVERY_PASS: both failed suspended clones removed; 2/2 slots available")
-	}
+
 	again := launch("reuse")
 	out, e = r.Submit(ctx, []api.Launch{again})
 	if e != nil || out[0].Status != api.Accepted {
@@ -361,19 +275,8 @@ func TestLive(t *testing.T) {
 	if e = r.Reconcile(ctx); e != nil {
 		t.Fatal(e)
 	}
-	if kind == "tart" {
-		exerciseImageUpdate(t, ctx, r, owner, dir, base, c.C2JVersion, report)
-		updated := launch("updated")
-		out, e = r.Submit(ctx, []api.Launch{updated})
-		if e != nil || out[0].Status != api.Accepted {
-			t.Fatal("updated source admission", out, e)
-		}
-		done([]api.Launch{updated})
-		if e = r.Reconcile(ctx); e != nil {
-			t.Fatal(e)
-		}
-	}
-	exerciseJobDB(t, ctx, kind, connect, r, owner, dir, report, done)
+
+	exerciseJobDB(t, ctx, kind, r, owner, dir, report, done)
 	data, err := livePropertyData(r, dir)
 	if err != nil {
 		t.Fatal(err)
@@ -381,12 +284,7 @@ func TestLive(t *testing.T) {
 	if strings.Contains(string(data), string(a.Lease)) {
 		t.Fatal("lease leaked to fingerprint journal")
 	}
-	if kind == "orchard" {
-		client, _ := orchard.New(connect)
-		if e = client.Info(ctx); e != nil {
-			t.Fatal(e)
-		}
-	}
+
 }
 
 // Every live wait has a phase-specific deadline and visible progress. Passing

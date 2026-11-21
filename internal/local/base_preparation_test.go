@@ -1,6 +1,8 @@
 package local
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -70,12 +72,80 @@ func TestBasePreparationDeadlineSurvivesControllerRestart(t *testing.T) {
 	if err := b.ObserveBasePreparation(t.Context(), spec.Name, "wrong-uid", "15.7.7"); err == nil {
 		t.Fatal("observed wrong VM")
 	}
+	if err := b.ObserveBasePreparation(t.Context(), spec.Name, r.UID, "15.7.7"); err != nil {
+		t.Fatal("expired builder must still be observed", err)
+	}
+	b.wg.Wait()
 	err := b.ObserveBasePreparation(t.Context(), spec.Name, r.UID, "15.7.7")
-	if err == nil || !strings.Contains(err.Error(), "exceeded") {
+	if err == nil || !strings.Contains(err.Error(), "deadline expired") {
 		t.Fatal(err)
 	}
 	if b.workers[spec.Name] {
 		t.Fatal("replayed expired startup")
+	}
+}
+
+func TestExpiredBaseRecoveryObservesBeforeTimeoutWithoutReplayingPreparation(t *testing.T) {
+	for _, result := range []string{"ready", "preparing", "absent", "failed", "unreachable"} {
+		t.Run(result, func(t *testing.T) {
+			b, m, spec := fixture(t)
+			if _, err := b.Create(t.Context(), spec); err != nil {
+				t.Fatal(err)
+			}
+			b.Close()
+			r := b.records[spec.Name]
+			r.Created = time.Now().Add(-2 * time.Hour)
+			r.Delivery.ExecutionPossible = true
+			if err := b.save(r); err != nil {
+				t.Fatal(err)
+			}
+			b = reopenProperties(t, b, m, "")
+			r = b.records[spec.Name]
+			s := &basePreparation{uid: r.UID}
+			observed, shutdown := 0, 0
+			exec := func(ctx context.Context, name, uid string, script []byte) ([]byte, error) {
+				if ctx.Err() != nil || name != spec.Name || uid != r.UID {
+					t.Fatal("invalid recovery target/context", name, uid, ctx.Err())
+				}
+				if deadline, ok := ctx.Deadline(); !ok || time.Until(deadline) > 15*time.Second {
+					t.Fatal("recovery command must be bounded")
+				}
+				switch string(script) {
+				case "expected='15.7.7'\n" + observeMacBase:
+					observed++
+					if result == "unreachable" {
+						return nil, errors.New("guest unavailable")
+					}
+					return []byte("PULSE_BASE_OBSERVATION 00000000-0000-0000-0000-000000000001 " + result + " 42"), nil
+				case shutdownReadyMacBase:
+					shutdown++
+					data, err := os.ReadFile(b.artifact(name, "events"))
+					if err != nil || !strings.Contains(string(data), "PULSE_BASE_READY") || !b.deliveryMarker(name) {
+						t.Fatal("shutdown preceded durable readiness", err)
+					}
+					return nil, nil
+				default:
+					t.Fatal("replayed startup or unexpected command")
+					return nil, nil
+				}
+			}
+			b.wg.Add(1)
+			b.monitorBase(spec.Name, r, s, "15.7.7", r.Created.Add(b.timeout), exec)
+			if observed != 1 || !s.done {
+				t.Fatal("expired recovery did not perform exactly one observation", observed, s)
+			}
+			if result == "ready" {
+				if shutdown != 1 || s.err != nil || !r.Delivered {
+					t.Fatal("completed builder was not recovered", shutdown, s)
+				}
+				b = reopenProperties(t, b, m, "")
+				if !b.records[spec.Name].Delivered || !b.deliveryMarker(spec.Name) {
+					t.Fatal("recovered readiness lost on restart")
+				}
+			} else if shutdown != 0 || s.err == nil || s.stage != "base_failed" {
+				t.Fatal("unfinished builder received a new budget or was shut down", shutdown, s)
+			}
+		})
 	}
 }
 

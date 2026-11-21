@@ -23,7 +23,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/colony-2/pulse-tart/internal/vz/bridge"
+	"github.com/colony-2/pulse-macvz/internal/vz/bridge"
 )
 
 // RunnerMain must be called at the beginning of the host's main function. It

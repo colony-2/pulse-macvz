@@ -28,7 +28,7 @@ func persistedFlag(name string) bool {
 
 func pathFlag(name string) bool {
 	switch name {
-	case "state-dir", "vm-home", "runner", "orchard-token-file", "tls-ca", "tls-cert", "tls-key":
+	case "state-dir", "vm-home", "runner", "tls-ca", "tls-cert", "tls-key":
 		return true
 	}
 	return false
@@ -36,19 +36,30 @@ func pathFlag(name string) bool {
 
 func loadConfiguration(cmd *cobra.Command, o *serverOptions) error {
 	explicit := cmd.Flags().Changed("config")
+	defaultPath := o.configPath == ""
+	var legacyPath string
 	if o.configPath == "" {
 		home, err := os.UserHomeDir()
 		if err != nil {
 			return err
 		}
-		o.configPath = filepath.Join(home, ".pulse", "provider.json")
+		o.configPath = filepath.Join(home, ".pulse", "vz", "provider.json")
+		legacyPath = filepath.Join(home, ".pulse", "provider.json")
 	}
 	var err error
 	o.configPath, err = absolutePath(o.configPath)
 	if err != nil {
 		return err
 	}
-	data, err := readFile(o.configPath, 1<<20)
+	loadedPath := o.configPath
+	data, err := readFile(loadedPath, 1<<20)
+	if defaultPath && os.IsNotExist(err) {
+		loadedPath = legacyPath
+		data, err = readFile(legacyPath, 1<<20)
+		if err == nil {
+			fmt.Fprintf(cmd.ErrOrStderr(), "Warning: using legacy provider configuration %s because %s does not exist; successful setup/upgrade will save configuration to the new location.\n", legacyPath, o.configPath)
+		}
+	}
 	if os.IsNotExist(err) && (!explicit || cmd.Name() == "setup") {
 		return nil
 	}
@@ -62,6 +73,11 @@ func loadConfiguration(cmd *cobra.Command, o *serverOptions) error {
 		return fmt.Errorf("configuration must contain a single version 1 flags object")
 	}
 	for name, value := range saved.Flags {
+		// Older VZ configurations persisted unused defaults for every backend.
+		// Accept those defaults while dropping them on the next save.
+		if obsoleteDefault(name, value) {
+			continue
+		}
 		flag := cmd.LocalNonPersistentFlags().Lookup(name)
 		if flag == nil || !persistedFlag(name) {
 			return fmt.Errorf("unsupported saved option --%s", name)
@@ -70,13 +86,25 @@ func loadConfiguration(cmd *cobra.Command, o *serverOptions) error {
 			continue
 		}
 		if pathFlag(name) && value != "" && !filepath.IsAbs(value) && !strings.HasPrefix(value, "~") {
-			value = filepath.Join(filepath.Dir(o.configPath), value)
+			value = filepath.Join(filepath.Dir(loadedPath), value)
 		}
 		if err := cmd.Flags().Set(name, value); err != nil {
 			return fmt.Errorf("invalid saved option --%s", name)
 		}
 	}
 	return nil
+}
+
+func obsoleteDefault(name, value string) bool {
+	switch name {
+	case "tart-binary":
+		return value == "tart"
+	case "orchard-url", "orchard-worker", "orchard-username", "orchard-token-file":
+		return value == ""
+	case "orchard-allow-http":
+		return value == "false"
+	}
+	return false
 }
 
 func saveConfiguration(cmd *cobra.Command, path string) error {

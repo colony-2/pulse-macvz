@@ -126,25 +126,24 @@ func (b *Client) ObserveBasePreparation(ctx context.Context, name, uid, version 
 		b.basePreparations[name] = s
 	}
 	deadline := r.Created.Add(b.timeout)
-	if time.Now().After(deadline) {
-		s.stage, s.cause = "base_failed", "preparation_timeout"
-		s.err = fmt.Errorf("base preparation exceeded %s since VM creation", b.timeout)
-		return fmt.Errorf("base %s: %w", name, s.err)
-	}
 	s.done = false
 	b.wg.Add(1)
-	go b.monitorBase(name, r, s, version, deadline)
+	go b.monitorBase(name, r, s, version, deadline, b.Exec)
 	return nil
 }
 
-func (b *Client) monitorBase(name string, r *record, s *basePreparation, version string, deadline time.Time) {
+func (b *Client) monitorBase(name string, r *record, s *basePreparation, version string, deadline time.Time, exec func(context.Context, string, string, []byte) ([]byte, error)) {
 	defer b.wg.Done()
 	defer func() { b.mu.Lock(); s.done = true; b.mu.Unlock() }()
-	ctx, cancel := context.WithDeadline(b.ctx, deadline)
+	// The guest service can finish while its controller is absent. Always allow
+	// one bounded observation of a matching builder, even after its original
+	// deadline. This recovers completed work without restarting installation or
+	// giving unfinished work a fresh preparation budget.
+	ctx, cancel := context.WithCancel(b.ctx)
 	defer cancel()
 	for ctx.Err() == nil {
 		call, done := context.WithTimeout(ctx, 15*time.Second)
-		data, err := b.Exec(call, name, s.uid, []byte("expected='"+version+"'\n"+observeMacBase))
+		data, err := exec(call, name, s.uid, []byte("expected='"+version+"'\n"+observeMacBase))
 		done()
 		b.mu.Lock()
 		if b.closed || b.records[name] != r {
@@ -167,7 +166,7 @@ func (b *Client) monitorBase(name string, r *record, s *basePreparation, version
 			b.mu.Unlock()
 			if err == nil {
 				call, done := context.WithTimeout(ctx, 15*time.Second)
-				_, _ = b.Exec(call, name, s.uid, []byte(shutdownReadyMacBase))
+				_, _ = exec(call, name, s.uid, []byte(shutdownReadyMacBase))
 				done()
 			}
 			return
@@ -177,7 +176,10 @@ func (b *Client) monitorBase(name string, r *record, s *basePreparation, version
 		if failed {
 			return
 		}
-		timer := time.NewTimer(5 * time.Second)
+		if !time.Now().Before(deadline) {
+			break
+		}
+		timer := time.NewTimer(min(5*time.Second, time.Until(deadline)))
 		select {
 		case <-ctx.Done():
 			timer.Stop()

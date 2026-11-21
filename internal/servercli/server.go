@@ -4,12 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
 	"sync"
 
+	macvz "github.com/colony-2/pulse-macvz"
 	api "github.com/colony-2/pulse-provider-api"
 	"github.com/colony-2/pulse-provider-api/plugin"
-	tart "github.com/colony-2/pulse-tart"
 )
 
 type runtimeProvider interface {
@@ -20,30 +19,6 @@ type runtimeProvider interface {
 }
 
 type runtimeOpener func(serverOptions) (runtimeProvider, error)
-
-func openRuntime(o serverOptions) (runtimeProvider, error) {
-	switch o.backend {
-	case "vz":
-		return tart.NewVZ(o.config, tart.VZConfig{Home: o.vmHome, Runner: o.runner, DockerEndpoint: o.endpoint})
-	case "tart":
-		return tart.NewTart(o.config, tart.TartConfig{Home: o.vmHome, Binary: o.tartBinary, DockerEndpoint: o.endpoint})
-	case "orchard":
-		if o.orchardTokenFile != "" {
-			data, err := readFile(o.orchardTokenFile, 64<<10)
-			if err != nil {
-				return nil, fmt.Errorf("read Orchard token file: %w", err)
-			}
-			token := strings.TrimSpace(string(data))
-			if token == "" {
-				return nil, fmt.Errorf("Orchard token file is empty")
-			}
-			o.orchard.Token = tart.Secret(token)
-		}
-		return tart.NewOrchard(o.config, o.orchard)
-	default:
-		return nil, fmt.Errorf("unsupported backend")
-	}
-}
 
 // A fresh runtime is constructed for each SDK session, after authentication.
 // Closing it releases controller ownership but never kills accepted native jobs.
@@ -233,4 +208,8 @@ func runPlugin(ctx context.Context, o serverOptions, open runtimeOpener) error {
 		result = nil
 	}
 	return errors.Join(result, cleanupErr)
+}
+
+func openRuntime(o serverOptions) (runtimeProvider, error) {
+	return macvz.NewVZ(o.config, macvz.VZConfig{Home: o.vmHome, Runner: o.runner, DockerEndpoint: o.endpoint})
 }

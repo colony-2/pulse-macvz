@@ -162,7 +162,7 @@ def main():
     app_lock = (app_root/'lock').open('a+')
     fcntl.flock(app_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     app = app_root/'PulseProvider.app'
-    runner, vmtool = app/'Contents/MacOS/pulse-tart', out/'network-vm'
+    runner, vmtool = app/'Contents/MacOS/pulse-macvz', out/'network-vm'
     env = dict(os.environ, CGO_ENABLED='0', GOWORK='off', PULSE_VZ_RUNNER=str(runner), PULSE_VZ_TEST_CACHE=str(cache), PULSE_APP_FLAVOR='qualification')
     result = {'result': 'incomplete', 'checks': {}, 'linux_source': str(base),
               'app': str(app), 'bundle_id': 'dev.pulse.provider.qualification'}

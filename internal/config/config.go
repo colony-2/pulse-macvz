@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
-	"net/url"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -20,6 +19,8 @@ const DefaultCPU int64 = 4
 const DefaultMemoryMiB int64 = 8192
 const DefaultMacOSVMCount = 2
 const DefaultLinuxVMCount = 4
+
+// WorkerNameLabel is retained for compatibility with prepared VM metadata.
 const WorkerNameLabel = "org.cirruslabs.orchard.worker-name"
 
 // Secret redacts formatted credentials. Explicit string conversion exposes bytes.
@@ -28,11 +29,11 @@ type Secret string
 func (Secret) String() string   { return "[REDACTED]" }
 func (Secret) GoString() string { return "[REDACTED]" }
 
-// Config is identical for Orchard and direct Tart. Paths are absolute; the host
+// Config describes the VZ execution pool. Paths are absolute; the host
 // owns configuration loading. C2JVersion is used only to prepare missing images.
 type Config struct {
 	OwnerID          string
-	StateDir         string      // Orchard journal; optional legacy migration directory for direct Tart.
+	StateDir         string      // Optional legacy journal migration directory.
 	Bases            []Base      // Most preferred first; nil selects the conventional macOS and Linux bases.
 	Slots            []SlotGroup // Nil selects conventional groups; explicit zero Count drains a group.
 	VMCounts         VMCounts    // Job VM limits; companions and image builders are excluded.
@@ -85,7 +86,7 @@ type Base struct {
 	OSVersion   string
 	SSHUsername string
 	SSHPassword Secret
-	// Optional authorized_keys-format SSH server public key for direct Tart.
+	// Optional authorized_keys-format SSH server public key for guest delivery.
 	SSHHostKey []byte
 	// Capabilities are restricted to built-in probes: nix, git, node, pnpm, uv, python.
 	Capabilities []string
@@ -107,33 +108,17 @@ type SlotGroup struct {
 	DockerProfile string // Enables Docker eligibility; activation requires a launch requesting docker. Empty disables it.
 }
 
-// Orchard adds connectivity and placement only; the execution configuration is shared.
-type Orchard struct {
-	URL               string
-	Worker            string
-	WorkerLabels      map[string]string
-	Username          string
-	Token             Secret
-	CACert            []byte
-	AllowInsecureHTTP bool
-	RequestTimeout    time.Duration
-	DockerEndpoint    Endpoint
-}
-
-type Tart struct {
-	// Binary defaults to tart on PATH. Home defaults to ~/.tart.
-	Binary          string
+// Local holds shared VM lifecycle settings.
+type Local struct {
 	Home            string
 	CommandTimeout  time.Duration
 	SSHTimeout      time.Duration
-	DeliveryTimeout time.Duration // Pre-exec delivery deadline; defaults to two minutes. Never limits an executing job.
-	DockerEndpoint  Endpoint
-	PythonBinary    string // Worker-local bridge supervisor; defaults to /usr/bin/python3.
+	DeliveryTimeout time.Duration
 }
 
 // VZ selects the independent, cgo-free Virtualization.framework provider.
 type VZ struct {
-	Home            string // Defaults to ~/.pulse/vz; separate from Tart's inventory.
+	Home            string // Defaults to ~/.pulse/vz.
 	Runner          string // Defaults to this executable, whose main must call RunnerMain.
 	CommandTimeout  time.Duration
 	SSHTimeout      time.Duration
@@ -261,16 +246,4 @@ func Normalize(c Config) (Config, error) {
 		return Config{}, err
 	}
 	return c, nil
-}
-func NormalizeURL(raw string, allowHTTP bool) (string, error) {
-	u, e := url.Parse(raw)
-	if e != nil || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || (u.Scheme != "https" && !(u.Scheme == "http" && allowHTTP)) {
-		return "", Err
-	}
-	u.Path = strings.TrimRight(u.Path, "/")
-	if !strings.HasSuffix(u.Path, "/v1") {
-		u.Path += "/v1"
-	}
-	u.RawPath = ""
-	return u.String(), nil
 }

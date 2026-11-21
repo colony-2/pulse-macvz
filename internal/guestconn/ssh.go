@@ -6,10 +6,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"golang.org/x/crypto/ssh"
 	"io"
 	"net"
 	"time"
+
+	"golang.org/x/crypto/ssh"
 )
 
 var Err = errors.New("guest operation unavailable")

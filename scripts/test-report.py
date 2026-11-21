@@ -6,14 +6,14 @@ from pathlib import Path
 import stat
 import sys
 
-ROOT_PACKAGE = "github.com/colony-2/pulse-tart"
+ROOT_PACKAGE = "github.com/colony-2/pulse-macvz"
 MARKERS = ("JOBDB_VALID_PASS:", "JOBDB_REPLAY_PASS:", "JOBDB_EXPIRED_PASS:")
-NATIVE_MARKERS = ("IMAGE_UPDATE_PASS:", "VM_PROPERTIES_RECOVERY_PASS:", "FAILED_RESTORE_RECOVERY_PASS:")
+NATIVE_MARKERS = ("VM_PROPERTIES_RECOVERY_PASS:",)
 
 
 def source_files(root):
     files = list(root.glob("*.go")) + [root / p for p in ("go.mod", "go.sum", "flake.nix", "flake.lock", "bases.json")]
-    for directory in ("cmd", "internal", "guest", "scripts", "tests", "experimental"):
+    for directory in ("cli", "cmd", "internal", "guest", "scripts", "tests", "experimental"):
         files.extend(p for p in (root / directory).rglob("*")
                      if p.is_file() and "__pycache__" not in p.parts)
     return sorted(files)
@@ -42,7 +42,9 @@ def snapshot(root, destination):
 
 
 def summarize(events, backend, exit_code):
-    markers = MARKERS + (NATIVE_MARKERS if backend == "tart" else ())
+    if backend != "vz":
+        raise ValueError("only the VZ backend is supported")
+    markers = MARKERS + NATIVE_MARKERS
     live_passed = False
     checks = {marker.removesuffix(":"): False for marker in markers}
     failures, skipped, packages = [], [], {}

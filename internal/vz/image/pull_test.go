@@ -14,7 +14,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/colony-2/pulse-tart/internal/backend"
+	"github.com/colony-2/pulse-macvz/internal/backend"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
 	"github.com/google/go-containerregistry/pkg/v1/types"
@@ -26,7 +26,7 @@ func digestBytes(data []byte) v1.Hash {
 }
 
 func TestPullVerifiedImage(t *testing.T) {
-	for _, failure := range []string{"", "blob digest", "decoded digest", "decoded size", "truncated stream", "unknown layer", "manifest digest", "cancelled", "existing destination"} {
+	for _, failure := range []string{"", "blob digest", "decoded digest", "decoded size", "declared disk size", "truncated stream", "unknown layer", "manifest digest", "cancelled", "existing destination"} {
 		t.Run(failure, func(t *testing.T) {
 			raw := append(make([]byte, 128*1024), []byte("disk tail")...)
 			encoded, err := CompressAppleLZ4(raw)
@@ -43,21 +43,27 @@ func TestPullVerifiedImage(t *testing.T) {
 				return v1.Descriptor{MediaType: types.MediaType(kind), Digest: hash, Size: int64(len(data))}
 			}
 			cfg := []byte(`{"os":"linux","arch":"arm64"}`)
-			config := add(configType, cfg)
-			nvram := add(nvramType, []byte("firmware"))
-			disk := add(diskType, encoded)
-			disk.Annotations = map[string]string{sizeAnnotation: fmt.Sprint(len(raw)), hashAnnotation: digestBytes(raw).String()}
+			config := add("application/vnd.cirruslabs.tart.config.v1", cfg)
+			nvram := add("application/vnd.cirruslabs.tart.nvram.v1", []byte("firmware"))
+			disk := add("application/vnd.cirruslabs.tart.disk.v2", encoded)
+			disk.Annotations = map[string]string{"org.cirruslabs.tart.uncompressed-size": fmt.Sprint(len(raw)), "org.cirruslabs.tart.uncompressed-content-digest": digestBytes(raw).String()}
 			switch failure {
 			case "blob digest":
 				blobs[config.Digest.String()] = bytes.Repeat([]byte("x"), len(cfg))
 			case "decoded digest":
-				disk.Annotations[hashAnnotation] = digestBytes([]byte("wrong")).String()
+				disk.Annotations["org.cirruslabs.tart.uncompressed-content-digest"] = digestBytes([]byte("wrong")).String()
 			case "decoded size":
-				disk.Annotations[sizeAnnotation] = fmt.Sprint(len(raw) - 1)
+				disk.Annotations["org.cirruslabs.tart.uncompressed-size"] = fmt.Sprint(len(raw) - 1)
 			case "unknown layer":
 				disk.MediaType = "application/unknown"
 			}
-			manifest, err := json.Marshal(v1.Manifest{SchemaVersion: 2, MediaType: types.OCIManifestSchema1, Config: add(string(types.OCIConfigJSON), []byte(`{}`)), Layers: []v1.Descriptor{config, nvram, disk}})
+			// Wire identifiers intentionally do not reference the parser's constants.
+			// Renaming this project must not change the upstream image format.
+			annotations := map[string]string{"org.cirruslabs.tart.uncompressed-disk-size": fmt.Sprint(len(raw))}
+			if failure == "declared disk size" {
+				annotations["org.cirruslabs.tart.uncompressed-disk-size"] = fmt.Sprint(len(raw) + 1)
+			}
+			manifest, err := json.Marshal(v1.Manifest{Annotations: annotations, SchemaVersion: 2, MediaType: types.OCIManifestSchema1, Config: add(string(types.OCIConfigJSON), []byte(`{}`)), Layers: []v1.Descriptor{config, nvram, disk}})
 			if err != nil {
 				t.Fatal(err)
 			}

@@ -34,7 +34,7 @@ chmod +x "$1"
 set -eu
 test "$TEST_FAIL" = 0
 mkdir -p "$1/Contents/MacOS"
-bash "$(dirname "$0")/build-server.sh" "$1/Contents/MacOS/pulse-tart"
+bash "$(dirname "$0")/build-server.sh" "$1/Contents/MacOS/pulse-macvz"
 ''')
 
     def tool(self, name, body):
@@ -49,7 +49,7 @@ bash "$(dirname "$0")/build-server.sh" "$1/Contents/MacOS/pulse-tart"
     def test_default_uses_first_gopath_entry(self):
         result = self.install()
         self.assertEqual(result.returncode, 0, result.stderr)
-        target = self.root / 'go path/bin/pulse-tart'
+        target = self.root / 'go path/bin/pulse-macvz'
         self.assertEqual(subprocess.check_output([target], text=True).strip(), 'installed')
         self.assertFalse((self.root / 'second/bin').exists())
 
@@ -59,9 +59,9 @@ bash "$(dirname "$0")/build-server.sh" "$1/Contents/MacOS/pulse-tart"
         for _ in range(2):
             result = self.install()
             self.assertEqual(result.returncode, 0, result.stderr)
-        target = dest / 'pulse-tart'
+        target = dest / 'pulse-macvz'
         self.assertTrue(target.is_symlink())
-        self.assertEqual(target.resolve(), (dest / 'PulseProvider.app/Contents/MacOS/pulse-tart').resolve())
+        self.assertEqual(target.resolve(), (dest / 'PulseProvider.app/Contents/MacOS/pulse-macvz').resolve())
         self.env['TEST_FAIL'] = '1'
         self.assertNotEqual(self.install().returncode, 0)
         self.assertEqual(subprocess.check_output([target], text=True).strip(), 'installed')
@@ -70,11 +70,25 @@ bash "$(dirname "$0")/build-server.sh" "$1/Contents/MacOS/pulse-tart"
     def test_failed_build_preserves_existing_executable(self):
         dest = self.root / 'custom'
         dest.mkdir()
-        target = dest / 'pulse-tart'
+        target = dest / 'pulse-macvz'
         target.write_text('old executable')
         self.env.update(TEST_GOBIN=str(dest), TEST_FAIL='1')
         self.assertNotEqual(self.install().returncode, 0)
         self.assertEqual(target.read_text(), 'old executable')
+
+    def test_rename_removes_only_the_installer_owned_legacy_link(self):
+        dest = self.root / 'custom bin'
+        dest.mkdir()
+        legacy = dest / 'pulse-tart'
+        legacy.symlink_to(dest / 'PulseProvider.app/Contents/MacOS/pulse-tart')
+        self.env.update(TEST_OS='Darwin', TEST_GOBIN=str(dest))
+        result = self.install()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(legacy.is_symlink())
+        legacy.write_text('unrelated executable')
+        result = self.install()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(legacy.read_text(), 'unrelated executable')
 
 
 if __name__ == '__main__':

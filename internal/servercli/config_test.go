@@ -4,7 +4,7 @@ import (
 	"slices"
 	"testing"
 
-	tart "github.com/colony-2/pulse-tart"
+	macvz "github.com/colony-2/pulse-macvz"
 )
 
 func TestCapacityConfiguration(t *testing.T) {
@@ -34,7 +34,7 @@ func TestCapacityConfiguration(t *testing.T) {
 					if g.Base != b.Name {
 						continue
 					}
-					if g.CPU != tart.DefaultCPU || g.MemoryMiB != tart.DefaultMemoryMiB {
+					if g.CPU != macvz.DefaultCPU || g.MemoryMiB != macvz.DefaultMemoryMiB {
 						t.Fatal("wrong resource envelope")
 					}
 					if g.DockerProfile == "" {

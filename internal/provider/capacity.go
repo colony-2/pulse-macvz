@@ -8,9 +8,8 @@ import (
 	"sort"
 	"time"
 
+	"github.com/colony-2/pulse-macvz/internal/backend"
 	api "github.com/colony-2/pulse-provider-api"
-	"github.com/colony-2/pulse-tart/internal/backend"
-	"github.com/colony-2/pulse-tart/internal/config"
 )
 
 // vmReservations includes native inventory and durable intents that may not yet
@@ -24,9 +23,6 @@ func (p *Provider) vmReservations(ctx context.Context) (map[string]string, error
 	used := map[string]string{}
 	observed := map[string]backend.VM{}
 	for _, v := range vms {
-		if p.Config.Kind == "orchard" && v.Worker != p.Config.Worker && v.Labels[config.WorkerNameLabel] != p.Config.Worker && (v.Worker != "" || v.Labels[config.WorkerNameLabel] != "") {
-			continue
-		}
 		observed[v.Name] = v
 		if !v.Stopped() || v.Status == "pending" {
 			used[v.Name] = v.OS

@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/colony-2/pulse-macvz/internal/backend"
+	"github.com/colony-2/pulse-macvz/internal/config"
 	api "github.com/colony-2/pulse-provider-api"
-	"github.com/colony-2/pulse-tart/internal/backend"
-	"github.com/colony-2/pulse-tart/internal/config"
 )
 
 func countPointer(n int) *int { return &n }
@@ -186,10 +186,15 @@ func TestMacCeilingIncludesForeignVMsAndBuilders(t *testing.T) {
 	if err != nil || got[0].Status != api.NoCapacity {
 		t.Fatal("third physical macOS VM allowed", got, err)
 	}
-	// Another worker's VM and a stopped local VM do not consume this worker's limit.
+	// VZ inventory is host-local: a different worker label cannot exempt a VM.
 	v := f.vms["builder"]
 	v.Worker = "elsewhere"
 	f.vms["builder"] = v
+	got, err = p.Submit(t.Context(), []api.Launch{launch("one")})
+	if err != nil || got[0].Status != api.NoCapacity {
+		t.Fatal("foreign label bypassed physical ceiling", got, err)
+	}
+	delete(f.vms, "builder")
 	got, err = p.Submit(t.Context(), []api.Launch{launch("one"), launch("two")})
 	if err != nil || got[0].Status != api.Accepted || got[1].Status != api.NoCapacity {
 		t.Fatal("wrong per-worker physical capacity", got, err)

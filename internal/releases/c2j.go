@@ -34,7 +34,7 @@ func resolve(ctx context.Context, client *http.Client, base, version string) (st
 		if err != nil {
 			return err
 		}
-		req.Header.Set("User-Agent", "pulse-tart-image-preparation")
+		req.Header.Set("User-Agent", "pulse-macvz-image-preparation")
 		res, err := client.Do(req)
 		if err != nil {
 			return fmt.Errorf("resolve c2j: %w", err)

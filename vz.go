@@ -1,4 +1,4 @@
-package tart
+package macvz
 
 import (
 	"context"
@@ -6,9 +6,9 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/colony-2/pulse-tart/internal/config"
-	engine "github.com/colony-2/pulse-tart/internal/provider"
-	"github.com/colony-2/pulse-tart/internal/vz"
+	"github.com/colony-2/pulse-macvz/internal/config"
+	engine "github.com/colony-2/pulse-macvz/internal/provider"
+	"github.com/colony-2/pulse-macvz/internal/vz"
 )
 
 type VZConfig = config.VZ
@@ -18,8 +18,8 @@ type VZConfig = config.VZ
 // needs com.apple.security.virtualization=true in its code-signing entitlements.
 func RunnerMain() { vz.RunnerMain() }
 
-// NewVZ adds an independent local provider. Provider/default selection belongs
-// to the caller; Tart and Orchard remain available. Close leaves VMs running.
+// NewVZ constructs the native Virtualization.framework provider.
+// Close leaves VMs running for recovery by the next runtime.
 func NewVZ(c Config, options VZConfig) (*Runtime, error) {
 	c, err := prepare(c)
 	if err != nil {

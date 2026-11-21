@@ -18,17 +18,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/colony-2/pulse-tart/internal/config"
+	"github.com/colony-2/pulse-macvz/internal/config"
 )
-
-// No Tart or VM is needed. Exercise the real worker supervisor before expensive
-// image builds, including Close/reopen, launchd restart and fixed-port cleanup.
-func TestLiveDockerEndpoint(t *testing.T) {
-	if os.Getenv("PULSE_TEST_DOCKER_ENDPOINT") != "1" {
-		t.Skip("set PULSE_TEST_DOCKER_ENDPOINT=1 for the Mac launchd preflight")
-	}
-	testLiveDockerEndpoint(t, "tart", "")
-}
 
 func TestLiveVZDockerEndpoint(t *testing.T) {
 	runner := os.Getenv("PULSE_VZ_RUNNER")
@@ -79,7 +70,7 @@ func testLiveDockerEndpoint(t *testing.T, kind, runner string) {
 	defer cancel()
 	common := config.Config{StateDir: t.TempDir()}
 	factory := func() *Client {
-		b, err := openNative(config.Tart{Home: common.StateDir}, common, kind, nil)
+		b, err := openNative(config.Local{Home: common.StateDir}, common, kind, nil)
 		if err != nil {
 			t.Fatal(err)
 		}

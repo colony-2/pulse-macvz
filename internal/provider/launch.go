@@ -10,8 +10,8 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/colony-2/pulse-macvz/internal/config"
 	compute "github.com/colony-2/pulse-provider-api"
-	"github.com/colony-2/pulse-tart/internal/config"
 )
 
 var launchID = regexp.MustCompile(`^[A-Za-z0-9._-]{1,128}$`)

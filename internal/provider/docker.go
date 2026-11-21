@@ -11,10 +11,6 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
-	api "github.com/colony-2/pulse-provider-api"
-	"github.com/colony-2/pulse-tart/internal/backend"
-	"github.com/colony-2/pulse-tart/internal/config"
-	"golang.org/x/crypto/ssh"
 	"io/fs"
 	"net"
 	"slices"
@@ -22,6 +18,11 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/colony-2/pulse-macvz/internal/backend"
+	"github.com/colony-2/pulse-macvz/internal/config"
+	api "github.com/colony-2/pulse-provider-api"
+	"golang.org/x/crypto/ssh"
 )
 
 type dockerBackend interface {
@@ -132,7 +133,7 @@ func (p *Provider) engineScript(profile config.EngineProfile, host, client []byt
 	} else {
 		s += "if sudo -n systemctl is-failed --quiet pulse-docker-prepare; then exit 1; fi\nsudo -n journalctl -u pulse-docker-prepare --no-pager -o cat | grep '^PULSE_DOCKER_ENGINE_READY ' || true\n"
 	}
-	// Replace Orchard's login shell: Ubuntu's .bash_logout can fail without a TTY.
+	// Replace the login shell: Ubuntu's .bash_logout can fail without a TTY.
 	return "exec /bin/bash <<'PULSE_DOCKER_STARTUP'\n" + s + "PULSE_DOCKER_STARTUP\n", nil
 }
 func (p *Provider) newPair(g config.SlotGroup, slot string, template *SlotRecord) (*PairRecord, error) {

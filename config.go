@@ -1,6 +1,6 @@
-package tart
+package macvz
 
-import "github.com/colony-2/pulse-tart/internal/config"
+import "github.com/colony-2/pulse-macvz/internal/config"
 
 // VMCount selects an explicit count, including zero. A nil count uses its default.
 func VMCount(n int) *int { return &n }
@@ -8,7 +8,7 @@ func VMCount(n int) *int { return &n }
 // ResolveConfig fills conventions, validates configuration and returns an
 // independent copy without contacting a backend or creating files or VMs.
 // Constructors call it automatically. OwnerID is required. StateDir is required
-// for Orchard; direct Tart only uses it to import an existing legacy journal.
+// only to import an existing legacy journal; VZ stores state with its VMs.
 // Omitted slots make every configured base usable at 4 vCPU / 8 GiB. Per-base
 // template pools share the OS and total job limits; they do not add concurrency.
 // Every conventional slot supports Docker when requested by the launch.

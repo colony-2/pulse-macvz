@@ -1,4 +1,4 @@
-package tart
+package macvz
 
 import (
 	"encoding/base64"
@@ -49,22 +49,15 @@ func TestDiagnosticRedactionPreservesJSON(t *testing.T) {
 	}
 }
 
-func TestStandaloneImageUpdater(t *testing.T) {
-	cmd := exec.CommandContext(t.Context(), "python3", "-B", "scripts/test_update_images_test.py")
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("image updater: %v\n%s", err, out)
-	}
-}
-
 func TestLinuxImageBuilder(t *testing.T) {
-	cmd := exec.CommandContext(t.Context(), "python3", "-B", "-m", "unittest", "scripts/test_build_linux_image_test.py", "scripts/test_docker_engine_test.py")
+	cmd := exec.CommandContext(t.Context(), "python3", "-B", "-m", "unittest", "scripts/test_docker_engine_test.py")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("Linux image preparation: %v\n%s", err, out)
 	}
 }
 
 func TestLinuxWorkerNixAccess(t *testing.T) {
-	cmd := exec.CommandContext(t.Context(), "python3", "-B", "-m", "unittest", "scripts/test_linux_nix_access_test.py", "scripts/test_repair_linux_nix_test.py")
+	cmd := exec.CommandContext(t.Context(), "python3", "-B", "-m", "unittest", "scripts/test_linux_nix_access_test.py")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("Linux worker Nix access: %v\n%s", err, out)
 	}

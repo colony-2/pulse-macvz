@@ -5,9 +5,6 @@ import (
 	"crypto/ed25519"
 	"encoding/json"
 	"errors"
-	"github.com/colony-2/pulse-tart/internal/backend"
-	"github.com/colony-2/pulse-tart/internal/config"
-	"golang.org/x/crypto/ssh"
 	"io"
 	"net"
 	"os"
@@ -18,6 +15,10 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/colony-2/pulse-macvz/internal/backend"
+	"github.com/colony-2/pulse-macvz/internal/config"
+	"golang.org/x/crypto/ssh"
 )
 
 type mockNative struct {
@@ -94,14 +95,14 @@ func fixture(t *testing.T) (*Client, *mockNative, backend.Spec) {
 	dir := t.TempDir()
 	home := t.TempDir()
 	common := config.Config{StateDir: dir, BootstrapTimeout: time.Minute, Bases: []config.Base{{Image: "example.test/macos@sha256:" + strings.Repeat("a", 64)}}}
-	b, e := open(config.Tart{Home: home, CommandTimeout: time.Second, SSHTimeout: time.Second}, common)
+	b, e := open(config.Local{Home: home, CommandTimeout: time.Second, SSHTimeout: time.Second}, common)
 	if e != nil {
 		t.Fatal(e)
 	}
 	t.Cleanup(func() { b.Close() })
 	mock := &mockNative{home: home, vms: map[string]hardware{}}
-	b.command = mock.run
-	b.launch = func(name string) (int, error) {
+	b.native.(*fixtureHypervisor).command = mock.run
+	b.native.(*fixtureHypervisor).launch = func(name string) (int, error) {
 		mock.mu.Lock()
 		defer mock.mu.Unlock()
 		h := mock.vms[name]
@@ -165,8 +166,8 @@ func TestColdCloneMachineIdentityConfiguredBeforeBoot(t *testing.T) {
 					}
 					s.Image = source.Name
 				}
-				launch := b.launch
-				b.launch = func(name string) (int, error) {
+				launch := b.native.(*fixtureHypervisor).launch
+				b.native.(*fixtureHypervisor).launch = func(name string) (int, error) {
 					m.mu.Lock()
 					sets := 0
 					for _, args := range m.calls {
@@ -275,7 +276,7 @@ func TestReadOnlyInventoryAfterRestart(t *testing.T) {
 		t.Fatal(e)
 	}
 	defer reopened.Close()
-	reopened.command = m.run
+	reopened.native.(*fixtureHypervisor).command = m.run
 	if _, e = reopened.List(t.Context()); e != nil {
 		t.Fatal(e)
 	}
@@ -298,7 +299,7 @@ func TestDetachedRunSurvivesClose(t *testing.T) {
 	if e := os.WriteFile(binary, []byte("#!/bin/sh\ntest \"$1 $2 $3\" = 'run --no-graphics --suspendable' || exit 42\nsleep 1\n"), 0700); e != nil {
 		t.Fatal(e)
 	}
-	b.cfg.Binary = binary
+	b.native.(*fixtureHypervisor).binary = binary
 	if e := os.MkdirAll(b.path("detached"), 0700); e != nil {
 		t.Fatal(e)
 	}
@@ -442,7 +443,7 @@ func TestDeliveryWaitsForSuspendedCloneToResume(t *testing.T) {
 	b, m, s := fixture(t)
 	ipRequested := make(chan struct{}, 1)
 	var observedSnapshot sync.Once
-	b.command = func(ctx context.Context, args ...string) ([]byte, error) {
+	b.native.(*fixtureHypervisor).command = func(ctx context.Context, args ...string) ([]byte, error) {
 		data, err := m.run(ctx, args...)
 		if len(args) > 1 && args[1] == "job" {
 			if args[0] == "get" {
@@ -477,7 +478,7 @@ func TestDeliveryWaitsForSuspendedCloneToResume(t *testing.T) {
 	if err = b.Suspend(t.Context(), s.Name, v.UID); err != nil {
 		t.Fatal(err)
 	}
-	b.launch = func(name string) (int, error) {
+	b.native.(*fixtureHypervisor).launch = func(name string) (int, error) {
 		m.mu.Lock()
 		h := m.vms[name]
 		h.Running = true // process launched, but native State remains suspended
@@ -644,7 +645,7 @@ func TestLinuxDetachedRunDoesNotRequestUnsupportedSuspension(t *testing.T) {
 	if e := os.WriteFile(binary, []byte("#!/bin/sh\ntest \"$1 $2 $3\" = 'run --no-graphics linux' || exit 42\n"), 0700); e != nil {
 		t.Fatal(e)
 	}
-	b.cfg.Binary = binary
+	b.native.(*fixtureHypervisor).binary = binary
 	b.records["linux"] = &record{Spec: backend.Spec{OS: "linux"}}
 	if e := os.MkdirAll(b.path("linux"), 0700); e != nil {
 		t.Fatal(e)
@@ -725,7 +726,7 @@ func TestForeignRunningLinuxInventoryRetainsOS(t *testing.T) {
 		m.vms[name] = hardware{Name: name, State: "running", Running: true, OS: "linux"}
 	}
 	m.vms["mac"] = hardware{Name: "mac", State: "running", Running: true, OS: "darwin"}
-	b.command = func(ctx context.Context, args ...string) ([]byte, error) {
+	b.native.(*fixtureHypervisor).command = func(ctx context.Context, args ...string) ([]byte, error) {
 		data, err := m.run(ctx, args...)
 		if err == nil && args[0] == "list" {
 			var list []hardware
@@ -755,7 +756,7 @@ func TestForeignRunningLinuxInventoryRetainsOS(t *testing.T) {
 	if mac != 1 || len(b.records) != 0 {
 		t.Fatal("Linux workers consumed macOS capacity or were adopted", mac)
 	}
-	b.command = func(ctx context.Context, args ...string) ([]byte, error) {
+	b.native.(*fixtureHypervisor).command = func(ctx context.Context, args ...string) ([]byte, error) {
 		if args[0] == "get" {
 			return nil, errors.New("inspect unavailable")
 		}

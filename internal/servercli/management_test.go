@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
+	macvz "github.com/colony-2/pulse-macvz"
 	api "github.com/colony-2/pulse-provider-api"
-	tart "github.com/colony-2/pulse-tart"
 )
 
 type maintenanceFake struct {
@@ -27,16 +27,16 @@ func (f *maintenanceFake) PurgeImages(context.Context) error {
 	f.purged = true
 	return nil
 }
-func (f *maintenanceFake) Slots() ([]tart.SlotStatus, error) {
+func (f *maintenanceFake) Slots() ([]macvz.SlotStatus, error) {
 	if f.draining {
 		return nil, nil
 	}
-	return []tart.SlotStatus{{ID: "standard-0001", Phase: "ready"}}, nil
+	return []macvz.SlotStatus{{ID: "standard-0001", Phase: "ready"}}, nil
 }
-func (*maintenanceFake) Images() ([]tart.ImageStatus, error) {
-	return []tart.ImageStatus{{Name: "base", Phase: "ready"}}, nil
+func (*maintenanceFake) Images() ([]macvz.ImageStatus, error) {
+	return []macvz.ImageStatus{{Name: "base", Phase: "ready"}}, nil
 }
-func (*maintenanceFake) DockerAllocations() ([]tart.DockerStatus, error) { return nil, nil }
+func (*maintenanceFake) DockerAllocations() ([]macvz.DockerStatus, error) { return nil, nil }
 func (f *maintenanceFake) List(context.Context, api.ListRequest) (api.ListResponse, error) {
 	if f.draining && (f.keepJob || f.steps < 3) {
 		return api.ListResponse{Items: []api.Instance{{ID: "accepted-job"}}}, nil
@@ -100,10 +100,10 @@ func (f *historicalDeliveryRuntime) ReconcileMaintenance(context.Context) error 
 func TestSetupIgnoresSupersededSourceFailureButRequiresCurrentSources(t *testing.T) {
 	for _, phase := range []string{"ready", "failed"} {
 		t.Run(phase, func(t *testing.T) {
-			f := &historicalDeliveryRuntime{progressRuntime: progressRuntime{images: []tart.ImageStatus{
+			f := &historicalDeliveryRuntime{progressRuntime: progressRuntime{images: []macvz.ImageStatus{
 				{Name: "old-base", Phase: "failed", Obsolete: true},
 				{Name: "current-base", Phase: phase},
-			}, slots: []tart.SlotStatus{{ID: "standard-0001", Phase: "ready"}}}}
+			}, slots: []macvz.SlotStatus{{ID: "standard-0001", Phase: "ready"}}}}
 			err := manage(t.Context(), maintenanceOptions(t), false, func(serverOptions) (managedRuntime, error) { return f, nil })
 			if (err == nil) != (phase == "ready") || f.steps == 0 {
 				t.Fatal("incorrect setup readiness", err, f.steps)

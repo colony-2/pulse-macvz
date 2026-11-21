@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/colony-2/pulse-tart/cli"
+	"github.com/colony-2/pulse-macvz/cli"
 	"github.com/spf13/cobra"
 )
 

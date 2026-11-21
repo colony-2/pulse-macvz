@@ -3,9 +3,10 @@ package provider
 import (
 	"errors"
 	"fmt"
-	"github.com/colony-2/pulse-tart/internal/config"
 	"slices"
 	"strings"
+
+	"github.com/colony-2/pulse-macvz/internal/config"
 
 	api "github.com/colony-2/pulse-provider-api"
 )

@@ -2,9 +2,10 @@ package provider
 
 import (
 	"errors"
-	api "github.com/colony-2/pulse-provider-api"
 	"strings"
 	"testing"
+
+	api "github.com/colony-2/pulse-provider-api"
 )
 
 func TestDiagnosticDockerSourcePreparationCause(t *testing.T) {

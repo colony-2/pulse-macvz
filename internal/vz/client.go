@@ -9,8 +9,8 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/colony-2/pulse-tart/internal/config"
-	"github.com/colony-2/pulse-tart/internal/local"
+	"github.com/colony-2/pulse-macvz/internal/config"
+	"github.com/colony-2/pulse-macvz/internal/local"
 )
 
 func New(c config.VZ, common config.Config) (*local.Client, error) {

@@ -4,8 +4,9 @@ package main
 
 import (
 	"fmt"
-	"github.com/colony-2/pulse-tart/internal/vz"
 	"os"
+
+	"github.com/colony-2/pulse-macvz/internal/vz"
 )
 
 func main() {

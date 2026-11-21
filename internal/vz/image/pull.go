@@ -13,13 +13,15 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/colony-2/pulse-tart/internal/backend"
+	"github.com/colony-2/pulse-macvz/internal/backend"
 	"github.com/google/go-containerregistry/pkg/authn"
 	"github.com/google/go-containerregistry/pkg/name"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
 )
 
+// These identifiers belong to the upstream Tart OCI format, not our provider
+// name. VZ consumes existing Cirrus images without the Tart runtime.
 const (
 	configType         = "application/vnd.cirruslabs.tart.config.v1"
 	nvramType          = "application/vnd.cirruslabs.tart.nvram.v1"

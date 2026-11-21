@@ -16,20 +16,21 @@ jobs:
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
         with:
           go-version: '1.27.3'
-      - run: test -z "$(gofmt -l *.go internal guest cmd)"
+      - run: test -z "$(gofmt -l *.go internal guest cmd cli)"
       - run: make test vet build
+      - run: python3 -B -m unittest discover -s scripts -p '*test.py'
       - run: CGO_ENABLED=0 go test ./...
       - if: runner.os == 'macOS'
         run: |
           CGO_ENABLED=0 go build -o "$RUNNER_TEMP/pulse-vz" ./cmd/pulse-vz
           codesign --force --entitlements cmd/pulse-vz/vz.entitlements -s - "$RUNNER_TEMP/pulse-vz"
           codesign --verify --strict "$RUNNER_TEMP/pulse-vz"
-          ./scripts/build-server.sh "$RUNNER_TEMP/pulse-tart"
-          "$RUNNER_TEMP/pulse-tart" server --help
+          ./scripts/build-server.sh "$RUNNER_TEMP/pulse-macvz"
+          "$RUNNER_TEMP/pulse-macvz" server --help
           if [[ $(uname -m) == arm64 ]]; then
             ./scripts/build-server-app.sh "$RUNNER_TEMP/PulseProvider.app"
             codesign --verify --deep --strict "$RUNNER_TEMP/PulseProvider.app"
-            "$RUNNER_TEMP/PulseProvider.app/Contents/MacOS/pulse-tart" setup --help
+            "$RUNNER_TEMP/PulseProvider.app/Contents/MacOS/pulse-macvz" setup --help
           fi
   cross-build:
     runs-on: ubuntu-24.04

@@ -1,6 +1,6 @@
 # macOS image lifecycle
 
-The library and standalone updater use the same guest preparation scripts. Both produce a stopped prepared base and independently booted, suspended slot templates. Jobs always run in fresh clones.
+The library and setup/upgrade commands use the same guest preparation scripts. Both produce a stopped prepared base and independently booted, suspended slot templates. Jobs always run in fresh clones.
 
 ```mermaid
 flowchart TD
@@ -17,7 +17,7 @@ The caller supplies bases, slot counts/sizes, an owner and durable state. Constr
 
 The transferred setup archive contains scripts and build definitions, not binaries or a VM image. It is an internal delivery mechanism that lets an application use the library without a repository checkout. There is no public bundle configuration and no c2j version compiled into the library.
 
-Direct Tart and the standalone updater also assign each cold macOS builder a new Mac machine identifier with `tart set --random-serial` before boot. A different MAC alone is insufficient: the native probe reproduced concurrent restore failures for sequential snapshots sharing a machine identifier. Changing the identifier before boot eliminated those failures in both restore orders. Suspended clones retain their source's machine identifier; it cannot be changed after saving the snapshot. Orchard's automatic preparation is controlled by its worker; the local updater supplies independently identified templates for either backend.
+Each cold macOS builder receives its own machine identifier and MAC before boot. Suspended clones retain those identities.
 
 ## Job execution
 
@@ -27,14 +27,13 @@ The unprivileged c2j process receives the lease through stdin and uses it to ret
 
 ## Updating without a Pulse release
 
-Run [the local Tart updater](prepared-images.md) on the worker. It builds a fresh base plus suspended slots, then replaces the published sources under the same names. Names identify owner/base/group/size/slot, never a c2j version. Each replacement has a fresh MAC. Existing clones retain their old environment; subsequent clones use the replacement.
-
-No release manifest, installed-version metadata, or Pulse RPC coordinates this. `c2j version` reports what is installed. Changing a library version or `C2JVersion` does not refresh existing sources. An explicit update does. Publication is atomic with respect to Tart cloning for each individual source; it is not atomic across the whole pool.
-
-Direct Tart permits replacement of these published source directories while retaining strict identity checks on job directories. Orchard uses its existing API records and worker-local suffixed names; the updater replaces matching native aliases. Remote Orchard fleet orchestration is deferred.
+Run `pulse-macvz upgrade` with the same owner/configuration after stopping the
+controller. It drains accepted work before removing owned sources and rebuilding
+capacity. Names identify owner/base/group/size/slot, never a c2j version. Changing
+a library version or `C2JVersion` alone does not replace existing sources.
 
 ## Retention and recovery
 
 `Close` preserves native resources. `Drain` stops admissions and releases slots after active work completes, keeping images for reuse. `PurgeImages` explicitly removes known, stopped sources after draining. Images not recorded in the runtime's inventory, including extra canonical aliases, are outside that operation.
 
-Direct Tart keeps ownership, preparation and delivery properties in each VM's private `pulse.json`. Restart reconstructs the pool from existing VMs; deletion removes the reservation. Pulse submits each LaunchID once. Native operations are never replayed, and ambiguous creation without a VM leaves no permanent reservation. Orchard retains its durable ownership journal. Failed builders remain inspectable. There is no attempt to clean an executed VM for another job. See the README for legacy migration.
+VZ keeps ownership, preparation and delivery properties in each VM's private `pulse.json`. Restart reconstructs the pool from existing VMs; deletion removes the reservation. Pulse submits each LaunchID once. Native operations are never replayed, and ambiguous creation without a VM leaves no permanent reservation. Failed builders remain inspectable. There is no attempt to clean an executed VM for another job. See the README for legacy migration.

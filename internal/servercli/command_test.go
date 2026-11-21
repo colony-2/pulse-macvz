@@ -11,8 +11,8 @@ func TestCommandDefaultsAndFlags(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	for _, args := range [][]string{
 		{"server"},
-		{"server", "--mode", "inbound", "--backend", "tart", "--linux-capacity", "1", "--macos-capacity", "1", "--macos-docker-capacity", "1", "--total-capacity", "0"},
-		{"server", "-m", "inbound", "-b", "tart", "-l", "1", "--macos-capacity", "1", "-d", "1", "-c", "0"},
+		{"server", "--mode", "inbound", "--backend", "vz", "--linux-capacity", "1", "--macos-capacity", "1", "--macos-docker-capacity", "1", "--total-capacity", "0"},
+		{"server", "-m", "inbound", "-b", "vz", "-l", "1", "--macos-capacity", "1", "-d", "1", "-c", "0"},
 	} {
 		called := false
 		cmd := newCommand(func(_ context.Context, o serverOptions) error {
@@ -25,7 +25,7 @@ func TestCommandDefaultsAndFlags(t *testing.T) {
 					t.Fatalf("wrong defaults: %+v", o.capacity)
 				}
 			} else {
-				if o.mode != "inbound" || o.backend != "tart" || *o.config.VMCounts.Total != 0 {
+				if o.mode != "inbound" || o.backend != "vz" || *o.config.VMCounts.Total != 0 {
 					t.Fatal("flags not applied")
 				}
 			}

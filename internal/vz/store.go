@@ -16,10 +16,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/colony-2/pulse-tart/internal/backend"
-	"github.com/colony-2/pulse-tart/internal/config"
-	"github.com/colony-2/pulse-tart/internal/local"
-	"github.com/colony-2/pulse-tart/internal/vz/image"
+	"github.com/colony-2/pulse-macvz/internal/backend"
+	"github.com/colony-2/pulse-macvz/internal/config"
+	"github.com/colony-2/pulse-macvz/internal/local"
+	"github.com/colony-2/pulse-macvz/internal/vz/image"
 	"golang.org/x/sys/unix"
 )
 

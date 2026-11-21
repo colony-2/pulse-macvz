@@ -34,8 +34,8 @@ func waitDelivery(t *testing.T, b *Client, name string) {
 
 func TestUndispatchedDeliveryExpiresAcrossRestartAndIsStoppedBeforeDeletion(t *testing.T) {
 	b, m, spec := fixture(t)
-	b.cfg.DeliveryTimeout = 30 * time.Millisecond
-	b.command = func(ctx context.Context, args ...string) ([]byte, error) {
+	b.cfg.DeliveryTimeout = time.Second
+	b.native.(*fixtureHypervisor).command = func(ctx context.Context, args ...string) ([]byte, error) {
 		if args[0] == "ip" {
 			return nil, syscall.EHOSTUNREACH
 		}
@@ -68,7 +68,7 @@ func TestUndispatchedDeliveryExpiresAcrossRestartAndIsStoppedBeforeDeletion(t *t
 func TestDeliveryDeadlineBoundsBlockedIPDiscovery(t *testing.T) {
 	b, m, spec := fixture(t)
 	b.cfg.DeliveryTimeout = 30 * time.Millisecond
-	b.command = func(ctx context.Context, args ...string) ([]byte, error) {
+	b.native.(*fixtureHypervisor).command = func(ctx context.Context, args ...string) ([]byte, error) {
 		if args[0] == "ip" {
 			<-ctx.Done()
 			return nil, ctx.Err()

@@ -1,13 +1,13 @@
 // Package cli exposes the provider's Cobra commands for standalone use or
 // embedding in another application's command tree.
 //
-// When using the current executable as the VZ runner, call tart.RunnerMain at
+// When using the current executable as the VZ runner, call macvz.RunnerMain at
 // the start of main, before executing Cobra, and sign the executable with the
 // virtualization entitlement. Alternatively, select a signed runner with --runner.
 package cli
 
 import (
-	"github.com/colony-2/pulse-tart/internal/servercli"
+	"github.com/colony-2/pulse-macvz/internal/servercli"
 	"github.com/spf13/cobra"
 )
 
@@ -20,7 +20,7 @@ func NewCommand(version string) *cobra.Command {
 // NewSetupCommand constructs a setup subcommand with the standalone CLI's
 // flags, configuration persistence, validation, and preparation progress.
 // It inherits context, output streams, and persistent hooks from its Cobra
-// parent. Configuration defaults to ~/.pulse/provider.json; use --config and
+// parent. Configuration defaults to ~/.pulse/vz/provider.json; use --config and
 // --owner to select the same configuration and pool as the running provider.
 // Construct a fresh command for each command tree.
 func NewSetupCommand() *cobra.Command {

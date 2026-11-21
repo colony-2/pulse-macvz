@@ -1,4 +1,4 @@
-package tart
+package macvz
 
 import (
 	"archive/tar"
@@ -7,9 +7,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"github.com/colony-2/pulse-tart/internal/backend"
-	"github.com/colony-2/pulse-tart/internal/bundle"
-	engine "github.com/colony-2/pulse-tart/internal/provider"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -19,6 +16,11 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/colony-2/pulse-macvz/internal/backend"
+	"github.com/colony-2/pulse-macvz/internal/bundle"
+	"github.com/colony-2/pulse-macvz/internal/config"
+	engine "github.com/colony-2/pulse-macvz/internal/provider"
 )
 
 type failingRecoveryBackend struct {
@@ -80,8 +82,7 @@ func TestSharedConfigAndCopies(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { json.NewEncoder(w).Encode([]any{}) }))
 	defer server.Close()
 	c := testConfig(t)
-	connection := OrchardConfig{URL: server.URL, Worker: "mac", AllowInsecureHTTP: true, WorkerLabels: map[string]string{"rack": "one"}}
-	r, e := NewOrchard(c, connection)
+	r, e := newTestRuntime(c)
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -91,8 +92,7 @@ func TestSharedConfigAndCopies(t *testing.T) {
 	}
 	c.Bases[0].Capabilities[0] = "modified"
 	c.Slots[0].Count = 0
-	connection.WorkerLabels["rack"] = "modified"
-	if r.p.Config.Bases[0].Capabilities[0] != "git" || r.p.Config.Slots[0].Count != 1 || r.p.Config.WorkerLabels["rack"] != "one" {
+	if r.p.Config.Bases[0].Capabilities[0] != "git" || r.p.Config.Slots[0].Count != 1 {
 		t.Fatal("retained mutable config")
 	}
 	if e = r.Close(); e != nil {
@@ -171,4 +171,18 @@ func TestMaintenanceDoesNotConflateHistoricalHealthWithReconciliation(t *testing
 	if err := r.DeliveryHealth(t.Context()); !errors.Is(err, b.health) {
 		t.Fatal("delivery health hidden", err)
 	}
+}
+
+// No platform VM or transport is needed to test the public runtime contract.
+func newTestRuntime(c Config) (*Runtime, error) {
+	c, err := prepare(c)
+	if err != nil {
+		return nil, err
+	}
+	settings := config.Settings{Config: c, Kind: "vz", Endpoint: "test", Worker: "local"}
+	store, err := engine.OpenStore(c.StateDir, settings.Scope())
+	if err != nil {
+		return nil, err
+	}
+	return newRuntime(engine.Attach(settings, &failingRecoveryBackend{}, store), c), nil
 }

@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/colony-2/pulse-tart/internal/local"
+	"github.com/colony-2/pulse-macvz/internal/local"
 )
 
 func fixture(t *testing.T) (*Store, string) {

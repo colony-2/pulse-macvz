@@ -3,7 +3,6 @@ package local
 import (
 	"bufio"
 	"context"
-	_ "embed"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,13 +16,10 @@ import (
 	"time"
 )
 
-//go:embed endpoint/bridge.py
-var endpointScript []byte
-
 func (b *Client) endpointLabel(uid string) string {
 	kind := b.kind
 	if kind == "" {
-		kind = "tart"
+		kind = "vz"
 	}
 	return "dev.pulse-" + kind + ".engine." + uid
 }
@@ -179,24 +175,10 @@ func (b *Client) ensureEndpoint(ctx context.Context, uid, target string, port in
 		}
 	}
 	_ = os.Remove(ready)
-	var args []string
-	if b.endpointArgs != nil {
-		args = b.endpointArgs(target, ready, port)
-	} else {
-		python := b.cfg.PythonBinary
-		if python == "" {
-			python = "/usr/bin/python3"
-		}
-		if !filepath.IsAbs(python) {
-			return false, failure("Docker endpoint Python path must be absolute", nil)
-		}
-		script := filepath.Join(dir, "bridge.py")
-		if e = os.WriteFile(script, endpointScript, 0600); e != nil {
-			return false, e
-		}
-		args = []string{python, script, "--target", target, "--ready", ready, "--port", strconv.Itoa(port)}
-
+	if b.endpointArgs == nil {
+		return false, failure("VZ endpoint runner is not configured", nil)
 	}
+	args := b.endpointArgs(target, ready, port)
 	var arr strings.Builder
 	for _, a := range args {
 		arr.WriteString("<string>" + xmlEscape(a) + "</string>")

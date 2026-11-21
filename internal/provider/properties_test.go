@@ -11,8 +11,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/colony-2/pulse-macvz/internal/backend"
 	api "github.com/colony-2/pulse-provider-api"
-	"github.com/colony-2/pulse-tart/internal/backend"
 )
 
 // Models metadata that only exists while its VM exists. Staged pre-create

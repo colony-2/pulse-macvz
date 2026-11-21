@@ -5,11 +5,12 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"errors"
-	"golang.org/x/crypto/ssh"
 	"net"
 	"strings"
 	"testing"
 	"time"
+
+	"golang.org/x/crypto/ssh"
 )
 
 func TestCancellationClosesBlockedSSHHandshake(t *testing.T) {

@@ -214,7 +214,7 @@ func TestInboundChild(t *testing.T) {
 	command := newCommand(func(ctx context.Context, o serverOptions) error {
 		return runPlugin(ctx, o, func(serverOptions) (runtimeProvider, error) { return fixtureRuntime(), nil })
 	})
-	command.SetArgs([]string{"server", "--mode", "inbound", "--backend", "orchard", "--orchard-url", "https://unused.example", "--orchard-worker", "worker"})
+	command.SetArgs([]string{"server", "--mode", "inbound", "--backend", "vz"})
 	if err := command.Execute(); err != nil {
 		t.Fatal(err)
 	}

@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/colony-2/pulse-tart/internal/config"
+	"github.com/colony-2/pulse-macvz/internal/config"
 )
 
 func (p *Provider) engineBaseName(ep config.EngineProfile) string {

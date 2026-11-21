@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/colony-2/pulse-tart/internal/config"
+	"github.com/colony-2/pulse-macvz/internal/config"
 )
 
 // Executed by an actual child process, with a protocol on argv containing no
@@ -34,7 +34,7 @@ func TestDiagnosticCommandHelper(t *testing.T) {
 }
 func TestDiagnosticCommandCapture(t *testing.T) {
 	t.Setenv("PULSE_DIAGNOSTIC_HELPER", "1")
-	b := &Client{cfg: config.Tart{Binary: os.Args[0], CommandTimeout: 10 * time.Second}, timeout: 10 * time.Second}
+	b := &Client{native: &fixtureHypervisor{binary: os.Args[0]}, cfg: config.Local{CommandTimeout: 10 * time.Second}, timeout: 10 * time.Second}
 	for _, size := range []int{16383, 16384, 16385, 1 << 20} {
 		t.Run(fmt.Sprint(size), func(t *testing.T) {
 			_, err := b.execute(t.Context(), "-test.run=^TestDiagnosticCommandHelper$", "--", fmt.Sprint(size), "7")
@@ -51,11 +51,11 @@ func TestDiagnosticCommandCapture(t *testing.T) {
 			}
 		})
 	}
-	b.cfg.Binary = filepath.Join(t.TempDir(), "absent")
+	b.native.(*fixtureHypervisor).binary = filepath.Join(t.TempDir(), "absent")
 	if _, err := b.execute(t.Context(), "list"); err == nil || !errors.Is(err, os.ErrNotExist) {
 		t.Fatal(err)
 	}
-	b.cfg.Binary = os.Args[0]
+	b.native.(*fixtureHypervisor).binary = os.Args[0]
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 	if _, err := b.execute(ctx, "list"); !errors.Is(err, context.Canceled) {
@@ -65,7 +65,7 @@ func TestDiagnosticCommandCapture(t *testing.T) {
 func TestDiagnosticNativeAdapterCauses(t *testing.T) {
 	b, _, s := fixture(t)
 	raw := errors.New("native fixture\n\"original\"")
-	b.command = func(context.Context, ...string) ([]byte, error) { return nil, raw }
+	b.native.(*fixtureHypervisor).command = func(context.Context, ...string) ([]byte, error) { return nil, raw }
 	if _, err := b.List(t.Context()); !errors.Is(err, raw) {
 		t.Fatal(err)
 	}
@@ -85,9 +85,9 @@ func TestDiagnosticExecGetIPAndSSHCauses(t *testing.T) {
 	if e := b.Close(); e != nil {
 		t.Fatal(e)
 	}
-	original := b.command
+	original := b.native.(*fixtureHypervisor).command
 	raw := errors.New("IP fixture\n\"original\"")
-	b.command = func(ctx context.Context, args ...string) ([]byte, error) {
+	b.native.(*fixtureHypervisor).command = func(ctx context.Context, args ...string) ([]byte, error) {
 		if args[0] == "ip" {
 			return nil, raw
 		}
@@ -96,7 +96,7 @@ func TestDiagnosticExecGetIPAndSSHCauses(t *testing.T) {
 	if _, e = b.Exec(t.Context(), s.Name, v.UID, []byte("PRIVATE-SCRIPT")); !errors.Is(e, raw) {
 		t.Fatal(e)
 	}
-	b.command = func(ctx context.Context, args ...string) ([]byte, error) {
+	b.native.(*fixtureHypervisor).command = func(ctx context.Context, args ...string) ([]byte, error) {
 		if args[0] == "ip" {
 			return []byte("bad IP"), nil
 		}
@@ -105,7 +105,7 @@ func TestDiagnosticExecGetIPAndSSHCauses(t *testing.T) {
 	if _, e = b.Exec(t.Context(), s.Name, v.UID, []byte("PRIVATE-SCRIPT")); e == nil || !strings.Contains(e.Error(), "IP is invalid") {
 		t.Fatal(e)
 	}
-	b.command = func(context.Context, ...string) ([]byte, error) { return nil, raw }
+	b.native.(*fixtureHypervisor).command = func(context.Context, ...string) ([]byte, error) { return nil, raw }
 	if _, e = b.Exec(t.Context(), s.Name, v.UID, []byte("PRIVATE-SCRIPT")); !errors.Is(e, raw) {
 		t.Fatal(e)
 	}
@@ -119,7 +119,7 @@ func TestDiagnosticRunningCommandCancellation(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { notified = true; cancel() }))
 	defer server.Close()
 	t.Setenv("PULSE_DIAGNOSTIC_NOTIFY", server.URL)
-	b := &Client{cfg: config.Tart{Binary: os.Args[0], CommandTimeout: 10 * time.Second}}
+	b := &Client{native: &fixtureHypervisor{binary: os.Args[0]}, cfg: config.Local{CommandTimeout: 10 * time.Second}}
 	_, e := b.execute(ctx, "-test.run=^TestDiagnosticCommandHelper$", "--", "-1", "0")
 	if !errors.Is(e, context.Canceled) {
 		t.Fatal(e)

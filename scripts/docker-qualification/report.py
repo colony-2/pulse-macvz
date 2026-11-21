@@ -10,18 +10,18 @@ CHECKS = ('concurrent_jobs', 'controller_sigkill_replay', 'guest_relay_sigkill',
           'primary_vm_loss', 'engine_vm_loss', 'fresh_generation_after_faults')
 
 
-def summarize(out, exit_code, backend="tart"):
-    if backend not in ("tart", "orchard", "vz"):
+def summarize(out, exit_code, backend="vz"):
+    if backend != "vz":
         raise ValueError("invalid qualification backend")
     def read(name, default):
         p = out / name
         return json.loads(p.read_text()) if p.exists() else default
     events = [json.loads(line) for line in (out / 'tests.jsonl').read_text().splitlines()] if (out / 'tests.jsonl').exists() else []
     evidence = read('qualification.json', {})
-    passed = any(e.get('Action') == 'pass' and e.get('Package') == 'github.com/colony-2/pulse-tart'
+    passed = any(e.get('Action') == 'pass' and e.get('Package') == 'github.com/colony-2/pulse-macvz'
                  and e.get('Test') == 'TestLiveDockerQualification' for e in events)
     passed = passed and not any(e.get('Action') == 'fail' for e in events)
-    required = CHECKS if backend != 'orchard' else tuple(k for k in CHECKS if k != 'worker_endpoint_sigkill') + ('orchard_api_outage', 'orchard_endpoint_recreation')
+    required = CHECKS
     checks = {key: evidence.get('checks', {}).get(key) is True for key in required}
     identities = evidence.get('identities') or []
     if not isinstance(identities, list):
@@ -35,19 +35,19 @@ def summarize(out, exit_code, backend="tart"):
     jobs_ok = len(jobs) == 4 and all(j.get('status') == 'COMPLETED' and j.get('output_ok') is True
                    and j.get('claims') == 1 and j.get('renewals', 0) >= 2 and j.get('secret_calls') == 1 for j in jobs)
     peak = evidence.get('peak_running_macos', 0)
-    success = evidence.get('backend', 'tart') == backend and exit_code == 0 and passed and all(checks.values()) and distinct and macs and jobs_ok and 0 < peak <= 2
-    return {'scope': ('native' if backend == 'tart' else backend) + '-production-docker-qualification', 'result': 'passed' if success else 'incomplete',
+    success = evidence.get('backend') == backend and exit_code == 0 and passed and all(checks.values()) and distinct and macs and jobs_ok and 0 < peak <= 2
+    return {'scope': backend + '-production-docker-qualification', 'result': 'passed' if success else 'incomplete',
             'checks': checks, 'distinct_allocation_identities': distinct, 'distinct_concurrent_macs': macs, 'completed_jobdb_jobs': len(jobs),
             'jobdb_valid': jobs_ok, 'peak_observed_running_macos': peak,
             'limits': ['bounded container CPU/memory and 8 GiB engine filesystem pressure',
                        'process and VM loss; physical host power loss is not injected',
-                       ('one native macOS worker; Orchard fault behavior is not certified by this run' if backend != 'orchard' else 'one Orchard worker; API transport outage and endpoint withdrawal/recreation; shared Orchard daemons are not killed')]}
+                       'one local Apple Silicon VZ host']}
 
 
 if __name__ == '__main__':
     out = Path(sys.argv[1])
     try:
-        result = summarize(out, int(sys.argv[2]), sys.argv[3] if len(sys.argv)>3 else "tart")
+        result = summarize(out, int(sys.argv[2]), sys.argv[3] if len(sys.argv)>3 else "vz")
     except (ValueError, TypeError, KeyError, OSError) as error:
         result = {'scope': 'native-production-docker-qualification', 'result': 'incomplete',
                   'error': 'Missing or invalid qualification evidence: ' + type(error).__name__}

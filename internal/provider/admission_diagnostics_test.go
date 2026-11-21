@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/colony-2/pulse-macvz/internal/backend"
+	"github.com/colony-2/pulse-macvz/internal/config"
 	api "github.com/colony-2/pulse-provider-api"
-	"github.com/colony-2/pulse-tart/internal/backend"
-	"github.com/colony-2/pulse-tart/internal/config"
 )
 
 const diagnosticRaw = "FIXTURE provider says: unavailable\nrequest=\"original\""

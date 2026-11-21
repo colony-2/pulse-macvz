@@ -17,4 +17,4 @@ bundle:
 	./scripts/build-bundle.sh
 
 integration:
-	./scripts/test-macos.sh
+	./scripts/test-vz-public.sh

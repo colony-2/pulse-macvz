@@ -1,4 +1,4 @@
-package tart
+package macvz
 
 import (
 	"context"
@@ -16,15 +16,28 @@ import (
 	"testing"
 	"time"
 
+	native "github.com/colony-2/pulse-macvz/internal/local"
+
+	"github.com/colony-2/pulse-macvz/internal/backend"
+	"github.com/colony-2/pulse-macvz/internal/config"
 	api "github.com/colony-2/pulse-provider-api"
-	"github.com/colony-2/pulse-tart/internal/backend"
-	"github.com/colony-2/pulse-tart/internal/config"
-	orchardbackend "github.com/colony-2/pulse-tart/internal/orchard"
-	native "github.com/colony-2/pulse-tart/internal/tart"
 )
 
 // Preserve every native backend operation, guarding dispatch itself (including
 // base/template builders), rather than merely sampling the running VM count.
+// This is a guest compatibility identity, independent of the host CLI name.
+const qualificationGuestDockerService = "dev.pulse-tart.docker"
+
+func TestQualificationGuestDockerService(t *testing.T) {
+	script, err := assets.ReadFile("scripts/docker-primary.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(script), "<key>Label</key><string>"+qualificationGuestDockerService+"</string>") {
+		t.Fatal("qualification service does not match the guest's installed launchd service")
+	}
+}
+
 type qualificationBackend struct {
 	*native.Client
 	limitError error
@@ -52,63 +65,10 @@ func (b *qualificationBackend) Create(ctx context.Context, spec backend.Spec) (b
 
 func (b *qualificationBackend) LimitError() error { return b.limitError }
 
-type qualificationOrchardBackend struct {
-	*orchardbackend.Client
-	worker     string
-	limitError error
-}
-
-func (b *qualificationOrchardBackend) LimitError() error { return b.limitError }
-func (b *qualificationOrchardBackend) Create(ctx context.Context, spec backend.Spec) (backend.VM, error) {
-	if spec.OS != "linux" {
-		vms, err := b.List(ctx)
-		if err != nil {
-			return backend.VM{}, err
-		}
-		running := 0
-		for _, v := range vms {
-			if (v.Worker == b.worker || v.Labels["org.cirruslabs.orchard.worker-name"] == b.worker) && v.OS != "linux" && !v.Stopped() {
-				running++
-			}
-		}
-		if running >= 2 {
-			b.limitError = fmt.Errorf("qualification refuses a third running macOS VM")
-			return backend.VM{}, b.limitError
-		}
-	}
-	return b.Client.Create(ctx, spec)
-}
-
 type qualificationControllerConfig struct {
-	Kind       string
-	Config     Config
-	Options    TartConfig
-	VZOptions  VZConfig
-	Connection OrchardConfig
-}
-
-func newQualificationRuntime(input qualificationControllerConfig) (*Runtime, error) {
-	var r *Runtime
-	var err error
-	if input.Kind == "orchard" {
-		r, err = NewOrchard(input.Config, input.Connection)
-		if err == nil {
-			r.p.Backend = &qualificationOrchardBackend{Client: r.p.Backend.(*orchardbackend.Client), worker: input.Connection.Worker}
-		}
-	} else {
-		if input.Kind == "vz" {
-			r, err = NewVZ(input.Config, input.VZOptions)
-		} else {
-			r, err = NewTart(input.Config, input.Options)
-		}
-		if err == nil {
-			r.p.Backend = &qualificationBackend{Client: r.p.Backend.(*native.Client)}
-		}
-	}
-	if err == nil {
-		r.profile = "docker-integration"
-	}
-	return r, err
+	Kind      string
+	Config    Config
+	VZOptions VZConfig
 }
 
 type qualificationOps interface {
@@ -119,10 +79,8 @@ type qualification struct {
 	t          *testing.T
 	ctx        context.Context
 	cfg        Config
-	options    TartConfig
 	vzOptions  VZConfig
 	kind       string
-	connection OrchardConfig
 	r          *Runtime
 	report     *liveReport
 	checks     map[string]bool
@@ -133,7 +91,7 @@ type qualification struct {
 
 func (q *qualification) open() {
 	q.t.Helper()
-	r, err := newQualificationRuntime(qualificationControllerConfig{Kind: q.kind, Config: q.cfg, Options: q.options, VZOptions: q.vzOptions, Connection: q.connection})
+	r, err := newQualificationRuntime(qualificationControllerConfig{Kind: q.kind, Config: q.cfg, VZOptions: q.vzOptions})
 	if err != nil {
 		q.t.Fatal(err)
 	}
@@ -220,9 +178,7 @@ func (q *qualification) reconcile(ctx context.Context) {
 	}
 	mac := 0
 	for _, v := range vms {
-		if q.kind == "orchard" && v.Worker != q.connection.Worker && v.Labels["org.cirruslabs.orchard.worker-name"] != q.connection.Worker {
-			continue
-		}
+
 		if v.OS != "linux" && !v.Stopped() {
 			mac++
 		}
@@ -503,7 +459,7 @@ func TestDockerQualificationController(t *testing.T) {
 func (q *qualification) controllerCrash(launches []api.Launch) {
 	q.t.Helper()
 	path := filepath.Join(q.cfg.StateDir, "controller-input.json")
-	input, _ := json.Marshal(qualificationControllerConfig{Kind: q.kind, Config: q.cfg, Options: q.options, VZOptions: q.vzOptions, Connection: q.connection})
+	input, _ := json.Marshal(qualificationControllerConfig{Kind: q.kind, Config: q.cfg, VZOptions: q.vzOptions})
 	if err := os.WriteFile(path, input, 0600); err != nil {
 		q.t.Fatal(err)
 	}
@@ -640,9 +596,7 @@ func (q *qualification) assertGone(pairs []DockerStatus) {
 			}
 		}
 	}
-	if q.kind == "orchard" {
-		return
-	}
+
 	// Native helper must be booted out and its allocation directory removed.
 	for _, p := range pairs {
 		if _, err := os.Stat(filepath.Join(q.r.p.Backend.(interface{ Home() string }).Home(), "vms", p.Engine, "pulse-endpoint")); !os.IsNotExist(err) {
@@ -655,7 +609,7 @@ func (q *qualification) cleanup() {
 	q.writeProgress()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
-	q.report.capture(q.t, ctx, q.kind, q.connection, q.r, q.cfg.StateDir)
+	q.report.capture(q.t, ctx, q.kind, q.r, q.cfg.StateDir)
 	// Only this test's UID-verified disposable allocations may be stopped on failure.
 	pairs, _ := q.r.DockerAllocations()
 	for _, p := range pairs {
@@ -695,16 +649,16 @@ func (q *qualification) cleanup() {
 
 func TestLiveDockerQualification(t *testing.T) {
 	if os.Getenv("PULSE_TEST_DOCKER_QUALIFICATION") != "1" {
-		t.Skip("use scripts/test-macos-docker-qualification.sh")
+		t.Skip("use scripts/test-vz-docker-qualification.sh")
 	}
 	kind := os.Getenv("PULSE_TEST_QUALIFICATION_BACKEND")
 	if kind == "" {
-		kind = "tart"
+		kind = "vz"
 	}
-	if kind != "tart" && kind != "orchard" && kind != "vz" {
+	if kind != "vz" {
 		t.Fatal("invalid qualification backend")
 	}
-	if kind != "orchard" && (runtime.GOOS != "darwin" || runtime.GOARCH != "arm64") {
+	if runtime.GOOS != "darwin" || runtime.GOARCH != "arm64" {
 		t.Fatal("native qualification requires Apple Silicon macOS")
 	}
 	ctx, cancel := context.WithTimeout(t.Context(), 90*time.Minute)
@@ -720,28 +674,24 @@ func TestLiveDockerQualification(t *testing.T) {
 	q.healthy(a)
 	q.healthy(b)
 	// Force the guest relay process to die. launchd must recreate it.
-	before := q.run(a, false, "sudo -n launchctl list dev.pulse-tart.docker")
-	q.run(a, false, "sudo -n launchctl kill SIGKILL system/dev.pulse-tart.docker")
+	before := q.run(a, false, "sudo -n launchctl list "+qualificationGuestDockerService)
+	q.run(a, false, "sudo -n launchctl kill SIGKILL system/"+qualificationGuestDockerService)
 	q.healthy(a)
 	q.healthy(b)
-	after := q.run(a, false, "sudo -n launchctl list dev.pulse-tart.docker")
+	after := q.run(a, false, "sudo -n launchctl list "+qualificationGuestDockerService)
 	if before == after {
 		t.Fatal("relay process was not restarted")
 	}
 	q.checkpoint("guest_relay_sigkill")
-	if q.kind == "orchard" {
-		q.orchardAPIOutage(pairs, launches)
-		q.orchardEndpointRecovery(a, b)
-	} else {
-		// The worker endpoint service must also survive an abrupt process death.
-		label := "user/" + strconv.Itoa(os.Getuid()) + "/dev.pulse-" + q.kind + ".engine." + a.EngineUID
-		if out, err := exec.CommandContext(ctx, "/bin/launchctl", "kill", "SIGKILL", label).CombinedOutput(); err != nil {
-			t.Fatalf("endpoint kill: %v %s", err, out)
-		}
-		q.healthy(a)
-		q.healthy(b)
-		q.checkpoint("worker_endpoint_sigkill")
+
+	// The worker endpoint service must also survive an abrupt process death.
+	label := "user/" + strconv.Itoa(os.Getuid()) + "/dev.pulse-" + q.kind + ".engine." + a.EngineUID
+	if out, err := exec.CommandContext(ctx, "/bin/launchctl", "kill", "SIGKILL", label).CombinedOutput(); err != nil {
+		t.Fatalf("endpoint kill: %v %s", err, out)
 	}
+	q.healthy(a)
+	q.healthy(b)
+	q.checkpoint("worker_endpoint_sigkill")
 	q.run(a, true, "sudo -n systemctl kill --kill-whom=main --signal=SIGKILL docker.service\nsudo -n systemctl restart docker.service")
 	q.healthy(a)
 	q.healthy(b)
@@ -813,13 +763,13 @@ func newLiveQualification(t *testing.T, ctx context.Context, kind string) *quali
 	engine := DefaultDockerEngine()
 	engine.DiskGiB = 8
 	base := DefaultBases()[0]
-	q := &qualification{t: t, ctx: ctx, report: newLiveReport(t, string(base.SSHPassword)), checks: map[string]bool{}, cfg: Config{OwnerID: fmt.Sprintf("docker-qualification-%d", time.Now().UnixNano()), StateDir: dir, Bases: []Base{base}, C2JVersion: os.Getenv("PULSE_TEST_C2J_VERSION"), Slots: []SlotGroup{{Name: "standard", Base: base.Name, Count: 2, DockerProfile: "standard"}}, Docker: &DockerConfig{Profiles: []DockerEngineProfile{engine}}}, options: TartConfig{Home: os.Getenv("PULSE_TEST_TART_HOME"), DockerEndpoint: DockerEndpoint{Address: os.Getenv("PULSE_TEST_ENGINE_WORKER_ADDRESS"), PortMin: 45200, PortMax: 45201}}}
+	q := &qualification{t: t, ctx: ctx, report: newLiveReport(t, string(base.SSHPassword)), checks: map[string]bool{}, cfg: Config{OwnerID: fmt.Sprintf("docker-qualification-%d", time.Now().UnixNano()), StateDir: dir, Bases: []Base{base}, C2JVersion: os.Getenv("PULSE_TEST_C2J_VERSION"), Slots: []SlotGroup{{Name: "standard", Base: base.Name, Count: 2, DockerProfile: "standard"}}, Docker: &DockerConfig{Profiles: []DockerEngineProfile{engine}}}, vzOptions: VZConfig{DockerEndpoint: DockerEndpoint{Address: os.Getenv("PULSE_TEST_ENGINE_WORKER_ADDRESS"), PortMin: 45200, PortMax: 45201}}}
 	q.kind = kind
 	if kind == "vz" && os.Getenv("PULSE_VZ_TEST_CACHE") != "" {
 		q.cfg.OwnerID = "vz-docker-qualification"
 	}
-	q.vzOptions = VZConfig{Home: os.Getenv("PULSE_VZ_HOME"), Runner: os.Getenv("PULSE_VZ_RUNNER"), DockerEndpoint: q.options.DockerEndpoint}
-	q.connection = OrchardConfig{URL: os.Getenv("PULSE_TEST_ORCHARD_URL"), Worker: os.Getenv("PULSE_TEST_ORCHARD_WORKER"), Username: os.Getenv("PULSE_TEST_ORCHARD_USERNAME"), Token: Secret(os.Getenv("PULSE_TEST_ORCHARD_TOKEN")), AllowInsecureHTTP: true, DockerEndpoint: q.options.DockerEndpoint}
+	q.vzOptions = VZConfig{Home: os.Getenv("PULSE_VZ_HOME"), Runner: os.Getenv("PULSE_VZ_RUNNER"), DockerEndpoint: q.vzOptions.DockerEndpoint}
+
 	if kind == "vz" {
 		q.cache = openVZQualificationCache(t, q.vzOptions.Home, q.cfg)
 	}
@@ -834,4 +784,13 @@ func (q *qualification) prepareFixtureBase() {
 	if kind == "vz" && os.Getenv("PULSE_VZ_PREPARED_BASE") != "" && (q.cache == nil || !q.cache.restored) {
 		prepareVZLiveBase(t, ctx, q.r, base, os.Getenv("PULSE_VZ_PREPARED_BASE"), config.BaseImageName(q.cfg.OwnerID, base.Name+"-docker"))
 	}
+}
+
+func newQualificationRuntime(input qualificationControllerConfig) (*Runtime, error) {
+	r, err := NewVZ(input.Config, input.VZOptions)
+	if err == nil {
+		r.p.Backend = &qualificationBackend{Client: r.p.Backend.(*native.Client)}
+		r.profile = "docker-integration"
+	}
+	return r, err
 }

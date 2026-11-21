@@ -4,10 +4,11 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
-	"github.com/colony-2/pulse-tart/internal/backend"
-	"github.com/colony-2/pulse-tart/internal/config"
 	"os"
 	"time"
+
+	"github.com/colony-2/pulse-macvz/internal/backend"
+	"github.com/colony-2/pulse-macvz/internal/config"
 )
 
 // AdoptSource registers a configured, named source as read-only. It deliberately

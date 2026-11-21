@@ -12,24 +12,20 @@ import (
 	"io"
 	"net"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"runtime"
-	"strconv"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
 
-	"github.com/colony-2/pulse-tart/internal/backend"
-	"github.com/colony-2/pulse-tart/internal/config"
-	"github.com/colony-2/pulse-tart/internal/ctxlock"
+	"github.com/colony-2/pulse-macvz/internal/backend"
+	"github.com/colony-2/pulse-macvz/internal/config"
+	"github.com/colony-2/pulse-macvz/internal/ctxlock"
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/sys/unix"
 )
 
 var Err = errors.New("local VM operation failed")
-var ErrPlatform = errors.New("direct Tart requires macOS with native guest architecture")
 
 type command func(context.Context, ...string) ([]byte, error)
 type record struct {
@@ -45,7 +41,7 @@ type record struct {
 	Created          time.Time       `json:"created"`
 	Delivered        bool            `json:"delivered"`
 	Reusable         bool            `json:"reusable,omitempty"`          // Published source; replacement under this name is intentional.
-	SuspendRequested bool            `json:"suspend_requested,omitempty"` // Tart suspend signals asynchronously; never signal a save twice.
+	SuspendRequested bool            `json:"suspend_requested,omitempty"` // VZ suspend signals asynchronously; never signal a save twice.
 	Delivery         *DeliveryStatus `json:"delivery,omitempty"`
 }
 type Hardware struct {
@@ -64,7 +60,7 @@ type Client struct {
 	native              Hypervisor
 	endpointArgs        func(target, ready string, port int) []string
 	mu                  ctxlock.Mutex
-	cfg                 config.Tart
+	cfg                 config.Local
 	dir                 string
 	scope               string
 	legacyDir           string
@@ -73,10 +69,8 @@ type Client struct {
 	staged              map[string]json.RawMessage // Pre-create properties; never returned as inventory.
 	bases               []config.Base
 	timeout             time.Duration
-	command             command
 	volumeUUID          func(string) (string, error)
 	service             command // launchctl; injectable for lifecycle tests
-	launch              func(string) (int, error)
 	records             map[string]*record
 	ctx                 context.Context
 	cancel              context.CancelFunc
@@ -89,61 +83,7 @@ type Client struct {
 	deliveryRetryAt     time.Time
 }
 
-func New(c config.Tart, common config.Config) (*Client, error) {
-	if runtime.GOOS != "darwin" || (runtime.GOARCH != "arm64" && runtime.GOARCH != "amd64") {
-		return nil, ErrPlatform
-	}
-	for _, b := range common.Bases {
-		if b.Architecture() != runtime.GOARCH {
-			return nil, fmt.Errorf("%w: base %s requires %s, host is %s", ErrPlatform, b.Name, b.Architecture(), runtime.GOARCH)
-		}
-	}
-	if c.Binary == "" {
-		c.Binary = "tart"
-	}
-	binary, e := exec.LookPath(c.Binary)
-	if e != nil {
-		return nil, failure("resolve Tart executable/home", e)
-	}
-	c.Binary, e = filepath.Abs(binary)
-	if e != nil {
-		return nil, failure("resolve Tart executable/home", e)
-	}
-	if c.Home == "" {
-		home, e := os.UserHomeDir()
-		if e != nil {
-			return nil, failure("resolve Tart executable/home", e)
-		}
-		c.Home = filepath.Join(home, ".tart")
-	}
-	if !filepath.IsAbs(c.Home) {
-		return nil, config.Err
-	}
-	c.Home = filepath.Clean(c.Home)
-	if c.CommandTimeout == 0 {
-		c.CommandTimeout = 2 * time.Minute
-	}
-	if c.SSHTimeout == 0 {
-		c.SSHTimeout = 15 * time.Second
-	}
-	if c.CommandTimeout < time.Second || c.SSHTimeout < time.Second {
-		return nil, config.Err
-	}
-	if c.DeliveryTimeout < 0 || (c.DeliveryTimeout > 0 && c.DeliveryTimeout < time.Second) {
-		return nil, config.Err
-	}
-	client, e := open(c, common)
-	if e != nil {
-		return nil, e
-	}
-	client.command = client.execute
-	client.launch = client.start
-	return client, nil
-}
-func open(c config.Tart, common config.Config) (*Client, error) {
-	return openNative(c, common, "tart", nil)
-}
-func openNative(c config.Tart, common config.Config, kind string, native Hypervisor) (*Client, error) {
+func openNative(c config.Local, common config.Config, kind string, native Hypervisor) (*Client, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	if common.Docker != nil {
 		for _, p := range common.Docker.Profiles {
@@ -152,7 +92,7 @@ func openNative(c config.Tart, common config.Config, kind string, native Hypervi
 	}
 	scope := (config.Settings{Config: common, Kind: kind, Endpoint: c.Home}).Scope()
 	b := &Client{kind: kind, native: native, service: service, cfg: c, dir: filepath.Join(c.Home, ".pulse", scope), scope: scope, legacyDir: common.StateDir, bases: common.Bases, timeout: common.BootstrapTimeout, records: map[string]*record{}, properties: map[string]json.RawMessage{}, workers: map[string]bool{}, ctx: ctx, cancel: cancel}
-	b.command, b.volumeUUID = b.execute, nativeVolumeUUID
+	b.volumeUUID = nativeVolumeUUID
 	if err := b.openProperties(); err != nil {
 		b.Close()
 		return nil, failure("open VM properties", err)
@@ -161,15 +101,6 @@ func openNative(c config.Tart, common config.Config, kind string, native Hypervi
 }
 
 func (b *Client) Home() string { return b.cfg.Home }
-func (b *Client) env() []string {
-	out := []string{}
-	for _, v := range os.Environ() {
-		if !strings.HasPrefix(v, "TART_HOME=") && !strings.HasPrefix(v, "TART_NO_AUTO_PRUNE=") {
-			out = append(out, v)
-		}
-	}
-	return append(out, "TART_HOME="+b.cfg.Home, "TART_NO_AUTO_PRUNE=true")
-}
 
 type boundedBuffer struct{ bytes.Buffer }
 
@@ -178,28 +109,6 @@ func (b *boundedBuffer) Write(p []byte) (int, error) {
 		return 0, Err
 	}
 	return b.Buffer.Write(p)
-}
-func (b *Client) execute(ctx context.Context, args ...string) ([]byte, error) {
-	timeout := b.cfg.CommandTimeout
-	if len(args) > 0 && args[0] == "clone" {
-		timeout = b.timeout
-	}
-	ctx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, b.cfg.Binary, args...)
-	cmd.Env = b.env()
-	var out boundedBuffer
-	cmd.Stdout = &out
-	var stderr stderrPrefix
-	cmd.Stderr = &stderr
-	if e := cmd.Run(); e != nil {
-		op := "command"
-		if len(args) > 0 {
-			op = args[0]
-		}
-		return nil, failure("command "+op, errors.Join(e, ctx.Err(), stderr.cause()))
-	}
-	return out.Bytes(), nil
 }
 
 func (b *Client) path(name string) string { return filepath.Join(b.cfg.Home, "vms", name) }
@@ -261,10 +170,7 @@ func (b *Client) binding(r *record, claim bool) error {
 	return nil
 }
 func (b *Client) hypervisor() Hypervisor {
-	if b.native != nil {
-		return b.native
-	}
-	return tartHypervisor{b}
+	return b.native
 }
 func (b *Client) inspect(ctx context.Context, name string) (Hardware, error) {
 	h, err := b.hypervisor().Inspect(ctx, name)
@@ -280,7 +186,7 @@ func (b *Client) runExited(r *record) bool {
 		return true
 	}
 	// The detached shell inherits this flock. Unlike a saved PID it cannot be
-	// confused with PID reuse, and it covers the gap before Tart acquires its
+	// confused with PID reuse, and it covers the gap before VZ acquires its
 	// own running-VM lock. The file may remain; only the kernel lock matters.
 	f, err := os.OpenFile(b.artifact(r.Spec.Name, "run.lock"), os.O_RDWR, 0)
 	if err == nil {
@@ -309,7 +215,7 @@ func (b *Client) terminalSuspension(r *record) bool {
 		return false
 	}
 	// Builders deliberately exit successfully when producing a snapshot. Jobs
-	// do not: an exited job clone must release its slot even if Tart retains
+	// do not: an exited job clone must release its slot even if VZ retains
 	// the snapshot file. Failed builder restores are terminal too.
 	var props struct{ Slot, Image json.RawMessage }
 	_ = json.Unmarshal(b.properties[r.Spec.Name], &props)
@@ -404,7 +310,7 @@ func (b *Client) List(ctx context.Context) ([]backend.VM, error) {
 				running = "false"
 			}
 			if running == "true" {
-				// Tart's list output omits OS. Inspect active foreign VMs so Linux
+				// VZ's list output omits OS. Inspect active foreign VMs so Linux
 				// workers do not consume the two physical macOS positions. This
 				// observation never adopts the VM or permits lifecycle mutations.
 				details, err := b.hypervisor().Inspect(ctx, h.Name)
@@ -587,44 +493,6 @@ func (b *Client) Create(ctx context.Context, s backend.Spec) (backend.VM, error)
 	return backend.VM{Spec: s, UID: r.UID, Worker: "local", LocalName: s.Name, Status: "pending", CreatedAt: r.Created}, nil
 }
 
-// The detached wrapper writes a durable exit observation even if the Go host
-// exits. Neither argv nor inherited environment contains the launch payload.
-func (b *Client) start(name string) (int, error) {
-	lock, e := os.OpenFile(b.artifact(name, "run.lock"), os.O_CREATE|os.O_RDWR, 0600)
-	if e != nil {
-		return 0, failure("open native run lock", e)
-	}
-	defer lock.Close()
-	if e = unix.Flock(int(lock.Fd()), unix.LOCK_EX|unix.LOCK_NB); e != nil {
-		return 0, failure("lock native run", e)
-	}
-	f, e := os.OpenFile(b.artifact(name, "run.log"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
-	if e != nil {
-		return 0, failure("start detached Tart run", e)
-	}
-	suspendable := true
-	if r := b.records[name]; r != nil {
-		suspendable = r.Spec.OS != "linux"
-	}
-	cmd := exec.Command("/bin/sh", "-c", `if [ "$4" = true ]; then "$1" run --no-graphics --suspendable "$2"; else "$1" run --no-graphics "$2"; fi
-code=$?
-umask 077
-printf '%s\n' "$code" > "$3.tmp"
-mv "$3.tmp" "$3"
-`, "pulse-tart-run", b.cfg.Binary, name, b.artifact(name, "exit"), strconv.FormatBool(suspendable))
-	cmd.Env = b.env()
-	cmd.ExtraFiles = []*os.File{lock}
-	cmd.Stdout = f
-	cmd.Stderr = f
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
-	if e := cmd.Start(); e != nil {
-		f.Close()
-		return 0, failure("start detached Tart run", e)
-	}
-	f.Close()
-	go func() { _ = cmd.Wait() }()
-	return cmd.Process.Pid, nil
-}
 func (b *Client) Suspend(ctx context.Context, name, uid string) error {
 	if e := b.mu.LockContext(ctx); e != nil {
 		return e
@@ -826,7 +694,7 @@ func (b *Client) deliver(r *record) {
 			setup, cancelSetup := context.WithDeadline(ctx, r.Delivery.StartedAt.Add(b.deliveryBudget()))
 			v, err := b.get(setup, name)
 			// A fresh clone retains its snapshot's suspended state until the
-			// detached Tart process resumes it. Only a finished run proves that
+			// detached VZ process resumes it. Only a finished run proves that
 			// suspension is terminal and delivery should stop.
 			finished := err == nil && ((v.Status == "failed" && v.Stopped()) || (v.PowerState == "suspended" && b.runExited(r)))
 			b.mu.Unlock()
@@ -967,7 +835,7 @@ func (b *Client) String() string {
 	if b.kind == "vz" {
 		return fmt.Sprintf("VZ(%s)", b.cfg.Home)
 	}
-	return fmt.Sprintf("Tart(%s)", b.cfg.Home)
+	return fmt.Sprintf("VZ(%s)", b.cfg.Home)
 }
 
 // stderrPrefix drains the command while retaining only the per-command prefix.

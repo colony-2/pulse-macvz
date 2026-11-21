@@ -1,10 +1,11 @@
-package tart
+package macvz
 
 import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -13,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/colony-2/pulse-tart/internal/backend"
+	"github.com/colony-2/pulse-macvz/internal/backend"
 	"golang.org/x/sys/unix"
 )
 
@@ -86,7 +87,7 @@ sudo -n /bin/bash "$work/prepare-image.sh" --shutdown "$work"
 			if len(text) > 3000 {
 				text = text[len(text)-3000:]
 			}
-			t.Fatalf("integration builder stopped before readiness: %s", text)
+			t.Fatalf("integration builder stopped before readiness: %s", fixtureBuilderFailure(home, name, text))
 		}
 		return got.Stopped() && prepared
 	})
@@ -97,6 +98,39 @@ sudo -n /bin/bash "$work/prepare-image.sh" --shutdown "$work"
 		t.Fatal(err)
 	}
 	complete = true
+}
+
+func fixtureBuilderFailure(home, name, guestOutput string) string {
+	path := filepath.Join(home, "vms", name, "pulse.run.log")
+	f, err := os.Open(path)
+	if err != nil {
+		return fmt.Sprintf("guest output: %s; runner log unavailable: %v", guestOutput, err)
+	}
+	defer f.Close()
+	if st, err := f.Stat(); err == nil && st.Size() > 8000 {
+		_, _ = f.Seek(-8000, io.SeekEnd)
+	}
+	data, err := io.ReadAll(io.LimitReader(f, 8000))
+	if err != nil {
+		return fmt.Sprintf("guest output: %s; read runner log: %v", guestOutput, err)
+	}
+	return fmt.Sprintf("guest output: %s; runner: %s", guestOutput, strings.TrimSpace(string(data)))
+}
+
+func TestFixtureBuilderFailureIncludesNativeStartError(t *testing.T) {
+	home := t.TempDir()
+	dir := filepath.Join(home, "vms", "builder")
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	want := "The number of virtual machines exceeds the limit."
+	if err := os.WriteFile(filepath.Join(dir, "pulse.run.log"), []byte(strings.Repeat("x", 9000)+"\nVZ runner: start: "+want), 0600); err != nil {
+		t.Fatal(err)
+	}
+	got := fixtureBuilderFailure(home, "builder", "")
+	if !strings.Contains(got, want) || len(got) > 8100 {
+		t.Fatalf("missing or unbounded native failure: %s", got)
+	}
 }
 
 // The opt-in public API test may reuse an already prepared, cold base. Only raw

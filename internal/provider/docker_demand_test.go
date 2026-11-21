@@ -1,12 +1,13 @@
 package provider
 
 import (
-	api "github.com/colony-2/pulse-provider-api"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	api "github.com/colony-2/pulse-provider-api"
 )
 
 func warmPlain(t *testing.T, p *Provider) {

@@ -25,7 +25,7 @@ cat > "$app_candidate/Contents/Info.plist" <<PLIST
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
 <key>CFBundleIdentifier</key><string>$pulse_app_id</string>
-<key>CFBundleExecutable</key><string>pulse-tart</string>
+<key>CFBundleExecutable</key><string>pulse-macvz</string>
 <key>CFBundleName</key><string>$pulse_app_name</string>
 <key>CFBundleDisplayName</key><string>$pulse_app_name</string>
 <key>CFBundlePackageType</key><string>APPL</string>
@@ -35,7 +35,7 @@ cat > "$app_candidate/Contents/Info.plist" <<PLIST
 <key>NSLocalNetworkUsageDescription</key><string>Connect to local virtual machines that run Pulse jobs and their Docker engines.</string>
 </dict></plist>
 PLIST
-bash "$root/scripts/build-server.sh" "$app_candidate/Contents/MacOS/pulse-tart"
+bash "$root/scripts/build-server.sh" "$app_candidate/Contents/MacOS/pulse-macvz"
 bash "$root/scripts/sign-macos.sh" "$app_candidate" "$pulse_app_id"
 codesign --verify --deep --strict "$app_candidate"
 cd "$root"

@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/colony-2/pulse-tart/internal/config"
+	"github.com/colony-2/pulse-macvz/internal/config"
 	"golang.org/x/sys/unix"
 )
 

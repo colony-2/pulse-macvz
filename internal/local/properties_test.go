@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/colony-2/pulse-tart/internal/config"
+	"github.com/colony-2/pulse-macvz/internal/config"
 )
 
 func reopenProperties(t *testing.T, b *Client, m *mockNative, legacy string) *Client {
@@ -21,7 +21,7 @@ func reopenProperties(t *testing.T, b *Client, m *mockNative, legacy string) *Cl
 	if err != nil {
 		t.Fatal(err)
 	}
-	next.command = m.run
+	next.native.(*fixtureHypervisor).command = m.run
 	t.Cleanup(func() { next.Close() })
 	return next
 }
@@ -34,8 +34,8 @@ func TestRestartBetweenNativeDispatchAndResultSave(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.WriteFile(release, nil, 0600) })
-	b.cfg.Binary = binary
-	b.launch = b.start
+	b.native.(*fixtureHypervisor).binary = binary
+	b.native.(*fixtureHypervisor).launch = b.start
 	if _, err := b.Create(t.Context(), spec); err != nil {
 		t.Fatal(err)
 	}
@@ -157,7 +157,7 @@ func TestExitedSuspendedJobIsTerminalButTemplateIsReusable(t *testing.T) {
 	if err = b.RetainSource(t.Context(), spec.Name, v.UID); err != nil {
 		t.Fatal(err)
 	}
-	b.launch = func(string) (int, error) { return os.Getpid(), nil }
+	b.native.(*fixtureHypervisor).launch = func(string) (int, error) { return os.Getpid(), nil }
 	spec.Name, spec.Image = "failed-job", spec.Name
 	if err = b.WriteVMProperties(map[string]json.RawMessage{spec.Name: json.RawMessage(`{"job":{}}`)}); err != nil {
 		t.Fatal(err)
@@ -266,7 +266,7 @@ func TestAsynchronousSuspendIsNotRepeatedAcrossRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	requests := 0
-	b.command = func(ctx context.Context, args ...string) ([]byte, error) {
+	b.native.(*fixtureHypervisor).command = func(ctx context.Context, args ...string) ([]byte, error) {
 		if args[0] == "suspend" {
 			requests++
 			// Actual Tart returns after signalling. While saving the snapshot,
@@ -284,7 +284,7 @@ func TestAsynchronousSuspendIsNotRepeatedAcrossRestart(t *testing.T) {
 		t.Fatal("snapshot interrupted by repeated suspend", requests)
 	}
 	b = reopenProperties(t, b, m, "")
-	b.command = func(ctx context.Context, args ...string) ([]byte, error) {
+	b.native.(*fixtureHypervisor).command = func(ctx context.Context, args ...string) ([]byte, error) {
 		if args[0] == "suspend" {
 			requests++
 			return nil, nil

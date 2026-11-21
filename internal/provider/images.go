@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/colony-2/pulse-tart/internal/backend"
-	"github.com/colony-2/pulse-tart/internal/config"
+	"github.com/colony-2/pulse-macvz/internal/backend"
+	"github.com/colony-2/pulse-macvz/internal/config"
 )
 
 type ImageRecord struct {
@@ -93,15 +93,12 @@ func (p *Provider) sourceSpec(b config.Base, cpu, memory int64) backend.Spec {
 	if osname == "" {
 		osname = "darwin"
 	}
-	// Orchard's Tart slot resource limits macOS instances, not Linux companions.
+	// Retain legacy resource metadata on prepared VM specifications.
 	macSlots := int64(1)
 	if osname == "linux" {
 		macSlots = 0
 	}
-	nativeRuntime := "tart"
-	if p.Config.Kind == "vz" {
-		nativeRuntime = "vz"
-	}
+	nativeRuntime := "vz"
 	return backend.Spec{OS: osname, Arch: b.Architecture(), Runtime: nativeRuntime, Image: b.Image, CPU: cpu, Memory: memory, Headless: true, Username: b.SSHUsername, Password: string(b.SSHPassword), RestartPolicy: "Never", Suspendable: osname == "darwin", Labels: labels, Resources: map[string]int64{"org.cirruslabs.logical-cores": cpu, "org.cirruslabs.memory-mib": memory, "org.cirruslabs.tart-vms": macSlots}, StartupScript: backend.Script{Env: map[string]string{}}}
 }
 func (p *Provider) retain(ctx context.Context, name, uid string) error {
@@ -184,7 +181,7 @@ func (p *Provider) adoptBase(ctx context.Context, spec backend.Spec, base config
 	return true, nil
 }
 func sourceStopped(v backend.VM) bool {
-	// Orchard powerState is desired state and can remain "running" after a
+	// Backend powerState is desired state and can remain "running" after a
 	// clean guest shutdown. Its running condition is the observed state.
 	return v.Stopped() && v.PowerState != "suspended" && v.LocalName != ""
 }

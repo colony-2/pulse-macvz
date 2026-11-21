@@ -1,17 +1,18 @@
-package tart
+package macvz
 
 import (
 	"context"
 	"errors"
-	api "github.com/colony-2/pulse-provider-api"
 	"os"
 	"path/filepath"
 	"runtime"
 	"slices"
 	"testing"
 
-	"github.com/colony-2/pulse-tart/internal/config"
-	"github.com/colony-2/pulse-tart/internal/vz"
+	api "github.com/colony-2/pulse-provider-api"
+
+	"github.com/colony-2/pulse-macvz/internal/config"
+	"github.com/colony-2/pulse-macvz/internal/vz"
 )
 
 func TestVZConstructorAndScope(t *testing.T) {

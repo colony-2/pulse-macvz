@@ -7,14 +7,14 @@ import (
 	"os/signal"
 	"syscall"
 
-	tart "github.com/colony-2/pulse-tart"
-	"github.com/colony-2/pulse-tart/cli"
+	macvz "github.com/colony-2/pulse-macvz"
+	"github.com/colony-2/pulse-macvz/cli"
 )
 
 var version = "dev"
 
 func main() {
-	tart.RunnerMain()
+	macvz.RunnerMain()
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	if err := cli.NewCommand(version).ExecuteContext(ctx); err != nil {
