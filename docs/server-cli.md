@@ -64,6 +64,42 @@ pulse-macvz setup --owner production --macos-capacity 2 --linux-capacity 4 \
 pulse-macvz server
 ```
 
+Inspect the pool while its controller is running:
+
+```sh
+pulse-macvz status
+pulse-macvz status --json
+```
+
+Status reads the selected owner's VM metadata and native running/suspended state
+without opening a controller, contacting guests, reconciling, or saving settings.
+Use `--owner`, `--vm-home`, or `--config` to select a different pool. The table
+includes configured slots without VMs, idle allocations, assigned jobs, and
+prepared templates. JobDB instance, tenant, job ID, and launch ID are separate
+fields. Details include VM identities, creation times, and persisted delivery
+progress; JSON exposes the same snapshot in structured form. The detail section
+groups slot VMs, base images, and other cached images/templates separately.
+`ready` means a suspended template is available to launch a job; `idle` means a
+running worker has no assigned job. `assigned` means a job is attached. Startup
+delivery describes dispatch of the guest script, not progress of the job itself.
+
+Each VM detail includes its installed c2j version and seven-character commit.
+Preparation records the actual binary version and resolved build revision in
+`pulse.c2j.json` beside the VM disk; clones retain that metadata. It remains
+readable when a VM is stopped or suspended. JSON retains the full recorded
+revision. Older images without this metadata show `unknown`: status never wakes
+them or substitutes today's configured version. New preparation records both
+fields; existing images can acquire their binary version on their next normal
+startup through the updated provider. A release version alone does not establish
+its commit, so older images may still show an unknown commit until rebuilt.
+
+“Last recorded submission” is the creation time of the newest surviving job
+record for that slot. Deleted job records and declined submissions have no
+retained history, so an empty timestamp means unknown, not “never used.” The
+snapshot is observational: phases may lag reconciliation, and in-memory download
+progress is not visible. `cli.NewStatusCommand()` exposes the same read-only
+command for embedding in Pulse.
+
 On Apple Silicon macOS, `make install` builds and signs `PulseProvider.app`
 in that directory and installs `pulse-macvz` as a symlink to its executable.
 It uses the signing policy described below. Other platforms get the cgo-free

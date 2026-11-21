@@ -804,8 +804,8 @@ func (b *Client) sendAddressHooks(ctx, setup context.Context, address string, sp
 		return e
 	}
 	_ = conn.SetDeadline(time.Time{}) // Only executing guest work may outlive the SSH setup deadline.
-	session.Stdin = strings.NewReader(spec.StartupScript.Content)
-	writer := &deliveryWriter{destination: f, delivered: delivered}
+	session.Stdin = strings.NewReader(observeImageVersion + spec.StartupScript.Content)
+	writer := &deliveryWriter{destination: f, delivered: delivered, imageVersion: func(v *ImageVersion) error { return b.recordImageVersion(spec.Name, v) }}
 	session.Stdout = writer
 	session.Stderr = writer
 	if e := session.Run("/bin/bash -s"); e != nil {

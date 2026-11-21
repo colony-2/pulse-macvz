@@ -27,6 +27,7 @@ PLIST
   launchctl print system/dev.pulse-tart.template >/dev/null 2>&1 || launchctl bootstrap system /Library/LaunchDaemons/dev.pulse-tart.template.plist
   for ((i=0; i<seconds; i++)); do
     if [[ -f $state/ready ]]; then
+      cat /opt/pulse-tart-image/c2j-version 2>/dev/null || true
       printf 'PULSE_TEMPLATE_READY '
       cat "$state/ready"
       exit 0

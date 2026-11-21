@@ -33,3 +33,9 @@ func NewSetupCommand() *cobra.Command {
 func NewUpgradeCommand() *cobra.Command {
 	return servercli.NewUpgradeCommand()
 }
+
+// NewStatusCommand reports the selected pool without opening a controller or
+// modifying VMs/configuration. It can run alongside the active provider.
+func NewStatusCommand() *cobra.Command {
+	return servercli.NewStatusCommand()
+}

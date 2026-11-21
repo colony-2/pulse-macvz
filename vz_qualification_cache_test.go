@@ -135,7 +135,7 @@ func vzPreparationInput(name string) bool {
 	switch name {
 	case "assets.go", "runtime.go", "bases.go", "bases.json", "go.mod", "go.sum", "flake.nix", "flake.lock", "vz_live_test.go",
 		"internal/provider/images.go", "internal/provider/slots.go", "internal/provider/engine_images.go",
-		"scripts/bootstrap-guest.sh", "scripts/install-guest.sh", "scripts/prepare-image.sh", "scripts/prepare-base.sh", "scripts/prepare-base-linux.sh", "scripts/prepare-docker-engine.sh", "scripts/prepare-template.sh", "scripts/select-c2j.sh", "scripts/resolve-c2j-vendor.sh",
+		"scripts/bootstrap-guest.sh", "scripts/install-guest.sh", "scripts/prepare-image.sh", "scripts/prepare-base.sh", "scripts/prepare-base-linux.sh", "scripts/prepare-docker-engine.sh", "scripts/prepare-template.sh", "scripts/select-c2j.sh", "scripts/resolve-c2j-vendor.sh", "scripts/record-c2j-version.sh",
 		"tests/integration/c2j-fixture.go.txt", "tests/integration/docker-fixture.go.txt":
 		return true
 	}
@@ -161,6 +161,11 @@ func cloneVZQualificationSource(source, destination string) error {
 		return err
 	}
 	files := []string{"config.json", "disk.img", "nvram.bin"}
+	if _, err := os.Lstat(filepath.Join(source, "pulse.c2j.json")); err == nil {
+		files = append(files, "pulse.c2j.json")
+	} else if !os.IsNotExist(err) {
+		return err
+	}
 	if _, err := os.Lstat(filepath.Join(source, "state.vzvmsave")); err == nil {
 		files = append(files, "state.vzvmsave")
 	} else if !os.IsNotExist(err) {

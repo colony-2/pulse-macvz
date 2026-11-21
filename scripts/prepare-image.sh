@@ -61,8 +61,8 @@ if [[ -d /var/db/pulse-tart ]]; then
 fi
 if [[ $version != bundled ]]; then /bin/bash "$bundle/select-c2j.sh" "$bundle" "$version"; fi
 /bin/bash "$bundle/install-guest.sh" "$bundle"
-# Keep only executable setup entry points in the prepared image. c2j version
-# reports the installed release; no version/fingerprint sidecar is needed.
+# Preserve installed provenance for offline status and cloned images.
+/bin/bash "$bundle/record-c2j-version.sh" "$bundle"
 mkdir -p /opt/pulse-tart-image
 cp "$bundle/bootstrap-guest.sh" "$bundle/prepare-template.sh" /opt/pulse-tart-image/
 chmod 755 /opt/pulse-tart-image /opt/pulse-tart-image/*.sh

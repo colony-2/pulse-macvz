@@ -37,7 +37,7 @@ func NewCommand(version string) *cobra.Command {
 func newCommand(run func(context.Context, serverOptions) error) *cobra.Command {
 	root := &cobra.Command{Use: "pulse-macvz", Short: "Run a Pulse VM provider", SilenceUsage: true, SilenceErrors: true}
 	root.AddCommand(providerCommand("server", "Serve a VM provider through Pulse's outbound or inbound plugin", run))
-	root.AddCommand(NewSetupCommand(), NewUpgradeCommand())
+	root.AddCommand(NewSetupCommand(), NewUpgradeCommand(), NewStatusCommand())
 	return root
 }
 
@@ -67,13 +67,17 @@ func providerCommand(name, short string, run func(context.Context, serverOptions
 				o.version = "dev"
 			}
 			o.log = cmd.ErrOrStderr()
-			if err := o.resolve(); err != nil {
+			resolve := o.resolve
+			if name == "status" {
+				resolve = o.resolvePool
+			}
+			if err := resolve(); err != nil {
 				return err
 			}
 			if err := run(cmd.Context(), o); err != nil {
 				return err
 			}
-			if name != "server" {
+			if name != "server" && name != "status" {
 				return saveConfiguration(cmd, o.configPath)
 			}
 			return nil
@@ -81,7 +85,7 @@ func providerCommand(name, short string, run func(context.Context, serverOptions
 	}
 	f := server.Flags()
 	f.StringVarP(&o.configPath, "config", "f", "", "Configuration file (default ~/.pulse/vz/provider.json; explicit flags override saved settings)")
-	if name != "server" {
+	if name != "server" && name != "status" {
 		f.DurationVar(&o.managementTimeout, "timeout", 2*time.Hour, "Maximum preparation/drain time; timeout never cancels accepted jobs")
 		f.StringVar(&o.progressMode, "progress", "auto", "Preparation display: auto, interactive, or linear (redirected output is always linear)")
 	}
@@ -107,6 +111,16 @@ func providerCommand(name, short string, run func(context.Context, serverOptions
 }
 
 func (o *serverOptions) resolve() error {
+	if err := o.resolvePool(); err != nil {
+		return err
+	}
+	if o.managementTimeout != 0 && o.mode == "outbound" && o.transport.address == "" && o.transport.name == "" && o.transport.ca == "" && o.transport.cert == "" && o.transport.key == "" && o.transport.serverName == "" {
+		return o.transport.validate("inbound", o.owner)
+	}
+	return o.transport.validate(o.mode, o.owner)
+}
+
+func (o *serverOptions) resolvePool() error {
 	if o.progressMode != "" && o.progressMode != "auto" && o.progressMode != "interactive" && o.progressMode != "linear" {
 		return fmt.Errorf("--progress must be auto, interactive, or linear")
 	}
@@ -152,8 +166,5 @@ func (o *serverOptions) resolve() error {
 			return fmt.Errorf("Docker port range is smaller than --macos-docker-capacity")
 		}
 	}
-	if o.managementTimeout != 0 && o.mode == "outbound" && o.transport.address == "" && o.transport.name == "" && o.transport.ca == "" && o.transport.cert == "" && o.transport.key == "" && o.transport.serverName == "" {
-		return o.transport.validate("inbound", o.owner)
-	}
-	return o.transport.validate(o.mode, o.owner)
+	return nil
 }

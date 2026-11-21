@@ -400,7 +400,7 @@ func TestSSHDeliveryUsesOnlyStdinAndPinsHostKey(t *testing.T) {
 	}
 	select {
 	case got := <-received:
-		if got != spec.StartupScript.Content {
+		if got != observeImageVersion+spec.StartupScript.Content {
 			t.Fatal("SSH payload changed")
 		}
 	case <-ctx.Done():

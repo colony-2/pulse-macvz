@@ -28,7 +28,7 @@ UNIT
   systemctl start --no-block pulse-tart-build.service
  fi
  for ((i=0;i<$2;i++)); do
-  if [[ -f /var/lib/pulse-tart-build/ready ]]; then echo PULSE_BASE_READY; sync; shutdown -h now; exit 0; fi
+  if [[ -f /var/lib/pulse-tart-build/ready ]]; then cat /opt/pulse-tart-image/c2j-version 2>/dev/null || true; echo PULSE_BASE_READY; sync; shutdown -h now; exit 0; fi
   if systemctl is-failed --quiet pulse-tart-build; then echo PULSE_BASE_FAILED; tail -c 10000 /var/log/pulse-tart-build.log; exit 1; fi
   sleep 1
  done
@@ -56,6 +56,7 @@ if getent group nix-users >/dev/null; then usermod -aG nix-users pulseworker; fi
 sudo -n -H -u pulseworker /usr/bin/nix --extra-experimental-features nix-command store ping --store daemon
 mkdir -p /opt/pulse-tart-image
 cp "$bundle/bootstrap-guest.sh" /opt/pulse-tart-image/
+/bin/bash "$bundle/record-c2j-version.sh" "$bundle"
 /opt/pulse-tart/bin/c2j version
 /opt/pulse-tart/bin/pulse-tart-guest version
 rm -f /etc/systemd/system/pulse-tart-build.service

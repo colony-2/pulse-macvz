@@ -350,6 +350,11 @@ func (s *Store) Clone(ctx context.Context, source, destination string) error {
 		return err
 	}
 	files := []string{"config.json", "disk.img", "nvram.bin"}
+	if _, err := os.Lstat(filepath.Join(src, local.ImageVersionFile)); err == nil {
+		files = append(files, local.ImageVersionFile)
+	} else if !os.IsNotExist(err) {
+		return err
+	}
 	if c.RestoreRequired {
 		if err = validateSnapshot(src, c); err != nil {
 			return err

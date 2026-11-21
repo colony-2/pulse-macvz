@@ -143,7 +143,7 @@ func (b *Client) monitorBase(name string, r *record, s *basePreparation, version
 	defer cancel()
 	for ctx.Err() == nil {
 		call, done := context.WithTimeout(ctx, 15*time.Second)
-		data, err := exec(call, name, s.uid, []byte("expected='"+version+"'\n"+observeMacBase))
+		data, err := exec(call, name, s.uid, []byte("expected='"+version+"'\n"+observeMacBase+observeImageVersion))
 		done()
 		b.mu.Lock()
 		if b.closed || b.records[name] != r {
@@ -151,7 +151,16 @@ func (b *Client) monitorBase(name string, r *record, s *basePreparation, version
 			return
 		}
 		if err == nil {
-			err = s.observe(data, time.Now().UTC())
+			observation, extra, _ := strings.Cut(string(data), "\n")
+			err = s.observe([]byte(observation), time.Now().UTC())
+			if err == nil && s.stage == "base_ready" {
+				for _, line := range strings.Split(extra, "\n") {
+					if v := parseImageVersion(line); v != nil {
+						err = b.recordImageVersion(name, v)
+						break
+					}
+				}
+			}
 		}
 		if err != nil {
 			s.cause = deliveryCause(err)

@@ -30,6 +30,7 @@ PLIST
   fi
   for ((i=0;i<seconds;i++)); do
     if [[ -f $state/ready ]]; then
+      cat /opt/pulse-tart-image/c2j-version 2>/dev/null || true
       echo PULSE_BASE_READY
       sync
       /sbin/shutdown -h now

@@ -111,14 +111,18 @@ func TestExpiredBaseRecoveryObservesBeforeTimeoutWithoutReplayingPreparation(t *
 					t.Fatal("recovery command must be bounded")
 				}
 				switch string(script) {
-				case "expected='15.7.7'\n" + observeMacBase:
+				case "expected='15.7.7'\n" + observeMacBase + observeImageVersion:
 					observed++
 					if result == "unreachable" {
 						return nil, errors.New("guest unavailable")
 					}
-					return []byte("PULSE_BASE_OBSERVATION 00000000-0000-0000-0000-000000000001 " + result + " 42"), nil
+					return []byte("PULSE_BASE_OBSERVATION 00000000-0000-0000-0000-000000000001 " + result + " 42\nPULSE_C2J 123abcd v1.2.3\n"), nil
 				case shutdownReadyMacBase:
 					shutdown++
+					v, err := ReadImageVersion(b.path(name))
+					if err != nil || v.Version != "v1.2.3" {
+						t.Fatal("shutdown preceded durable version", v, err)
+					}
 					data, err := os.ReadFile(b.artifact(name, "events"))
 					if err != nil || !strings.Contains(string(data), "PULSE_BASE_READY") || !b.deliveryMarker(name) {
 						t.Fatal("shutdown preceded durable readiness", err)

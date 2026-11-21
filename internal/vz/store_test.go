@@ -77,6 +77,32 @@ func TestColdCloneIsolationAndIdentity(t *testing.T) {
 		t.Fatal("source disk changed")
 	}
 }
+
+func TestClonePreservesInstalledC2JVersion(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("APFS clone")
+	}
+	s, source := fixture(t)
+	want := &local.ImageVersion{Version: "v1.2.3", Revision: strings.Repeat("a", 40)}
+	if err := atomicJSON(filepath.Join(source, local.ImageVersionFile), want); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Clone(t.Context(), "source", "job"); err != nil {
+		t.Fatal(err)
+	}
+	dir, _ := s.path("job")
+	got, err := local.ReadImageVersion(dir)
+	if err != nil || *got != *want {
+		t.Fatal(got, err)
+	}
+	if err := atomicJSON(filepath.Join(source, local.ImageVersionFile), &local.ImageVersion{Version: "v2"}); err != nil {
+		t.Fatal(err)
+	}
+	got, err = local.ReadImageVersion(dir)
+	if err != nil || *got != *want {
+		t.Fatal("source update changed clone provenance", got, err)
+	}
+}
 func TestCloneRejectsRunningSourceAndRollsBack(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		t.Skip("APFS clone")

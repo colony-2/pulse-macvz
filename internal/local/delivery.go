@@ -152,11 +152,12 @@ func readyLine(line []byte) bool {
 }
 
 type deliveryWriter struct {
-	mu          sync.Mutex
-	destination io.Writer
-	delivered   func()
-	line        []byte
-	done        bool
+	mu           sync.Mutex
+	destination  io.Writer
+	delivered    func()
+	imageVersion func(*ImageVersion) error
+	line         []byte
+	done         bool
 }
 
 func (w *deliveryWriter) Write(p []byte) (int, error) {
@@ -168,6 +169,11 @@ func (w *deliveryWriter) Write(p []byte) (int, error) {
 			break
 		}
 		if c == '\n' {
+			if v := parseImageVersion(string(w.line)); v != nil && w.imageVersion != nil {
+				if e := w.imageVersion(v); e != nil {
+					return n, e
+				}
+			}
 			if readyLine(w.line) {
 				w.done = true
 				w.delivered()
