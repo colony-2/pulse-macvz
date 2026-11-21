@@ -41,6 +41,7 @@ type PairRecord struct {
 	Port                                           int
 	EngineID, LaunchID, DeliveryHash               string
 	DockerRequested                                bool
+	LinuxNixVersion                                int    // Idle repair revision; never changes the VM/config identity.
 	RequestID                                      string // Preparation hint only; never an accepted launch or lease.
 	Created                                        time.Time
 }
@@ -268,9 +269,26 @@ func (p *Provider) configurePrimary(ctx context.Context, pair *PairRecord) error
 	if !pair.DockerRequested {
 		mode = "plain"
 	}
-	content := "set -eu\nset +x\nsudo -n install -d -m 700 /var/lib/pulse-docker\n" + fileScript("/var/lib/pulse-docker/primary.sh", script, linux) + "sudo -n /bin/bash /var/lib/pulse-docker/primary.sh " + mode + "\n"
+	content := "set -eu\nset +x\nsudo -n install -d -m 700 /var/lib/pulse-docker\n"
+	if linux {
+		setup, err := p.asset("setup-linux-nix.sh")
+		if err != nil {
+			return err
+		}
+		content += fileScript("/var/lib/pulse-docker/setup-linux-nix.sh", setup, true)
+	}
+	content += fileScript("/var/lib/pulse-docker/primary.sh", script, linux) + "sudo -n /bin/bash /var/lib/pulse-docker/primary.sh " + mode + "\n"
 	_, e = p.Backend.(dockerBackend).Exec(ctx, pair.Primary.Name, pair.PrimaryUID, []byte(content))
+	if e == nil && linux {
+		pair.LinuxNixVersion = linuxNixVersion
+	}
 	return e
+}
+
+const linuxNixVersion = 1
+
+func (p *Provider) needsLinuxNixSetup(pair *PairRecord) bool {
+	return pair.LaunchID == "" && p.base(pair.Base).OS == "linux" && pair.LinuxNixVersion != linuxNixVersion
 }
 func (p *Provider) primaryReadyDetail(ctx context.Context, pair *PairRecord) error {
 	b := p.base(pair.Base)
@@ -624,6 +642,14 @@ func (p *Provider) reconcilePairs(ctx context.Context) error {
 		if !hasPrimary {
 			continue
 		}
+		if pair.Phase == "ready" && p.needsLinuxNixSetup(pair) {
+			// Repair reused idle allocations in place, without invalidating bases,
+			// changing VM identity, or disturbing an accepted launch.
+			pair.Phase = "configuring"
+			if e = p.Store.save(); e != nil {
+				return e
+			}
+		}
 		var observationCause error
 		switch pair.Phase {
 		case "primary-dispatch", "configuring", "docker-starting":
@@ -823,6 +849,16 @@ func (p *Provider) submitDocker(ctx context.Context, l api.Launch, hash string) 
 			if !exists || v.Stopped() {
 				p.observe("Docker engine missing or stopped")
 				continue
+			}
+		}
+		if p.needsLinuxNixSetup(pair) {
+			if e := p.configurePrimary(ctx, pair); e != nil {
+				p.observeError("configure idle Linux Nix", e)
+				return p.submission(l.LaunchID, api.Unavailable), true
+			}
+			if e := p.Store.save(); e != nil {
+				p.observeError("save idle Linux Nix setup", e)
+				return p.submission(l.LaunchID, api.Unavailable), true
 			}
 		}
 		if e := p.primaryReadyDetail(ctx, pair); e != nil {

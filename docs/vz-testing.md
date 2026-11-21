@@ -4,6 +4,75 @@ Build and unit checks do not qualify live virtualization. The core native,
 provider lifecycle, public API/JobDB, registry import, Go endpoint, and full
 paired Docker qualification checks have passed as recorded below.
 
+## Ubuntu/KVM Nix extension qualification (2026-11-21 UTC)
+
+Job `3MOoQxmVuDcaxBbYLu6DIJ2U5H4` failed three Codex extension preparations:
+the resolved `aarch64-linux` output
+`/nix/store/sn824sv6lighfyb8x0nksd4bhsr374ll-c2ops-codex-0.1.0`
+could not be realized because no configured substituter could supply it. The
+surviving task artifacts identify the package and failures, but do not retain
+the old VM UIDs. Inspection of current Ubuntu workers as `pulseworker` confirmed
+that the daemon was accessible and KVM VM creation worked, but Nix trusted only
+`cache.nixos.org`. The [published base's Nix configuration](https://github.com/colony-2/base/blob/ebb13c3939c56134e9710ba4be90e7447d0e42a1/nix/runtime.conf) also includes
+`colony2.cachix.org` and its signing key; our Ubuntu preparation omitted both.
+
+`scripts/setup-linux-nix.sh` now supplies that shared configuration to fresh
+Ubuntu bases and unused Linux allocations. It adds an include and extra cache/key
+settings, preserves unrelated configuration and group memberships, restarts the
+daemon, and verifies ordinary-user daemon access. The provider repairs existing
+idle allocations in place before handoff or during reconciliation. A persisted
+repair revision prevents repeated setup; failures remain retryable. The guest
+ingest lock and durable receipt checks prevent repair after acceptance. Accepted
+jobs retain their configuration and VM identity.
+
+Normal JobDB qualification **passed**, with no fake extension or local runner:
+
+| Evidence | Value |
+| --- | --- |
+| Job / tenant | `3MP6fOsY9ljCjYMdE3MgBuUMOZv` / `c2` |
+| Requested execution | `ubuntu*`, capability `kvm` |
+| Provider slot / base | `linux-0001` / `ubuntu-24.04-arm64` |
+| Launch | `2ff7c2801699c8206a3a870f4b529a92` |
+| VM | `pulse-5c9862b11494-812ae79d8bb70c6f9187819b6484b5ed-primary` |
+| VM UID | `7e6ac4a1f4d261a37ee2e0da6badbfef` |
+| Guest boot ID | `992308a2-4f06-4034-8176-819a8ed82c34` |
+| Guest MAC / kernel | `56:f2:02:09:0c:51` / `7.0.0-42-generic` |
+| Job user | `pulseworker`, UID 55050; untrusted Nix daemon client |
+| Closure | All 43 paths realized, present, valid, and recursively content-verified |
+| Trust | Signatures required; NixOS and Colony2 keys; only root is a trusted user |
+| KVM | API version 12; successful `KVM_CREATE_VM` and close as UID 55050 |
+| Extension | Real `nix:github:colony-2/c2ops/published#codex`, status `completed` |
+| Response | `{"ack":"ubuntu-kvm-nix-extension-ok"}` |
+| Final job status | `COMPLETED`, `success` |
+
+Evidence is retained locally in `test-results/nix-kvm-repair.20261121/`, including
+the closure list, realization/verification log, guest facts, provider allocation,
+and exact extension response. A live negative check against this accepted
+qualification allocation confirmed repair refusal with unchanged config hashes
+and Nix daemon PID. Earlier qualification drafts failed because of their input
+schema and credential declarations; those were corrected in the standalone
+recipe before the passing run, without changes to c2j or c2ops.
+
+Run the checked-in recipe through the normal scheduler after deploying the repair:
+
+```sh
+c2j submit --cell pulse-macvz \
+  --advanced-recipe-file tests/integration/nix-kvm.yaml \
+  --require-base 'ubuntu*' --require-capability kvm \
+  'Qualify Ubuntu Nix extension startup and ordinary-user KVM access'
+```
+
+This deployment uses a separate reverse provider process. Existing idle guests
+were repaired through the management SSH path using the same shared setup and
+handoff guard. Run `make install`, then restart that provider with its existing
+arguments so future clones and reused idle slots receive the repair automatically.
+The code and preparation scripts are embedded in the executable; a running
+process does not reload source edits. No Pulse update, base rebuild, or `upgrade`
+is needed for this omission. Publication remains deferred; candidate
+`8187fb785dc8b076f32059929c7dbb7a6651429b` and the excluded job
+`Uv7dTrifueEo48PogJxlTtjRwpt` were not modified or recreated. Root retains rollout
+coordination, and pulse-cloudhypervisor's eleven native assertions remain separate.
+
 ## Setup and script map
 
 VZ is available through the library and the [standalone server CLI](server-cli.md).

@@ -21,6 +21,8 @@ type dockerFake struct {
 	deliveries                                  int
 	receipt, loseDelivery, failDelete, notReady bool
 	nixDenied                                   bool
+	nixSetupDenied                              bool
+	nixSetups                                   int
 	kvmDenied                                   bool
 	engineBlocked                               bool
 	engineStarts                                int
@@ -75,6 +77,12 @@ func TestDockerPairsRestoreBeforeEnginesReady(t *testing.T) {
 }
 func (f *dockerFake) Exec(_ context.Context, name, uid string, script []byte) ([]byte, error) {
 	s := string(script)
+	if strings.Contains(s, "/var/lib/pulse-docker/setup-linux-nix.sh") {
+		f.nixSetups++
+		if f.nixSetupDenied {
+			return nil, errors.New("Nix cache setup failed")
+		}
+	}
 	if strings.Contains(s, "systemd-run --no-block --unit=pulse-docker-prepare") {
 		f.engineStarts++
 		if f.engineBlocked {
@@ -141,7 +149,7 @@ func dockerFixture(t *testing.T, linux bool) (*Provider, *dockerFake) {
 		p.Config.Bases[0].OS = "linux"
 		p.Config.Bases[0].OSVersion = "24.04"
 	}
-	p.Assets = fstest.MapFS{"scripts/prepare-docker-engine.sh": &fstest.MapFile{Data: []byte("base engine installer")}, "scripts/docker-engine.sh": &fstest.MapFile{Data: []byte("engine installer")}, "scripts/docker-primary.sh": &fstest.MapFile{Data: []byte("primary setup")}}
+	p.Assets = fstest.MapFS{"scripts/prepare-docker-engine.sh": &fstest.MapFile{Data: []byte("base engine installer")}, "scripts/docker-engine.sh": &fstest.MapFile{Data: []byte("engine installer")}, "scripts/setup-linux-nix.sh": &fstest.MapFile{Data: []byte("shared Nix setup")}, "scripts/docker-primary.sh": &fstest.MapFile{Data: []byte("primary setup")}}
 	return p, d
 }
 

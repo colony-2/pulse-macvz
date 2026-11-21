@@ -7,9 +7,19 @@ root=/var/lib/pulse-docker
 [[ $EUID == 0 ]]
 /opt/pulse-tart/bin/c2j version >/dev/null
 if [[ $(uname -s) == Linux ]]; then
+ # Serialize repair against the helper's durable handoff, including old images.
+ # Never restart a job's Nix daemon or change memberships after acceptance.
+ case "$(/opt/pulse-tart/bin/pulse-tart-guest version)" in
+  'pulse-tart-guest 0.1.0') state=/var/db/pulse-tart; test ! -e /var/db/pulse-macvz ;;
+  'pulse-macvz-guest 0.2.0') state=/var/db/pulse-macvz; test ! -e /var/db/pulse-tart ;;
+  *) exit 1 ;;
+ esac
+ install -d -m 700 "$state"
+ exec 9>"$state/ingest.lock"
+ flock -x 9
+ for receipt in launch.json fingerprint intent; do test ! -e "$state/$receipt"; done
  install -d -m 700 -o pulseworker -g pulseworker /home/pulseworker/work /home/pulseworker/work/tmp
- if getent group nix-users >/dev/null; then usermod -aG nix-users pulseworker; fi
- sudo -n -H -u pulseworker /usr/bin/nix --extra-experimental-features nix-command store ping --store daemon
+ /bin/bash "$(dirname "$0")/setup-linux-nix.sh"
  # Nested virtualization is a boot-time platform feature. All Linux workers
  # with a KVM device grant access to the ordinary job account, without sudo.
  # Apply this to each unused allocation so existing prepared images are reusable.

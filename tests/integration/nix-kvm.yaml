@@ -1,0 +1,83 @@
+id: ubuntu-kvm-nix-extension
+version: "1.0.0"
+desc: Real Ubuntu/KVM allocation, ordinary-user closure realization and Codex extension response
+input_schema:
+  prompt: {type: string}
+  title: {type: string}
+  type: {type: string}
+execution:
+  base: ubuntu*
+  capabilities: [kvm]
+perms:
+  inherit: true
+  jobdb:
+    jobs:
+      submit: false
+sequence:
+  - id: worker_contract
+    op: command_execution
+    inputs:
+      run: |
+        set -eu
+        python3 - <<'PY'
+        import fcntl, json, os, pathlib, platform, pwd, subprocess
+        outbox = pathlib.Path('{{ context.environment.op.outbox }}')
+        run = lambda *args: subprocess.check_output(args, text=True).strip()
+        assert os.geteuid() == 55050 and pwd.getpwuid(os.geteuid()).pw_name == 'pulseworker'
+        assert platform.machine() == 'aarch64' and platform.system() == 'Linux'
+        store = json.loads(run('nix', 'store', 'ping', '--json'))
+        assert store['url'] == 'daemon' and store['trusted'] == 0, store
+        config = json.loads(run('nix', 'show-config', '--json'))
+        config = {k: config[k]['value'] for k in ('substituters', 'trusted-public-keys', 'trusted-users', 'require-sigs', 'store')}
+        assert 'https://colony2.cachix.org' in config['substituters'], config
+        assert 'colony2.cachix.org-1:KFMHSiaf14yDf8qopSAgsFj9gs783OlFuE7Hs2AU4Hc=' in config['trusted-public-keys'], config
+        assert config['require-sigs'] and 'pulseworker' not in config['trusted-users']
+        # The exact closure that failed in 3MOoQxmVuDcaxBbYLu6DIJ2U5H4.
+        target = '/nix/store/sn824sv6lighfyb8x0nksd4bhsr374ll-c2ops-codex-0.1.0'
+        with (outbox / 'closure-realization.log').open('w') as log:
+            subprocess.run(['nix-store', '--realise', target], stdout=log, stderr=subprocess.STDOUT, check=True)
+            subprocess.run(['nix', 'store', 'verify', '--recursive', '--no-trust', target], stdout=log, stderr=subprocess.STDOUT, check=True)
+        closure = run('nix-store', '--query', '--requisites', target).splitlines()
+        assert target in closure and len(closure) > 1
+        assert all(pathlib.Path(p).exists() for p in closure)
+        subprocess.run(['nix-store', '--check-validity', *closure], check=True)
+        (outbox / 'closure.txt').write_text('\n'.join(closure) + '\n')
+        with open('/dev/kvm', 'r+b', buffering=0) as kvm:
+            api = fcntl.ioctl(kvm, 0xae00, 0)
+            assert api == 12
+            vm = fcntl.ioctl(kvm, 0xae01, 0)
+            assert vm >= 0
+            os.close(vm)
+        evidence = dict(uid=os.geteuid(), user=pwd.getpwuid(os.geteuid()).pw_name,
+                        groups=os.getgroups(), hostname=platform.node(), kernel=platform.release(),
+                        boot_id=pathlib.Path('/proc/sys/kernel/random/boot_id').read_text().strip(),
+                        machine_id=pathlib.Path('/etc/machine-id').read_text().strip(),
+                        interfaces={p.parent.name:p.read_text().strip() for p in pathlib.Path('/sys/class/net').glob('*/address')},
+                        store=store, nix_config=config, extension_store_path=target,
+                        closure_paths=len(closure), closure_verified=True, kvm_api=api, kvm_vm_created=True)
+        (outbox / 'worker-contract.json').write_text(json.dumps(evidence, indent=2) + '\n')
+        print(json.dumps(evidence))
+        PY
+  - id: extension_response
+    op: nix:github:colony-2/c2ops/published#codex
+    inputs:
+      # Foreign extensions cannot acquire a tenant secret solely through their
+      # own manifest default. Authorize this named input in the caller recipe.
+      api:
+        api_key: '${{ context.secrets.codex_api_key }}'
+      prompt: |
+        This is a narrowly scoped extension startup qualification. Do not run commands,
+        modify files, contact other cells, or start other work. Return the JSON object
+        {"ack":"ubuntu-kvm-nix-extension-ok"} exactly, with no extra fields.
+      output:
+        schema:
+          type: object
+          additionalProperties: false
+          required: [ack]
+          properties:
+            ack: {type: string, const: ubuntu-kvm-nix-extension-ok}
+        max_repair_attempts: 0
+outputs:
+  worker_contract: '${{ sequence.worker_contract.outputs.stdout }}'
+  extension_response: '${{ sequence.extension_response.outputs.response }}'
+  extension_status: '${{ sequence.extension_response.outputs.status }}'

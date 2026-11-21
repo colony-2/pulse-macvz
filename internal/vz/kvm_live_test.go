@@ -4,6 +4,7 @@ package vz
 
 import (
 	"context"
+	"encoding/base64"
 	"os"
 	"strings"
 	"testing"
@@ -16,11 +17,16 @@ import (
 // prepared Ubuntu base. Production images and allocations are never modified.
 func verifyLiveKVM(t *testing.T, ctx context.Context, b *local.Client, vm backend.VM) {
 	t.Helper()
-	primary, err := os.ReadFile("../../scripts/docker-primary.sh")
-	if err != nil {
-		t.Fatal(err)
+	setup := "set -eu\nsudo -n install -d -m 700 /var/lib/pulse-docker\n"
+	for _, name := range []string{"setup-linux-nix.sh", "docker-primary.sh"} {
+		data, err := os.ReadFile("../../scripts/" + name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		setup += "printf '%s' '" + base64.StdEncoding.EncodeToString(data) + "' | base64 -d | sudo -n tee /var/lib/pulse-docker/" + name + " >/dev/null\n"
 	}
-	if out, err := b.Exec(ctx, vm.Name, vm.UID, []byte("sudo -n /bin/bash -s -- plain <<'PULSE_PRIMARY'\n"+string(primary)+"\nPULSE_PRIMARY\n")); err != nil {
+	setup += "sudo -n /bin/bash /var/lib/pulse-docker/docker-primary.sh plain\n"
+	if out, err := b.Exec(ctx, vm.Name, vm.UID, []byte(setup)); err != nil {
 		t.Fatal("configure ordinary Linux worker", string(out), err)
 	}
 	script, err := os.ReadFile("../../tests/integration/kvm-guest.sh")
