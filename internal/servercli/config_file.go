@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -20,7 +21,7 @@ type savedConfiguration struct {
 
 func persistedFlag(name string) bool {
 	switch name {
-	case "config", "timeout", "progress", "help", "version", "json":
+	case "config", "timeout", "progress", "help", "version", "json", "reconnect-attempts":
 		return false
 	}
 	return true
@@ -78,6 +79,11 @@ func loadConfiguration(cmd *cobra.Command, o *serverOptions) error {
 		if obsoleteDefault(name, value) {
 			continue
 		}
+		// Upgrade the old saved default cap alongside removal of its finite
+		// attempt budget. Explicit CLI caps and other saved caps still win.
+		if name == "reconnect-max-delay" && value == "30s" && !cmd.Flags().Changed(name) && saved.Flags["reconnect-attempts"] != "" {
+			continue
+		}
 		flag := cmd.LocalNonPersistentFlags().Lookup(name)
 		if flag == nil || !persistedFlag(name) {
 			return fmt.Errorf("unsupported saved option --%s", name)
@@ -97,6 +103,9 @@ func loadConfiguration(cmd *cobra.Command, o *serverOptions) error {
 
 func obsoleteDefault(name, value string) bool {
 	switch name {
+	case "reconnect-attempts":
+		_, err := strconv.Atoi(value)
+		return err == nil
 	case "tart-binary":
 		return value == "tart"
 	case "orchard-url", "orchard-worker", "orchard-username", "orchard-token-file":

@@ -41,10 +41,11 @@ func (o *transportOptions) flags(f *pflag.FlagSet) {
 	f.IntVar(&o.messageBytes, "max-message-bytes", plugin.DefaultMessageBytes, "Plugin message size limit in bytes")
 	f.DurationVar(&o.startup, "startup-timeout", 30*time.Second, "Plugin connection and factory startup timeout")
 	f.DurationVar(&o.shutdown, "shutdown-timeout", 5*time.Second, "Plugin cleanup timeout")
-	f.IntVar(&o.reconnect.MaxAttempts, "reconnect-attempts", 5, "Outbound transient connection retries (0 disables; never replays submissions)")
+	f.IntVar(&o.reconnect.MaxAttempts, "reconnect-attempts", 0, "Deprecated; reverse mode always retries until explicitly stopped")
 	f.DurationVar(&o.reconnect.InitialDelay, "reconnect-initial-delay", time.Second, "Initial outbound reconnect delay")
-	f.DurationVar(&o.reconnect.MaxDelay, "reconnect-max-delay", 30*time.Second, "Maximum outbound reconnect delay")
-	f.DurationVar(&o.reconnect.HealthyResetInterval, "reconnect-reset-after", time.Minute, "Healthy connection duration that resets the reconnect budget (0 disables)")
+	f.DurationVar(&o.reconnect.MaxDelay, "reconnect-max-delay", 5*time.Minute, "Maximum outbound reconnect delay, including jitter")
+	f.DurationVar(&o.reconnect.HealthyResetInterval, "reconnect-reset-after", time.Minute, "Healthy connection duration that resets reconnect backoff (0 disables)")
+	_ = f.MarkDeprecated("reconnect-attempts", "reverse mode now retries indefinitely; this option is ignored")
 	o.reconnect.Multiplier = 2
 	o.reconnect.JitterFraction = 0.2
 }
@@ -59,8 +60,8 @@ func (o *transportOptions) validate(mode, owner string) error {
 	if o.startup <= 0 || o.shutdown <= 0 {
 		return fmt.Errorf("startup and shutdown timeouts must be positive")
 	}
-	if o.reconnect.MaxAttempts < 0 || o.reconnect.InitialDelay <= 0 || o.reconnect.MaxDelay < o.reconnect.InitialDelay || o.reconnect.HealthyResetInterval < 0 {
-		return fmt.Errorf("invalid reconnect attempts or delay bounds")
+	if o.reconnect.InitialDelay <= 0 || o.reconnect.MaxDelay < o.reconnect.InitialDelay || o.reconnect.HealthyResetInterval < 0 {
+		return fmt.Errorf("invalid reconnect delay bounds")
 	}
 	if o.auth == "" {
 		o.auth = "mtls"

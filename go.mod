@@ -11,6 +11,7 @@ require (
 )
 
 require (
+	github.com/cenkalti/backoff/v7 v7.0.3
 	github.com/colony-2/pulse-provider-api/plugin v0.0.0-20261120061856-2919f1ed5e42
 	github.com/google/go-containerregistry v0.20.6
 	github.com/pierrec/lz4/v4 v4.1.26

@@ -321,7 +321,8 @@ are rejected for plaintext, and client certificate/key flags require mTLS.
 
 The provider opens no public listener. Use direct TCP or TCP passthrough; a normal
 HTTP reverse proxy is not compatible. Both sides must select matching auth and
-transport modes. Credentials are loaded at startup; restart after rotation.
+transport modes. Credential files are reloaded per connection attempt; restart
+to force immediate rotation of an active session.
 
 The root API and plugin SDK are pinned together at `2919f1ed5e42` (protocol
 baseline 3); the Pulse collector/host must support the same baseline. Direct Go
@@ -330,12 +331,29 @@ Logging remains unsupported: without a listener, the subscription is nil; with
 a listener, it is immediately complete with `source_unavailable` coverage for
 all sources. This does not change admission results or start log readers.
 
-The default reconnect policy allows five transient replacement attempts, starting
-at one second, doubling up to 30 seconds with 20% jitter. One healthy minute
-resets the budget. Set `--reconnect-attempts 0` to disable reconnects; the delay
-and reset settings have corresponding flags. Authentication, identity, protocol,
-and initialization rejection are terminal SDK errors. Reconnect never resends a
-submission, and starts a fresh runtime only after the previous session closes.
+Reverse mode keeps reconnecting until SIGINT/SIGTERM or cancellation of the host
+context. There is no attempt or elapsed-time limit. It retries socket loss,
+graceful collector shutdown/restart, authentication/protocol rejection,
+initialization errors, and reconciliation failures. Credential files are reloaded
+on each attempt, so replacing a key or certificate can recover a running server.
+Invalid command-line/configuration options still fail validation before serving.
+
+Backoff uses [`cenkalti/backoff`](https://github.com/cenkalti/backoff), starting at
+one second and doubling with 20% jitter. The actual wait is capped at **five
+minutes**, including jitter. A session healthy for one minute resets the delay.
+Use `--reconnect-initial-delay`, `--reconnect-max-delay`, and
+`--reconnect-reset-after` to adjust these timings. Each retry prints its reason
+and next delay to stderr. Cancellation interrupts the backoff immediately.
+
+`--reconnect-attempts` is deprecated and ignored, including saved values of zero.
+Old saved configurations that include this flag and the former default `30s`
+cap adopt the new five-minute default. An explicit `--reconnect-max-delay` or a
+different saved cap is retained. Setup/upgrade saves the migrated settings.
+
+Reconnect never resends a submission. The old runtime must finish cleanup before
+a replacement opens. If cleanup stalls or reports failure, the server stays
+alive and reports the blocked cleanup at the same backoff intervals; it does not
+accumulate runtimes or compete for ownership of the existing VMs.
 
 ## Capacity
 
@@ -420,8 +438,9 @@ resolved before serving. Never run two controllers for the same home/owner scope
 
 
 Provider construction and `Check` occur after SDK authentication. Reconciliation
-prepares missing images and maintains allocations in the SDK session lifetime;
-a reconciliation failure stops the server with a nonzero exit status. RPCs do
+prepares missing images and maintains allocations in the SDK session lifetime.
+A reconciliation failure ends that session; outbound mode cleans up and retries,
+while inbound mode reports the failure to its process supervisor. RPCs do
 not own accepted VM jobs. Session loss or SIGINT/SIGTERM cancels maintenance and
 closes the runtime, preserving accepted jobs for recovery after restart. Inbound
 process transport cleanup is managed by the SDK and the dedicated CLI process.

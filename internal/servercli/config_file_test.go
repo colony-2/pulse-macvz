@@ -9,9 +9,57 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/spf13/cobra"
 )
+
+func TestLegacyReconnectSettingsMigrateWithoutLosingExplicitCap(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	path := filepath.Join(t.TempDir(), "provider.json")
+	if err := os.WriteFile(path, []byte(`{"version":1,"flags":{"reconnect-attempts":"5","reconnect-max-delay":"30s"}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	for _, explicit := range []bool{false, true} {
+		cmd := newCommand(func(_ context.Context, o serverOptions) error {
+			want := 5 * time.Minute
+			if explicit {
+				want = 30 * time.Second
+			}
+			if o.transport.reconnect.MaxDelay != want {
+				t.Fatalf("cap=%v want=%v", o.transport.reconnect.MaxDelay, want)
+			}
+			return nil
+		})
+		args := []string{"server", "--mode", "inbound", "--config", path}
+		if explicit {
+			args = append(args, "--reconnect-max-delay", "30s")
+		}
+		cmd.SetArgs(args)
+		if err := cmd.Execute(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	setup := providerCommand("setup", "test", func(context.Context, serverOptions) error { return nil })
+	setup.SetArgs([]string{"--config", path})
+	if err := setup.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var saved savedConfiguration
+	if err := json.Unmarshal(data, &saved); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := saved.Flags["reconnect-attempts"]; ok {
+		t.Fatal("saved obsolete finite attempt count")
+	}
+	if saved.Flags["reconnect-max-delay"] != "5m0s" {
+		t.Fatal("did not persist migrated cap")
+	}
+}
 
 func TestReverseAuthenticationConfigurationRoundTrip(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())

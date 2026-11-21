@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"time"
 
 	macvz "github.com/colony-2/pulse-macvz"
 	api "github.com/colony-2/pulse-provider-api"
@@ -33,16 +34,21 @@ type providerFactory struct {
 }
 
 type providerSession struct {
-	runtime         runtimeProvider
-	cancel          context.CancelFunc
-	maintenanceDone chan struct{}
-	closeOnce       sync.Once
-	closeDone       chan struct{}
-	closeErr        error
+	runtime          runtimeProvider
+	cancel           context.CancelFunc
+	maintenanceDone  chan struct{}
+	closeOnce        sync.Once
+	closeDone        chan struct{}
+	closeErr         error
+	timing           sync.Mutex
+	started, stopped time.Time
 }
 
 func (s *providerSession) close(ctx context.Context) error {
 	s.closeOnce.Do(func() {
+		s.timing.Lock()
+		s.stopped = time.Now()
+		s.timing.Unlock()
 		s.cancel()
 		go func() {
 			<-s.maintenanceDone
@@ -116,6 +122,11 @@ func (f *providerFactory) construct(ctx context.Context, in plugin.Init) (api.Pr
 		close(s.maintenanceDone)
 		return nil, s.close, fmt.Errorf("provider check: %w", err)
 	}
+	s.timing.Lock()
+	if s.stopped.IsZero() {
+		s.started = time.Now()
+	}
+	s.timing.Unlock()
 	go func() {
 		defer close(s.maintenanceDone)
 		err := r.Run(lifetime)
@@ -148,6 +159,16 @@ func runPlugin(ctx context.Context, o serverOptions, open runtimeOpener) error {
 	if err := o.transport.validate(o.mode, o.owner); err != nil {
 		return err
 	}
+	if o.mode == "outbound" {
+		return runReverse(ctx, o, open)
+	}
+	return runPluginSession(ctx, o, open, nil)
+}
+
+func runPluginSession(ctx context.Context, o serverOptions, open runtimeOpener, attempt **providerFactory) error {
+	if err := o.transport.validate(o.mode, o.owner); err != nil {
+		return err
+	}
 	opts := o.transport.serveOptions(o.version)
 	var outbound plugin.RunOptions
 	if o.mode == "outbound" {
@@ -165,7 +186,7 @@ func runPlugin(ctx context.Context, o serverOptions, open runtimeOpener) error {
 		}
 		outbound = plugin.RunOptions{AuthMode: auth, Transport: transport, MutualKey: key, Address: o.transport.address, TLSConfig: clientTLS,
 			Init: plugin.Initialization{Name: o.transport.name, BaseDir: o.stateDir}, Serve: opts,
-			StartupTimeout: o.transport.startup, Reconnect: o.transport.reconnect}
+			StartupTimeout: o.transport.startup}
 	}
 	lifetime, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -177,6 +198,9 @@ func runPlugin(ctx context.Context, o serverOptions, open runtimeOpener) error {
 		}
 		cancel()
 	}}
+	if attempt != nil {
+		*attempt = factory
+	}
 	if o.log != nil {
 		fmt.Fprintf(o.log, "Starting %s provider server: backend=%s macos=%d linux=%d macos-docker=%d total=%d\n", o.mode, o.backend, o.capacity.macOS, o.capacity.linux, o.capacity.macDocker, *o.config.VMCounts.Total)
 	}
@@ -189,7 +213,8 @@ func runPlugin(ctx context.Context, o serverOptions, open runtimeOpener) error {
 	}
 	var result error
 	if o.mode == "outbound" {
-		// Run bounds transport cleanup and fully disposes a session before reconnect.
+		// The outer supervisor owns retries, including orderly collector shutdown.
+		// Keep SDK reconnect disabled to avoid nested retry budgets.
 		result = plugin.Run(lifetime, construct, outbound)
 	} else {
 		// Serve is the SDK's dedicated child-process entry point, not a TCP listener.

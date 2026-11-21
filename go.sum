@@ -1,5 +1,7 @@
 github.com/bufbuild/protocompile v0.4.0 h1:LbFKd2XowZvQ/kajzguUp2DC9UEIQhIq77fZZlaQsNA=
 github.com/bufbuild/protocompile v0.4.0/go.mod h1:3v93+mbWn/v3xzN+31nwkJfrEpAUwp+BagBSZWx+TP8=
+github.com/cenkalti/backoff/v7 v7.0.3 h1:oJlXCmDgfNcGYViwioz1cZ1kHebejP4OLfJ/gqMQVWA=
+github.com/cenkalti/backoff/v7 v7.0.3/go.mod h1:qcKBGwsu4hpxHtQ8tWYsQ+ifzx2+sS+Xx/3jfe30lI8=
 github.com/colony-2/pulse-provider-api v0.0.0-20261120061856-2919f1ed5e42 h1:wDYUQN3kKS/sU2lobaNVMNcNJtX1Ipv/P0PWCoXzqtA=
 github.com/colony-2/pulse-provider-api v0.0.0-20261120061856-2919f1ed5e42/go.mod h1:k+Xog7z+dE1wxvl9fN4rfsptevZ5ANIH37j0xKZ8YJo=
 github.com/colony-2/pulse-provider-api/plugin v0.0.0-20261120061856-2919f1ed5e42 h1:LSZYMahezkuDWArt6s9B4c8vNE5WRMBM6uz8xd/k4Es=

@@ -111,10 +111,10 @@ func TestWrongSharedKeyNeverOpensRuntime(t *testing.T) {
 			defer collector.Close()
 			var opened atomic.Int32
 			cmd := newCommand(func(ctx context.Context, o serverOptions) error {
-				return runPlugin(ctx, o, func(serverOptions) (runtimeProvider, error) { opened.Add(1); return fixtureRuntime(), nil })
+				return runPluginSession(ctx, o, func(serverOptions) (runtimeProvider, error) { opened.Add(1); return fixtureRuntime(), nil }, nil)
 			})
 			cmd.SetErr(io.Discard)
-			cmd.SetArgs(append([]string{"server", "--collector", listener.Addr().String(), "--name", "worker", "--reverse-auth", "mutual-key", "--reverse-transport", mode, "--shared-key-env", "PULSE_TEST_WRONG_KEY", "--reconnect-attempts", "0"}, flags...))
+			cmd.SetArgs(append([]string{"server", "--collector", listener.Addr().String(), "--name", "worker", "--reverse-auth", "mutual-key", "--reverse-transport", mode, "--shared-key-env", "PULSE_TEST_WRONG_KEY"}, flags...))
 			err = cmd.ExecuteContext(ctx)
 			if err == nil || errors.Is(err, context.DeadlineExceeded) || opened.Load() != 0 {
 				t.Fatalf("authentication did not reject before construction: %v opens=%d", err, opened.Load())
@@ -123,6 +123,82 @@ func TestWrongSharedKeyNeverOpensRuntime(t *testing.T) {
 				t.Fatal("error exposed key")
 			}
 		})
+	}
+}
+
+func TestReverseRecoversCredentialsInitializationAndMaintenance(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	collector, err := plugin.StartCollector(ctx, listener, plugin.CollectorOptions{AuthMode: plugin.ReverseAuthMutualKey, Transport: plugin.ReverseTransportHTTP, MutualKeys: map[string][]byte{"worker": []byte("right key")}})
+	if err != nil {
+		listener.Close()
+		t.Fatal(err)
+	}
+	defer collector.Close()
+	keyFile := filepath.Join(t.TempDir(), "key")
+	if err := os.WriteFile(keyFile, []byte("wrong key"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	var opened atomic.Int32
+	cmd := newCommand(func(ctx context.Context, o serverOptions) error {
+		return runPlugin(ctx, o, func(serverOptions) (runtimeProvider, error) {
+			r := fixtureRuntime()
+			switch opened.Add(1) {
+			case 1:
+				r.checkErr = errors.New("temporary initialization failure")
+			case 2:
+				r.run = func(context.Context) error { return errors.New("temporary maintenance failure") }
+			}
+			return r, nil
+		})
+	})
+	w := retrySignalWriter{make(chan struct{}, 8)}
+	cmd.SetErr(w)
+	cmd.SetArgs([]string{"server", "--collector", listener.Addr().String(), "--name", "worker", "--reverse-auth", "mutual-key", "--reverse-transport", "http", "--shared-key-file", keyFile, "--reconnect-initial-delay", "1ms", "--reconnect-max-delay", "8ms"})
+	done := make(chan error, 1)
+	go func() { done <- cmd.ExecuteContext(ctx) }()
+	select {
+	case <-w.ch:
+	case <-ctx.Done():
+		t.Fatal("no retry after authentication failure")
+	}
+	if opened.Load() != 0 {
+		t.Fatal("unauthenticated runtime")
+	}
+	// Replace the file while the process is running; the next attempt reloads it.
+	if err := os.WriteFile(keyFile+".new", []byte("right key"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(keyFile+".new", keyFile); err != nil {
+		t.Fatal(err)
+	}
+	for {
+		snapshot, err := collector.Snapshot()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if opened.Load() >= 3 && len(snapshot.Providers) == 1 {
+			if _, err := snapshot.Providers[0].Provider.GetCapabilities(ctx); err == nil {
+				break
+			}
+		}
+		if _, err := collector.WaitForChange(ctx, snapshot.Revision); err != nil {
+			t.Fatal("did not recover", err)
+		}
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("shutdown stalled")
 	}
 }
 
@@ -325,6 +401,25 @@ func testOutboundSDKReconnectAndCalls(t *testing.T, mode string) {
 	second := waitProvider(first.Generation)
 	if second.ID != first.ID || opened.Load() != 2 {
 		t.Fatal("did not reconstruct provider on reconnect")
+	}
+	// A normal collector shutdown must also reconnect, not exit successfully.
+	address := listener.Addr().String()
+	if err := collector.Close(); err != nil {
+		t.Fatal(err)
+	}
+	replacement, err := net.Listen("tcp", address)
+	if err != nil {
+		t.Fatal(err)
+	}
+	collector, err = plugin.StartCollector(ctx, replacement, collectorOptions)
+	if err != nil {
+		replacement.Close()
+		t.Fatal(err)
+	}
+	defer collector.Close()
+	third := waitProvider(0)
+	if third.ID != first.ID || opened.Load() != 3 {
+		t.Fatal("did not reconnect after orderly collector restart")
 	}
 	cancel()
 	select {
