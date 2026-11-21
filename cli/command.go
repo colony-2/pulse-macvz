@@ -11,8 +11,8 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// NewCommand constructs the complete standalone CLI with setup, upgrade, and
-// server subcommands. version is the host executable's version.
+// NewCommand constructs the complete standalone CLI with setup, upgrade, status,
+// images, and server subcommands. version is the host executable's version.
 func NewCommand(version string) *cobra.Command {
 	return servercli.NewCommand(version)
 }
@@ -39,3 +39,7 @@ func NewUpgradeCommand() *cobra.Command {
 func NewStatusCommand() *cobra.Command {
 	return servercli.NewStatusCommand()
 }
+
+// NewImagesCommand reports worker VMs, base images, and cached templates without
+// opening a controller or modifying VMs/configuration.
+func NewImagesCommand() *cobra.Command { return servercli.NewImagesCommand() }

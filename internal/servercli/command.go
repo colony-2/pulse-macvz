@@ -37,7 +37,7 @@ func NewCommand(version string) *cobra.Command {
 func newCommand(run func(context.Context, serverOptions) error) *cobra.Command {
 	root := &cobra.Command{Use: "pulse-macvz", Short: "Run a Pulse VM provider", SilenceUsage: true, SilenceErrors: true}
 	root.AddCommand(providerCommand("server", "Serve a VM provider through Pulse's outbound or inbound plugin", run))
-	root.AddCommand(NewSetupCommand(), NewUpgradeCommand(), NewStatusCommand())
+	root.AddCommand(NewSetupCommand(), NewUpgradeCommand(), NewStatusCommand(), NewImagesCommand())
 	return root
 }
 
@@ -68,7 +68,7 @@ func providerCommand(name, short string, run func(context.Context, serverOptions
 			}
 			o.log = cmd.ErrOrStderr()
 			resolve := o.resolve
-			if name == "status" {
+			if name == "status" || name == "images" {
 				resolve = o.resolvePool
 			}
 			if err := resolve(); err != nil {
@@ -77,7 +77,7 @@ func providerCommand(name, short string, run func(context.Context, serverOptions
 			if err := run(cmd.Context(), o); err != nil {
 				return err
 			}
-			if name != "server" && name != "status" {
+			if name != "server" && name != "status" && name != "images" {
 				return saveConfiguration(cmd, o.configPath)
 			}
 			return nil
@@ -85,7 +85,7 @@ func providerCommand(name, short string, run func(context.Context, serverOptions
 	}
 	f := server.Flags()
 	f.StringVarP(&o.configPath, "config", "f", "", "Configuration file (default ~/.pulse/vz/provider.json; explicit flags override saved settings)")
-	if name != "server" && name != "status" {
+	if name != "server" && name != "status" && name != "images" {
 		f.DurationVar(&o.managementTimeout, "timeout", 2*time.Hour, "Maximum preparation/drain time; timeout never cancels accepted jobs")
 		f.StringVar(&o.progressMode, "progress", "auto", "Preparation display: auto, interactive, or linear (redirected output is always linear)")
 	}

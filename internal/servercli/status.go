@@ -22,9 +22,18 @@ import (
 // NewStatusCommand reads atomic per-VM metadata and native lock state. It never
 // opens a Runtime: doing so would acquire the controller lock and write state.
 func NewStatusCommand() *cobra.Command {
+	return newInspectionCommand("status", "Show slot availability, assignments, and c2j versions", printPoolStatus)
+}
+
+// NewImagesCommand shows the detailed inventory without starting or modifying VMs.
+func NewImagesCommand() *cobra.Command {
+	return newInspectionCommand("images", "Show worker VMs, base images, and cached templates", printPoolImages)
+}
+
+func newInspectionCommand(name, short string, printReport func(io.Writer, poolStatus) error) *cobra.Command {
 	var asJSON bool
 	var cmd *cobra.Command
-	cmd = providerCommand("status", "Show slots, assignments, and VM state without changing the pool", func(ctx context.Context, o serverOptions) error {
+	cmd = providerCommand(name, short, func(ctx context.Context, o serverOptions) error {
 		report, err := readPoolStatus(ctx, o)
 		if err != nil {
 			return err
@@ -34,7 +43,7 @@ func NewStatusCommand() *cobra.Command {
 			encoder.SetIndent("", "  ")
 			return encoder.Encode(report)
 		}
-		return printPoolStatus(cmd.OutOrStdout(), report)
+		return printReport(cmd.OutOrStdout(), report)
 	})
 	cmd.Flags().BoolVarP(&asJSON, "json", "j", false, "Print the full status snapshot as JSON")
 	return cmd
@@ -344,7 +353,7 @@ func statusTime(t time.Time) string {
 func printPoolStatus(w io.Writer, r poolStatus) error {
 	fmt.Fprintf(w, "Pool owner=%s home=%s (observed %s)\n", statusText(r.Owner), statusText(r.Home), statusTime(r.ObservedAt))
 	tw := tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(tw, "SLOT\tBASE\tSTATE\tLAST RECORDED SUBMISSION (UTC)\tJOBDB INSTANCE\tTENANT\tJOB ID\tLAUNCH ID")
+	fmt.Fprintln(tw, "SLOT\tBASE\tSTATE\tLAST RECORDED SUBMISSION (UTC)\tC2J VERSION\tTENANT\tJOB ID\tLAUNCH ID")
 	for _, s := range r.Slots {
 		stamp := "-"
 		if s.LastRecordedSubmission != nil {
@@ -357,16 +366,22 @@ func printPoolStatus(w io.Writer, r poolStatus) error {
 					launch = a.LaunchID
 				}
 			}
-			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t-\t-\t-\t%s\n", statusText(s.ID), statusText(s.Base), statusText(s.State), stamp, statusText(launch))
+			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t-\t-\t%s\n", statusText(s.ID), statusText(s.Base), statusText(s.State), stamp, slotC2J(s), statusText(launch))
 		}
 		for _, j := range s.Jobs {
-			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", statusText(s.ID), statusText(s.Base), statusText(s.State), stamp, statusText(j.InstanceID), statusText(j.TenantID), statusText(j.JobID), statusText(j.LaunchID))
+			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", statusText(s.ID), statusText(s.Base), statusText(s.State), stamp, vmC2J(j.VM), statusText(j.TenantID), statusText(j.JobID), statusText(j.LaunchID))
 		}
 	}
 	if err := tw.Flush(); err != nil {
 		return err
 	}
 	fmt.Fprintln(w, "\nStates: ready = suspended template available; idle = running worker available; assigned = job attached.")
+	fmt.Fprintln(w, "VM and image details: pulse-macvz images")
+	return printStatusNotes(w, r)
+}
+
+func printPoolImages(w io.Writer, r poolStatus) error {
+	fmt.Fprintf(w, "Pool owner=%s home=%s (observed %s)\n", statusText(r.Owner), statusText(r.Home), statusTime(r.ObservedAt))
 	seen := map[string]bool{}
 	printVM := func(role string, vm *statusVM) {
 		if vm == nil || seen[vm.Name] {
@@ -432,6 +447,10 @@ func printPoolStatus(w io.Writer, r poolStatus) error {
 		}
 	}
 	fmt.Fprintln(w, "\nStartup describes script delivery, not job progress. Unknown c2j metadata is not inferred from the configured version.")
+	return printStatusNotes(w, r)
+}
+
+func printStatusNotes(w io.Writer, r poolStatus) error {
 	for _, n := range r.Notes {
 		fmt.Fprintln(w, "Note:", n)
 	}
@@ -439,4 +458,39 @@ func printPoolStatus(w io.Writer, r poolStatus) error {
 		fmt.Fprintln(w, "Warning:", statusText(n))
 	}
 	return nil
+}
+
+func vmC2J(vm *statusVM) string {
+	if vm == nil || vm.C2J == nil {
+		return "unknown"
+	}
+	version := vm.C2J.Version
+	if version == "" {
+		version = "unknown"
+	}
+	if revision := vm.C2J.Revision; revision != "" {
+		if len(revision) > 7 {
+			revision = revision[:7]
+		}
+		version += " (" + revision + ")"
+	}
+	return statusText(version)
+}
+
+// Use the worker actually backing the slot, never a newer template to describe
+// an older worker. Missing worker provenance must remain unknown.
+func slotC2J(s *slotStatus) string {
+	if len(s.Allocations) == 0 {
+		return vmC2J(s.Template)
+	}
+	var versions []string
+	seen := map[string]bool{}
+	for _, a := range s.Allocations {
+		version := vmC2J(a.Primary)
+		if !seen[version] {
+			versions = append(versions, version)
+			seen[version] = true
+		}
+	}
+	return strings.Join(versions, ", ")
 }

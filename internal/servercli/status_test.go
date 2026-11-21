@@ -15,19 +15,45 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-func TestStructuredStatusShowsVersionForEveryPowerState(t *testing.T) {
+func TestStructuredImagesShowsVersionForEveryPowerState(t *testing.T) {
 	var out bytes.Buffer
 	r := poolStatus{Owner: "server", Slots: []*slotStatus{{ID: "linux-0001", Base: "ubuntu", State: "idle", Allocations: []statusAllocation{{Primary: &statusVM{Name: "worker", Power: "running", C2J: &local.ImageVersion{Version: "v1.2.3", Revision: "123abcdef0123456789"}}}}}, {ID: "mac-0001", State: "ready", Template: &statusVM{Name: "template", Power: "suspended", C2J: &local.ImageVersion{Version: "v2", Revision: "abcdef0123456789"}}}}, Images: []imageStatus{{Kind: "base", VM: &statusVM{Name: "base", Power: "stopped", C2J: &local.ImageVersion{Version: "v3", Revision: "deadbeef123456789"}}}, {Kind: "slot", VM: &statusVM{Name: "older-template", Power: "suspended"}}}}
-	if err := printPoolStatus(&out, r); err != nil {
+	if err := printPoolImages(&out, r); err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"Slot VMs", "Base images", "Other cached images and templates", "v1.2.3 (commit 123abcd)", "v2 (commit abcdef0)", "v3 (commit deadbee)", "unknown (commit unknown)", "idle = running worker available"} {
+	for _, want := range []string{"Slot VMs", "Base images", "Other cached images and templates", "v1.2.3 (commit 123abcd)", "v2 (commit abcdef0)", "v3 (commit deadbee)", "unknown (commit unknown)"} {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("missing %q in %s", want, out.String())
 		}
 	}
 	if strings.Count(out.String(), "VM:      worker") != 1 || strings.Contains(out.String(), "phase=-") {
 		t.Fatal(out.String())
+	}
+}
+
+func TestStatusTableUsesBackingWorkerVersionAndOmitsInventory(t *testing.T) {
+	vm := func(version, revision string) *statusVM {
+		return &statusVM{Name: "detail-only-vm-name", C2J: &local.ImageVersion{Version: version, Revision: revision}}
+	}
+	r := poolStatus{Slots: []*slotStatus{
+		{ID: "assigned", Jobs: []statusJob{{InstanceID: "hidden-instance", JobID: "job-1", VM: vm("v1", "123abcdef")}}, Template: vm("wrong-template-version", "")},
+		{ID: "idle", Allocations: []statusAllocation{{Primary: vm("v2", "abcdef012"), Companion: vm("wrong-companion-version", "")}}},
+		{ID: "ready", Template: vm("v3", "fedcba987")},
+		{ID: "missing-worker-version", Allocations: []statusAllocation{{Primary: &statusVM{}}}, Template: vm("wrong-fallback-version", "")},
+	}}
+	var out bytes.Buffer
+	if err := printPoolStatus(&out, r); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"C2J VERSION", "v1 (123abcd)", "v2 (abcdef0)", "v3 (fedcba9)", "unknown", "job-1", "pulse-macvz images"} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("missing %q: %s", want, out.String())
+		}
+	}
+	for _, unwanted := range []string{"JOBDB INSTANCE", "hidden-instance", "Slot VMs", "Base images", "detail-only-vm-name", "wrong-"} {
+		if strings.Contains(out.String(), unwanted) {
+			t.Fatalf("unexpected %q: %s", unwanted, out.String())
+		}
 	}
 }
 
@@ -133,7 +159,7 @@ func TestStatusReadsOwnedSlotsAndAssignmentsWithoutSecrets(t *testing.T) {
 			t.Fatalf("status leaked %s", secret)
 		}
 	}
-	for _, want := range []string{"tenant-a", "db-1", "job-1", "launch-1"} {
+	for _, want := range []string{"tenant-a", "job-1", "launch-1"} {
 		if !strings.Contains(out.String(), want) {
 			t.Fatal("missing text identity", want)
 		}
@@ -182,6 +208,20 @@ func TestStatusCommandWorksWithControllerLockAndDoesNotSave(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "legacy") {
 		t.Fatal("missing legacy warning")
+	}
+	images := NewCommand("test")
+	out.Reset()
+	images.SetOut(&out)
+	images.SetErr(&stderr)
+	images.SetArgs([]string{"images", "--json"})
+	if err = images.ExecuteContext(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err = json.Unmarshal(out.Bytes(), &report); err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Slots) != 1 || report.Home != vmHome {
+		t.Fatal("images did not load pool settings")
 	}
 	now, err := os.ReadFile(legacy)
 	if err != nil || !bytes.Equal(original, now) {

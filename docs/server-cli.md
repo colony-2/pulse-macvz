@@ -69,16 +69,21 @@ Inspect the pool while its controller is running:
 ```sh
 pulse-macvz status
 pulse-macvz status --json
+pulse-macvz images
+pulse-macvz images --json
 ```
 
 Status reads the selected owner's VM metadata and native running/suspended state
 without opening a controller, contacting guests, reconciling, or saving settings.
 Use `--owner`, `--vm-home`, or `--config` to select a different pool. The table
 includes configured slots without VMs, idle allocations, assigned jobs, and
-prepared templates. JobDB instance, tenant, job ID, and launch ID are separate
-fields. Details include VM identities, creation times, and persisted delivery
-progress; JSON exposes the same snapshot in structured form. The detail section
-groups slot VMs, base images, and other cached images/templates separately.
+prepared templates. Its c2j version column describes the assigned job VM, idle
+worker, or available template, including the short commit when known. Tenant,
+job ID, and launch ID remain separate columns; JobDB instance remains available
+in JSON. The `images` command shows the detailed inventory, grouping slot VMs,
+base images, and other cached images/templates separately, with VM identities,
+creation times, and startup delivery information. Both commands' `--json` output
+retains the full structured snapshot for automation.
 `ready` means a suspended template is available to launch a job; `idle` means a
 running worker has no assigned job. `assigned` means a job is attached. Startup
 delivery describes dispatch of the guest script, not progress of the job itself.
@@ -98,7 +103,8 @@ record for that slot. Deleted job records and declined submissions have no
 retained history, so an empty timestamp means unknown, not “never used.” The
 snapshot is observational: phases may lag reconciliation, and in-memory download
 progress is not visible. `cli.NewStatusCommand()` exposes the same read-only
-command for embedding in Pulse.
+command for embedding in Pulse. `cli.NewImagesCommand()` exposes the separate
+read-only image inventory.
 
 On Apple Silicon macOS, `make install` builds and signs `PulseProvider.app`
 in that directory and installs `pulse-macvz` as a symlink to its executable.
