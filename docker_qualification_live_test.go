@@ -354,7 +354,7 @@ func (q *qualification) startJobs(pairs []DockerStatus) []api.Launch {
 			}
 		}(p)
 		q.run(p, false, "for ((i=0;i<100;i++)); do if test -f /var/tmp/pulse-qualification-observer-ready; then exit 0; fi; sleep .1; done; exit 1")
-		out, err := q.r.Submit(q.ctx, []api.Launch{launch})
+		out, _, err := q.r.Submit(q.ctx, []api.Launch{launch}, api.SubmitOptions{})
 		if err != nil || len(out) != 1 || out[0].Status != api.Accepted {
 			q.t.Fatal("qualification admission failed", err)
 		}

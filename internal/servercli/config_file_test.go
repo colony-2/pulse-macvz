@@ -13,6 +13,60 @@ import (
 	"github.com/spf13/cobra"
 )
 
+func TestReverseAuthenticationConfigurationRoundTrip(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("PULSE_CONFIG_TEST_KEY", "SECRET-NOT-FOR-CONFIG")
+	path := filepath.Join(t.TempDir(), "provider.json")
+	setup := providerCommand("setup", "test", func(context.Context, serverOptions) error { return nil })
+	setup.SetArgs([]string{"--config", path, "--collector", "localhost:8443", "--reverse-auth", "mutual-key", "--reverse-transport", "http", "--shared-key-env", "PULSE_CONFIG_TEST_KEY"})
+	if err := setup.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(data, []byte("SECRET-NOT-FOR-CONFIG")) {
+		t.Fatal("saved secret bytes")
+	}
+	called := false
+	server := newCommand(func(_ context.Context, o serverOptions) error {
+		called = true
+		if o.transport.auth != "mutual-key" || o.transport.transport != "http" || o.transport.sharedKeyEnv != "PULSE_CONFIG_TEST_KEY" {
+			t.Fatal("authentication settings lost")
+		}
+		key, err := o.transport.mutualKey()
+		if err != nil || string(key) != "SECRET-NOT-FOR-CONFIG" {
+			t.Fatal("cannot load configured key", err)
+		}
+		return nil
+	})
+	server.SetArgs([]string{"server", "--config", path})
+	if err := server.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if !called {
+		t.Fatal("server not called")
+	}
+	// A saved relative key path resolves alongside the configuration, even when
+	// the CLI is invoked from a different working directory.
+	saved := savedConfiguration{Version: 1, Flags: map[string]string{"collector": "localhost:8443", "reverse-auth": "mutual-key", "reverse-transport": "http", "shared-key-file": "key.txt"}}
+	data, _ = json.Marshal(saved)
+	if err := os.WriteFile(path, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	server = newCommand(func(_ context.Context, o serverOptions) error {
+		if o.transport.sharedKeyFile != filepath.Join(filepath.Dir(path), "key.txt") {
+			t.Fatal("relative key path not resolved")
+		}
+		return nil
+	})
+	server.SetArgs([]string{"server", "--config", path})
+	if err := server.Execute(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestEmbeddedConfigurationExcludesParentFlags(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	path := filepath.Join(t.TempDir(), "provider.json")

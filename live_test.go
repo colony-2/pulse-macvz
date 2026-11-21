@@ -167,7 +167,7 @@ func TestLive(t *testing.T) {
 	}
 	a, b := launch("a"), launch("b")
 	start = time.Now()
-	out, e := r.Submit(ctx, []api.Launch{a, b, launch("overflow")})
+	out, _, e := r.Submit(ctx, []api.Launch{a, b, launch("overflow")}, api.SubmitOptions{})
 	if e != nil || len(out) != 3 || out[0].Status != api.Accepted || out[1].Status != api.Accepted || out[2].Status != api.NoCapacity {
 		t.Fatal("admission statuses", out, e)
 	}
@@ -267,7 +267,7 @@ func TestLive(t *testing.T) {
 	}
 
 	again := launch("reuse")
-	out, e = r.Submit(ctx, []api.Launch{again})
+	out, _, e = r.Submit(ctx, []api.Launch{again}, api.SubmitOptions{})
 	if e != nil || out[0].Status != api.Accepted {
 		t.Fatal("slot not reusable", out, e)
 	}
@@ -391,7 +391,7 @@ func assertRecoveredLaunches(t *testing.T, ctx context.Context, r *Runtime, dir 
 		}
 		return
 	}
-	out, err := r.Submit(ctx, launches)
+	out, _, err := r.Submit(ctx, launches, api.SubmitOptions{})
 	if err != nil || len(out) != len(launches) {
 		t.Fatal("Orchard replay", err)
 	}

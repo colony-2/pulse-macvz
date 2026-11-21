@@ -1,6 +1,7 @@
 # Provider logging proposal
 
-Status: proposed; no logging implementation or dependency update is included.
+Status: logging implementation proposed. The API migration is complete; logging
+currently returns explicit unavailable subscriptions and starts no readers.
 
 Implement opt-in, per-launch logs for direct library users and both plugin modes.
 Start with structured launch progress and the guest's existing combined worker
@@ -14,7 +15,7 @@ Reviewed upstream GitHub `main` at
 [`2919f1ed5e42893f759af0fdd930c1a66824887b`](https://github.com/colony-2/pulse-provider-api/tree/2919f1ed5e42893f759af0fdd930c1a66824887b),
 including [the log types](https://github.com/colony-2/pulse-provider-api/blob/2919f1ed5e42893f759af0fdd930c1a66824887b/launch_logs.go)
 and [SDK lifecycle and migration rules](https://github.com/colony-2/pulse-provider-api/blob/2919f1ed5e42893f759af0fdd930c1a66824887b/plugin/README.md#launch-log-listeners).
-This repository currently pins both modules to `27abdc0b7a4a`.
+This repository pins both modules to `2919f1ed5e42`.
 
 The required method becomes:
 
@@ -30,8 +31,12 @@ those failures must not replace admission results or errors. The listener has
 its own context and duration, independent of the Submit context. Zero duration
 means no lifetime cutoff. Callbacks can occur before Submit returns.
 
-Upgrade the root API and plugin module together using published Git revisions,
-without a local replacement. Update every Submit caller, wrapper, fake, and test.
+The root API and plugin modules have been upgraded together using the upstream
+Git revision, without a local replacement. Public Submit callers, wrappers,
+fakes, and tests use the new signature. A requested listener currently receives
+an already-completed subscription reporting all sources unavailable; it invokes
+no callbacks and never changes admission outcomes. Replace that stub when
+implementing this proposal.
 Both plugin peers must support protocol baseline 3; there is no baseline-2
 downgrade. Coordinate the Pulse collector/host update with this provider.
 At the reviewed revision, the plugin's own go.mod still pins an older root API;

@@ -21,7 +21,24 @@ import (
 	"github.com/colony-2/pulse-macvz/internal/bundle"
 	"github.com/colony-2/pulse-macvz/internal/config"
 	engine "github.com/colony-2/pulse-macvz/internal/provider"
+	api "github.com/colony-2/pulse-provider-api"
 )
+
+func TestSubmitLoggingUnavailableDoesNotReplaceAdmissionError(t *testing.T) {
+	r := &Runtime{closed: true}
+	results, sub, err := r.Submit(t.Context(), []api.Launch{{LaunchID: "launch"}}, api.SubmitOptions{Listener: &api.ListenOptions{}})
+	if results != nil || !errors.Is(err, ErrClosed) || sub == nil {
+		t.Fatal(results, sub, err)
+	}
+	logs, logErr := sub.Wait(t.Context())
+	if logs.Reason != api.ListenerSourceUnavailable || !errors.Is(logErr, api.ErrLogSource) {
+		t.Fatal(logs, logErr)
+	}
+	_, sub, err = r.Submit(t.Context(), nil, api.SubmitOptions{})
+	if !errors.Is(err, ErrClosed) || sub != nil {
+		t.Fatal(sub, err)
+	}
+}
 
 type failingRecoveryBackend struct {
 	engine.Backend

@@ -2,12 +2,12 @@
 
 `pulse-macvz server` is a Cobra command using the published
 `github.com/colony-2/pulse-provider-api/plugin` SDK. It defaults to **outbound**
-mode and the **VZ** backend. The Go library remains available unchanged; this
+mode and the **VZ** backend. The Go library remains available; this
 command owns transport and reconciliation when used as the standalone host.
 
 Long flags use `--full-name`; short aliases use one character, such as
 `-m outbound`, `-b vz`, `-l 4`, or `-h`. Run `pulse-macvz server --help` for all
-options. All three commands share a versioned JSON configuration file; transport
+options. All commands share a versioned JSON configuration file; transport
 uses the published SDK unchanged.
 
 ## Embed setup and upgrade in Pulse
@@ -276,11 +276,53 @@ as `mac-worker-01`. `--name` defaults to `--owner`. The collector address is
 `host:port`, not an HTTP URL. `--tls-server-name` defaults to the collector host;
 set it explicitly when dialing an IP address for a DNS certificate.
 
-The connection requires verified mutual TLS 1.3 and the SDK's reverse ALPN.
+Reverse authentication and transport are independently configurable:
+
+| `--reverse-auth` | `--reverse-transport` | Credentials |
+| --- | --- | --- |
+| `mtls` (default) | `tls` (default) | `--tls-cert` and `--tls-key`; collector authorizes the certificate identity |
+| `mutual-key` | `tls` | `--shared-key-file` or `--shared-key-env`; collector binds the same key to `--name` |
+| `mutual-key` | `http` | Same shared-key options, over plaintext HTTP/2 |
+
+TLS uses verified TLS 1.3, with system CA roots by default or `--tls-ca` for a
+private CA. Shared-key TLS authenticates the collector certificate and uses the
+SDK's mutual-key admission exchange; no client certificate is required. There
+is no certificate-verification bypass. Plaintext `http` exposes credentials and
+traffic; use it only on a trusted test connection. mTLS cannot use plaintext.
+
+For shared-key TLS:
+
+```sh
+pulse-macvz server --collector pulse.example.net:8443 --name mac-worker-01 \
+  --reverse-auth mutual-key --reverse-transport tls \
+  --tls-ca /etc/pulse/ca.pem --shared-key-file /etc/pulse/provider.key
+```
+
+For plaintext testing with a key already supplied in the environment:
+
+```sh
+pulse-macvz server --collector 127.0.0.1:8080 --name mac-worker-01 \
+  --reverse-auth mutual-key --reverse-transport http \
+  --shared-key-env PULSE_PROVIDER_SHARED_KEY
+```
+
+Select exactly one shared-key source. A file contains one line: only its final
+LF or CRLF is removed. Environment values are used exactly, including spaces.
+Keys must be 1–4096 bytes with no embedded CR/LF. Configuration saves the file
+path or environment variable name, never the key itself. These flags also work
+with `setup` and `upgrade` for persisting server configuration. All TLS options
+are rejected for plaintext, and client certificate/key flags require mTLS.
+
 The provider opens no public listener. Use direct TCP or TCP passthrough; a normal
-HTTP reverse proxy is not compatible. No token flag or insecure TLS mode is
-provided. Certificates are loaded at startup; restart the server after replacing
-its certificate files.
+HTTP reverse proxy is not compatible. Both sides must select matching auth and
+transport modes. Credentials are loaded at startup; restart after rotation.
+
+The root API and plugin SDK are pinned together at `2919f1ed5e42` (protocol
+baseline 3); the Pulse collector/host must support the same baseline. Direct Go
+callers now pass `api.SubmitOptions{}` and receive `(results, subscription, err)`.
+Logging remains unsupported: without a listener, the subscription is nil; with
+a listener, it is immediately complete with `source_unavailable` coverage for
+all sources. This does not change admission results or start log readers.
 
 The default reconnect policy allows five transient replacement attempts, starting
 at one second, doubling up to 30 seconds with 20% jitter. One healthy minute

@@ -114,7 +114,7 @@ func (o *serverOptions) resolve() error {
 	if err := o.resolvePool(); err != nil {
 		return err
 	}
-	if o.managementTimeout != 0 && o.mode == "outbound" && o.transport.address == "" && o.transport.name == "" && o.transport.ca == "" && o.transport.cert == "" && o.transport.key == "" && o.transport.serverName == "" {
+	if o.managementTimeout != 0 && o.mode == "outbound" && !o.transport.configured() {
 		return o.transport.validate("inbound", o.owner)
 	}
 	return o.transport.validate(o.mode, o.owner)
@@ -149,7 +149,7 @@ func (o *serverOptions) resolvePool() error {
 		}
 		o.vmHome = filepath.Join(home, ".pulse", "vz")
 	}
-	for _, value := range []*string{&o.stateDir, &o.vmHome, &o.runner, &o.transport.ca, &o.transport.cert, &o.transport.key} {
+	for _, value := range []*string{&o.stateDir, &o.vmHome, &o.runner, &o.transport.ca, &o.transport.cert, &o.transport.key, &o.transport.sharedKeyFile} {
 		if *value, err = absolutePath(*value); err != nil {
 			return err
 		}

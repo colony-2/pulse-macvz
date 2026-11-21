@@ -3,7 +3,7 @@ module github.com/colony-2/pulse-macvz
 go 1.26.0
 
 require (
-	github.com/colony-2/pulse-provider-api v0.0.0-20261119212001-27abdc0b7a4a
+	github.com/colony-2/pulse-provider-api v0.0.0-20261120061856-2919f1ed5e42
 	golang.org/x/crypto v0.58.0
 	golang.org/x/sys v0.49.0
 	golang.org/x/term v0.47.0
@@ -11,7 +11,7 @@ require (
 )
 
 require (
-	github.com/colony-2/pulse-provider-api/plugin v0.0.0-20261119212001-27abdc0b7a4a
+	github.com/colony-2/pulse-provider-api/plugin v0.0.0-20261120061856-2919f1ed5e42
 	github.com/google/go-containerregistry v0.20.6
 	github.com/pierrec/lz4/v4 v4.1.26
 	github.com/spf13/cobra v1.10.2

@@ -155,7 +155,15 @@ func runPlugin(ctx context.Context, o serverOptions, open runtimeOpener) error {
 		if err != nil {
 			return err
 		}
-		outbound = plugin.RunOptions{Address: o.transport.address, TLSConfig: clientTLS,
+		key, err := o.transport.mutualKey()
+		if err != nil {
+			return err
+		}
+		auth, transport, err := plugin.ParseReverseModes(o.transport.auth, o.transport.transport)
+		if err != nil {
+			return err
+		}
+		outbound = plugin.RunOptions{AuthMode: auth, Transport: transport, MutualKey: key, Address: o.transport.address, TLSConfig: clientTLS,
 			Init: plugin.Initialization{Name: o.transport.name, BaseDir: o.stateDir}, Serve: opts,
 			StartupTimeout: o.transport.startup, Reconnect: o.transport.reconnect}
 	}

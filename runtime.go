@@ -13,6 +13,7 @@ import (
 	"github.com/colony-2/pulse-macvz/internal/bundle"
 	"github.com/colony-2/pulse-macvz/internal/config"
 	"github.com/colony-2/pulse-macvz/internal/local"
+	"github.com/colony-2/pulse-macvz/internal/nologging"
 	engine "github.com/colony-2/pulse-macvz/internal/provider"
 	"github.com/colony-2/pulse-macvz/internal/releases"
 	api "github.com/colony-2/pulse-provider-api"
@@ -80,13 +81,15 @@ func newRuntime(p *engine.Provider, c Config) *Runtime {
 	return r
 }
 
-func (r *Runtime) Submit(ctx context.Context, launches []api.Launch) ([]api.Submission, error) {
+func (r *Runtime) Submit(ctx context.Context, launches []api.Launch, options api.SubmitOptions) ([]api.Submission, api.LogSubscription, error) {
+	subscription := nologging.Subscription(launches, options)
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	if r.closed {
-		return nil, ErrClosed
+		return nil, subscription, ErrClosed
 	}
-	return r.p.Submit(ctx, launches)
+	results, err := r.p.Submit(ctx, launches)
+	return results, subscription, err
 }
 
 // GetCapabilities returns the complete configured catalog in Config.Bases order.

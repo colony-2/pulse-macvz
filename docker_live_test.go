@@ -186,7 +186,7 @@ func TestLiveDockerLibrary(t *testing.T) {
 	report.addLease(launch.Lease)
 	launch.LaunchID = owner
 	launch.Allocation = api.Allocation{Base: base.Name, Capabilities: []string{"docker", "git"}, CPUMillis: 1000, MemoryBytes: 2 << 30}
-	out, e := r.Submit(ctx, []api.Launch{launch})
+	out, _, e := r.Submit(ctx, []api.Launch{launch}, api.SubmitOptions{})
 	if e != nil || out[0].Status != api.Accepted {
 		t.Fatal("Docker submit", out, e)
 	}

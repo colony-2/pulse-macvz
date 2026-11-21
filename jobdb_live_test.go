@@ -393,7 +393,7 @@ func exerciseJobDB(t *testing.T, ctx context.Context, kind string, r *Runtime, o
 	}
 	submit := func(l api.Launch) {
 		t.Helper()
-		out, e := r.Submit(ctx, []api.Launch{l})
+		out, _, e := r.Submit(ctx, []api.Launch{l}, api.SubmitOptions{})
 		if e != nil || len(out) != 1 || out[0].Status != api.Accepted {
 			t.Fatal("JobDB launch was not accepted", out, e)
 		}
