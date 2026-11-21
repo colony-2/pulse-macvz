@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -261,17 +262,43 @@ func TestLive(t *testing.T) {
 		}
 	}
 	done([]api.Launch{a, b})
+	for _, l := range []api.Launch{a, b} {
+		var offset uint64
+		for {
+			page, _, err := r.archive.Read(ctx, l.LaunchID, offset)
+			if err != nil || page.Pending || page.Gap {
+				t.Fatalf("retained log recovery for %s failed: %v", l.LaunchID, err)
+			}
+			offset = page.Next
+			if offset == page.Manifest.End {
+				if !page.Manifest.Closed {
+					t.Fatal("recovered output is not complete")
+				}
+				break
+			}
+		}
+	}
+	t.Log("LIVE_LOG_ARCHIVE_RECOVERY_PASS: durable output recovered across provider restart")
 	t.Logf("two resumed clones handed off and exited in %s", time.Since(start).Round(time.Millisecond))
 	if e = r.Reconcile(ctx); e != nil {
 		t.Fatal(e)
 	}
 
 	again := launch("reuse")
-	out, _, e = r.Submit(ctx, []api.Launch{again}, api.SubmitOptions{})
+	var logRecords atomic.Int64
+	var subscription api.LogSubscription
+	out, subscription, e = r.Submit(ctx, []api.Launch{again}, api.SubmitOptions{Listener: &api.ListenOptions{Context: ctx, OnLog: func(context.Context, api.LaunchLog) error { logRecords.Add(1); return nil }}})
 	if e != nil || out[0].Status != api.Accepted {
 		t.Fatal("slot not reusable", out, e)
 	}
 	done([]api.Launch{again})
+	logCtx, stopLogs := context.WithTimeout(ctx, 5*time.Second)
+	logs, logErr := subscription.Wait(logCtx)
+	stopLogs()
+	if logErr != nil || logs.Reason != api.ListenerSourcesClosed || logRecords.Load() == 0 {
+		t.Fatalf("live listener: %+v %v", logs, logErr)
+	}
+	t.Log("LIVE_LOG_LISTENER_PASS: launch/combined sources closed without changing execution")
 	if e = r.Reconcile(ctx); e != nil {
 		t.Fatal(e)
 	}

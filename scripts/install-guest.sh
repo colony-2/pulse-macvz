@@ -5,13 +5,13 @@ set +x
 umask 077
 bundle=$1
 [[ $(uname -s) == Darwin && $(uname -m) == arm64 && $EUID == 0 ]]
-mkdir -p /var/db/pulse-tart
-chmod 700 /var/db/pulse-tart
+mkdir -p /var/db/pulse-macvz
+chmod 700 /var/db/pulse-macvz
 export HOME=/var/root
 export PATH=/nix/var/nix/profiles/default/bin:/usr/bin:/bin:/usr/sbin:/sbin
 if ! command -v nix >/dev/null; then
   # Fixed installer version and digest; upstream Nix selection is embedded in this release.
-  installer=/var/db/pulse-tart/nix-installer
+  installer=/var/db/pulse-macvz/nix-installer
   curl --fail --location --retry 3 --max-time 300 'https://github.com/DeterminateSystems/nix-installer/releases/download/v3.24.1/nix-installer-aarch64-darwin' -o "$installer"
   echo '34199f983d1a08e76a4fb33b28691faa637fc4a8677b4de20bd951126e1bdada  '"$installer" | shasum -a 256 -c -
   chmod 700 "$installer"

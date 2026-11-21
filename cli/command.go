@@ -12,7 +12,7 @@ import (
 )
 
 // NewCommand constructs the complete standalone CLI with setup, upgrade, status,
-// images, and server subcommands. version is the host executable's version.
+// images, logs, and server subcommands. version is the host executable's version.
 func NewCommand(version string) *cobra.Command {
 	return servercli.NewCommand(version)
 }
@@ -43,3 +43,6 @@ func NewStatusCommand() *cobra.Command {
 // NewImagesCommand reports worker VMs, base images, and cached templates without
 // opening a controller or modifying VMs/configuration.
 func NewImagesCommand() *cobra.Command { return servercli.NewImagesCommand() }
+
+// NewLogsCommand reads retained per-launch output without opening a controller.
+func NewLogsCommand() *cobra.Command { return servercli.NewLogsCommand() }

@@ -7,7 +7,7 @@ umask 077
 . /etc/os-release
 [[ $ID == ubuntu && ( $VERSION_ID == 24.04 || $VERSION_ID == 26.04 ) ]]
 version=$1
-[[ ! -e /var/db/pulse-tart/intent && ! -e /var/lib/pulse-docker/disk-ready ]]
+[[ ! -e /var/db/pulse-tart/intent && ! -e /var/db/pulse-macvz/intent && ! -e /var/lib/pulse-docker/disk-ready ]]
 export DEBIAN_FRONTEND=noninteractive
 if ! command -v docker >/dev/null || [[ $(docker --version) != *" $version,"* ]]; then
  apt-get update

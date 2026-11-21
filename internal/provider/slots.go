@@ -490,7 +490,7 @@ func (p *Provider) chooseSlot(ctx context.Context, l compute.Launch, spec backen
 		spec.Image = s.LocalName
 		spec.StartupScript.Env = map[string]string{"PULSE_LAUNCH_ID": l.LaunchID, "PULSE_JOBDB": l.Job.JobDB, "PULSE_JOBDB_INSTANCE_ID": l.Job.InstanceID, "PULSE_TENANT_ID": l.Job.TenantID, "PULSE_JOB_ID": l.Job.JobID}
 
-		payload, _ := json.Marshal(envelope{1, l.LaunchID, workerProcess(l, p.base(t.image), spec.CPU, spec.Memory)})
+		payload, _ := json.Marshal(envelope{1, l.LaunchID, p.workerProcess(l, p.base(t.image), spec.CPU, spec.Memory)})
 		spec.StartupScript.Content = startup(payload)
 		// Read identity from this clone's snapshot, not an old host-side cache.
 		// Published replacements deliberately have fresh MAC and boot identities.

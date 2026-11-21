@@ -93,7 +93,7 @@ func (f *dockerFake) Exec(_ context.Context, name, uid string, script []byte) ([
 		}
 		return []byte("PULSE_HANDOFF_OK"), nil
 	}
-	if strings.Contains(s, "/var/db/pulse-tart/fingerprint") {
+	if strings.Contains(s, "$state/fingerprint") {
 		if f.receipt {
 			return []byte("PULSE_HANDOFF_OK"), nil
 		}

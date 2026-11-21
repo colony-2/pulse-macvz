@@ -57,6 +57,7 @@ for capability in $capabilities; do
   esac
 done
 test ! -e /var/db/pulse-tart/intent
+test ! -e /var/db/pulse-macvz/intent
 test ! -e /Library/LaunchDaemons/dev.pulse-tart.guest.plist
 /nix/var/nix/profiles/default/bin/nix --extra-experimental-features nix-command store ping --store daemon
 # All prep timers must be gone BEFORE the provider can snapshot this guest.

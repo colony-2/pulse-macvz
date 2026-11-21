@@ -29,7 +29,7 @@ func persistedFlag(name string) bool {
 
 func pathFlag(name string) bool {
 	switch name {
-	case "state-dir", "vm-home", "runner", "tls-ca", "tls-cert", "tls-key", "shared-key-file":
+	case "log-directory", "state-dir", "vm-home", "runner", "tls-ca", "tls-cert", "tls-key", "shared-key-file":
 		return true
 	}
 	return false

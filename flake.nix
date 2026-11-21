@@ -14,10 +14,10 @@
       worker = c2j.packages.${system}.c2j.overrideAttrs (_: { vendorHash = workerVendorHash; });
       runner = pkgs.buildGoModule {
         pname = "pulse-tart-guest";
-        version = "0.1.0";
+        version = "0.2.0";
         src = ./guest;
         postPatch = "cp go.mod.txt go.mod; cp go.sum.txt go.sum";
-        vendorHash = "sha256-A30hPGRobiMTkKA/bDtVNiz9bNFQ/iqy7FZqLpCtHNE=";
+        vendorHash = "sha256-jWU7AIvAVHHP45vrumsBwhUNJydCw35HQ7n8CfXOb8E=";
         env.CGO_ENABLED = "0";
         postInstall = ''mv $out/bin/guest $out/bin/pulse-tart-guest'';
       };

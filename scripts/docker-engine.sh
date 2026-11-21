@@ -18,6 +18,7 @@ fi
 if [[ ! -f $root/disk-ready ]]; then
  systemctl stop docker.service docker.socket || true
  test ! -e /var/db/pulse-tart/intent
+ test ! -e /var/db/pulse-macvz/intent
  # Source images may cache software, but runtime identities are allocation-local.
  rm -rf /var/lib/docker /var/lib/containerd
  install -d -m 700 /var/lib/docker

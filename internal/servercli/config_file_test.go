@@ -353,3 +353,25 @@ func TestConfigurationLocationMigration(t *testing.T) {
 		})
 	}
 }
+
+func TestLoggingConfigPersistsAndResolvesRelativeDirectory(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "provider.json")
+	if err := os.WriteFile(path, []byte(`{"version":1,"flags":{"log-directory":"logs","log-compress":"false","log-segment-mib":"8","log-backups":"2"}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cmd := providerCommand("setup", "test", func(_ context.Context, o serverOptions) error {
+		c := o.config.Logging
+		if c.Directory != filepath.Join(filepath.Dir(path), "logs") || *c.Compress || c.SegmentMiB != 8 || c.Backups != 2 {
+			t.Fatalf("bad log config: %+v", c)
+		}
+		return nil
+	})
+	cmd.SetArgs([]string{"--config", path})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(path)
+	if err != nil || !bytes.Contains(b, []byte(`"log-compress": "false"`)) {
+		t.Fatal("logging options not saved", err)
+	}
+}

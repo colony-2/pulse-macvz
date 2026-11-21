@@ -4,9 +4,10 @@ set -euo pipefail
 set +x
 umask 077
 [[ $EUID == 0 ]]
-mkdir -p /var/db/pulse-tart
-chmod 700 /var/db/pulse-tart
-[[ ! -f /var/db/pulse-tart/intent ]] || exit 0
+[[ ! -e /var/db/pulse-tart/intent && ! -e /var/db/pulse-tart/fingerprint ]] || { echo "Legacy execution state exists; refusing migration" >&2; exit 1; }
+mkdir -p /var/db/pulse-macvz
+chmod 700 /var/db/pulse-macvz
+[[ ! -f /var/db/pulse-macvz/intent ]] || exit 0
 [[ -x /opt/pulse-tart/bin/pulse-tart-guest && -x /opt/pulse-tart/bin/c2j ]]
 if [[ $(uname -s) == Linux ]]; then
 cat > /etc/systemd/system/pulse-tart-guest.service <<'UNIT'

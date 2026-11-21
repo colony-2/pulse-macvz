@@ -658,7 +658,7 @@ func (p *Provider) reconcilePairs(ctx context.Context) error {
 			pair.Phase = "ready"
 		case "handoff-intent":
 			// Observe the exact durable receipt. Never resubmit the envelope after ambiguity.
-			script := "set -eu\ntest \"$(sudo -n cat /var/db/pulse-tart/fingerprint)\" = " + shell(pair.DeliveryHash) + "\nsudo -n /bin/bash /opt/pulse-tart-image/bootstrap-guest.sh\necho PULSE_HANDOFF_OK\n"
+			script := "set -eu\n" + guestStateScript + "test \"$(sudo -n cat $state/fingerprint)\" = " + shell(pair.DeliveryHash) + "\nsudo -n /bin/bash /opt/pulse-tart-image/bootstrap-guest.sh\necho PULSE_HANDOFF_OK\n"
 			out, e := b.Exec(ctx, pair.Primary.Name, pair.PrimaryUID, []byte(script))
 			if e != nil {
 				observationCause = backendError("observe Docker handoff receipt Exec", e)
@@ -833,7 +833,7 @@ func (p *Provider) submitDocker(ctx context.Context, l api.Launch, hash string) 
 		if wants {
 			b.Capabilities = append(slices.Clone(b.Capabilities), "docker")
 		}
-		proc := workerProcess(l, b, pair.Primary.CPU, pair.Primary.Memory-512)
+		proc := p.workerProcess(l, b, pair.Primary.CPU, pair.Primary.Memory-512)
 		if wants {
 			proc.Env["DOCKER_HOST"] = "unix:///var/run/docker.sock"
 			proc.Env["TESTCONTAINERS_HOST_OVERRIDE"] = "127.0.0.1"
@@ -857,7 +857,7 @@ func (p *Provider) submitDocker(ctx context.Context, l api.Launch, hash string) 
 		if b.OS == "linux" {
 			decode = "-d"
 		}
-		script := fmt.Sprintf("set -eu\nset +x\numask 077\nprintf '%%s' %s | base64 %s | sudo -n /opt/pulse-tart/bin/pulse-tart-guest ingest\nsudo -n /bin/bash /opt/pulse-tart-image/bootstrap-guest.sh\necho PULSE_HANDOFF_OK\n", shell(base64.StdEncoding.EncodeToString(payload)), decode)
+		script := "set -eu\n" + guestStateScript + fmt.Sprintf("set +x\numask 077\nprintf '%%s' %s | base64 %s | sudo -n /opt/pulse-tart/bin/pulse-tart-guest ingest\nsudo -n /bin/bash /opt/pulse-tart-image/bootstrap-guest.sh\necho PULSE_HANDOFF_OK\n", shell(base64.StdEncoding.EncodeToString(payload)), decode)
 		out, e := p.Backend.(dockerBackend).Exec(ctx, pair.Primary.Name, pair.PrimaryUID, []byte(script))
 		if e == nil && strings.Contains(string(out), "PULSE_HANDOFF_OK") {
 			r.Outcome = api.Accepted
@@ -1102,3 +1102,11 @@ func (p *Provider) DockerAllocations() ([]DockerStatus, error) {
 func (p *Provider) primaryReady(ctx context.Context, pair *PairRecord) bool {
 	return p.primaryReadyDetail(ctx, pair) == nil
 }
+
+const guestStateScript = `version=$(sudo -n /opt/pulse-tart/bin/pulse-tart-guest version)
+case "$version" in
+ 'pulse-tart-guest 0.1.0') state=/var/db/pulse-tart; sudo -n test ! -e /var/db/pulse-macvz ;;
+ 'pulse-macvz-guest 0.2.0') state=/var/db/pulse-macvz; sudo -n test ! -e /var/db/pulse-tart ;;
+ *) exit 1 ;;
+esac
+`

@@ -15,6 +15,9 @@ import (
 type serverOptions struct {
 	mode, backend, owner, stateDir, vmHome, runner string
 	c2j                                            string
+	logDirectory                                   string
+	logging                                        macvz.LoggingConfig
+	logCompress                                    bool
 	capacity                                       capacityOptions
 	poll, bootstrap                                time.Duration
 	endpoint                                       macvz.DockerEndpoint
@@ -37,7 +40,7 @@ func NewCommand(version string) *cobra.Command {
 func newCommand(run func(context.Context, serverOptions) error) *cobra.Command {
 	root := &cobra.Command{Use: "pulse-macvz", Short: "Run a Pulse VM provider", SilenceUsage: true, SilenceErrors: true}
 	root.AddCommand(providerCommand("server", "Serve a VM provider through Pulse's outbound or inbound plugin", run))
-	root.AddCommand(NewSetupCommand(), NewUpgradeCommand(), NewStatusCommand(), NewImagesCommand())
+	root.AddCommand(NewSetupCommand(), NewUpgradeCommand(), NewStatusCommand(), NewImagesCommand(), NewLogsCommand())
 	return root
 }
 
@@ -68,7 +71,7 @@ func providerCommand(name, short string, run func(context.Context, serverOptions
 			}
 			o.log = cmd.ErrOrStderr()
 			resolve := o.resolve
-			if name == "status" || name == "images" {
+			if name == "status" || name == "images" || name == "logs" {
 				resolve = o.resolvePool
 			}
 			if err := resolve(); err != nil {
@@ -77,15 +80,21 @@ func providerCommand(name, short string, run func(context.Context, serverOptions
 			if err := run(cmd.Context(), o); err != nil {
 				return err
 			}
-			if name != "server" && name != "status" && name != "images" {
+			if name != "server" && name != "status" && name != "images" && name != "logs" {
 				return saveConfiguration(cmd, o.configPath)
 			}
 			return nil
 		},
 	}
 	f := server.Flags()
+	f.StringVar(&o.logDirectory, "log-directory", "", "Private per-launch log archive (default <vm-home>/logs)")
+	f.IntVar(&o.logging.SegmentMiB, "log-segment-mib", 16, "Guest log rotation size in MiB (1–64)")
+	f.IntVar(&o.logging.Backups, "log-backups", 3, "Retained rotated guest log segments (1–16)")
+	f.BoolVar(&o.logCompress, "log-compress", true, "Compress rotated guest logs and host archive batches")
+	f.Int64Var(&o.logging.MaxBytes, "log-max-bytes", 1<<30, "Host retained-log byte budget per owner scope")
+	f.DurationVar(&o.logging.MaxAge, "log-max-age", 7*24*time.Hour, "Completed host log retention")
 	f.StringVarP(&o.configPath, "config", "f", "", "Configuration file (default ~/.pulse/vz/provider.json; explicit flags override saved settings)")
-	if name != "server" && name != "status" && name != "images" {
+	if name != "server" && name != "status" && name != "images" && name != "logs" {
 		f.DurationVar(&o.managementTimeout, "timeout", 2*time.Hour, "Maximum preparation/drain time; timeout never cancels accepted jobs")
 		f.StringVar(&o.progressMode, "progress", "auto", "Preparation display: auto, interactive, or linear (redirected output is always linear)")
 	}
@@ -149,7 +158,7 @@ func (o *serverOptions) resolvePool() error {
 		}
 		o.vmHome = filepath.Join(home, ".pulse", "vz")
 	}
-	for _, value := range []*string{&o.stateDir, &o.vmHome, &o.runner, &o.transport.ca, &o.transport.cert, &o.transport.key, &o.transport.sharedKeyFile} {
+	for _, value := range []*string{&o.logDirectory, &o.stateDir, &o.vmHome, &o.runner, &o.transport.ca, &o.transport.cert, &o.transport.key, &o.transport.sharedKeyFile} {
 		if *value, err = absolutePath(*value); err != nil {
 			return err
 		}
@@ -157,6 +166,12 @@ func (o *serverOptions) resolvePool() error {
 	o.config, err = o.capacity.config(o.owner, o.stateDir, o.c2j, o.poll, o.bootstrap)
 	if err != nil {
 		return err
+	}
+	o.logging.Directory = o.logDirectory
+	o.logging.Compress = &o.logCompress
+	o.config.Logging, err = o.logging.Normalize()
+	if err != nil {
+		return fmt.Errorf("invalid log storage or retention configuration")
 	}
 	if o.config.NeedsDockerEndpoint() {
 		if err := o.endpoint.Validate(); err != nil {

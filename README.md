@@ -151,3 +151,29 @@ python3 scripts/test-vz-docker-verified.py
 
 See [VZ setup and qualification](docs/vz-testing.md) and
 [Docker lifecycle](docs/docker-library.md). Live VM tests are opt-in.
+
+### Per-launch logs
+
+The provider API supports optional `launch` progress and `combined` worker-output
+listeners. Logging does not change admission or cancel jobs. Guest capture and
+host archival continue independently of listeners, so a restarted provider can
+resume copying retained output from surviving VMs.
+
+Host archives default to `~/.pulse/vz/logs`, partitioned by owner scope and hashed
+LaunchID. Inspect copied output without opening a second controller:
+
+```sh
+pulse-macvz logs --launch-id LAUNCH_ID
+```
+
+Use `Config.Logging.Directory` when embedding, or `--log-directory` on the CLI.
+`--log-segment-mib`, `--log-backups`, `--log-compress`, `--log-max-bytes`, and
+`--log-max-age` control rotation and retention. Defaults are 16 MiB guest segments,
+three compressed backups, a 1 GiB host budget per owner scope, and seven days for
+completed archives. Output can be partial after retention, storage failure, or VM
+loss; the API and local reader report this explicitly.
+
+Existing images need `upgrade` to install the new capture helper. They remain
+executable and report worker logs unavailable until upgraded. Old callbacks do
+not reconnect automatically: the provider API has no attach-existing-launch
+operation. See [logging design and limits](docs/provider-logging-proposal.md).

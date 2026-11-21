@@ -24,14 +24,14 @@ import (
 	api "github.com/colony-2/pulse-provider-api"
 )
 
-func TestSubmitLoggingUnavailableDoesNotReplaceAdmissionError(t *testing.T) {
+func TestSubmitLoggingClosedDoesNotReplaceAdmissionError(t *testing.T) {
 	r := &Runtime{closed: true}
 	results, sub, err := r.Submit(t.Context(), []api.Launch{{LaunchID: "launch"}}, api.SubmitOptions{Listener: &api.ListenOptions{}})
 	if results != nil || !errors.Is(err, ErrClosed) || sub == nil {
 		t.Fatal(results, sub, err)
 	}
 	logs, logErr := sub.Wait(t.Context())
-	if logs.Reason != api.ListenerSourceUnavailable || !errors.Is(logErr, api.ErrLogSource) {
+	if logs.Reason != api.ListenerProviderClosed || !errors.Is(logErr, api.ErrProviderClosed) {
 		t.Fatal(logs, logErr)
 	}
 	_, sub, err = r.Submit(t.Context(), nil, api.SubmitOptions{})
@@ -71,6 +71,11 @@ func TestRecoveryFailureStillReconcilesAndReportsDeliveryHealth(t *testing.T) {
 	defer store.Close()
 	b := &failingRecoveryBackend{recovery: errors.New("recovery failed"), inventory: errors.New("inventory failed"), health: errors.New("delivery failed")}
 	r := &Runtime{p: &engine.Provider{Store: store, Backend: b}}
+	defer func() {
+		if r.archive != nil {
+			r.archive.Close()
+		}
+	}()
 	err = r.Reconcile(t.Context())
 	for _, cause := range []error{b.recovery, b.inventory, b.health} {
 		if !errors.Is(err, cause) {
@@ -178,6 +183,11 @@ func TestMaintenanceDoesNotConflateHistoricalHealthWithReconciliation(t *testing
 	defer store.Close()
 	b := &failingRecoveryBackend{inventory: errors.New("inventory failed"), health: errors.New("historical delivery failed")}
 	r := &Runtime{p: &engine.Provider{Store: store, Backend: b}}
+	defer func() {
+		if r.archive != nil {
+			r.archive.Close()
+		}
+	}()
 	err = r.ReconcileMaintenance(t.Context())
 	if !errors.Is(err, b.inventory) || errors.Is(err, b.health) {
 		t.Fatal("maintenance lost reconciliation error or included stale health", err)

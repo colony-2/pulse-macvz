@@ -1,341 +1,188 @@
-# Provider logging proposal
+# Provider launch logging
 
-Status: logging implementation proposed. The API migration is complete; logging
-currently returns explicit unavailable subscriptions and starts no readers.
+Status: implemented against provider API and plugin revision `2919f1ed5e42`
+(protocol baseline 3). This document records the implementation and its limits.
 
-Implement opt-in, per-launch logs for direct library users and both plugin modes.
-Start with structured launch progress and the guest's existing combined worker
-output. Keep log delivery independent of admission, job execution, and VM cleanup.
-Pool preparation needs a separate progress interface because it usually happens
-before any launch exists.
+## API and lifetime
 
-## Contract and migration
+`Runtime.Submit(ctx, launches, api.SubmitOptions)` returns admission results,
+an optional `api.LogSubscription`, and the admission error. A nil listener returns
+nil and allocates no subscription readers or callback workers. The provider's
+background archive collector and the guest capture service operate independently
+of subscriptions; they preserve output for subsequent local inspection.
 
-Reviewed upstream GitHub `main` at
-[`2919f1ed5e42893f759af0fdd930c1a66824887b`](https://github.com/colony-2/pulse-provider-api/tree/2919f1ed5e42893f759af0fdd930c1a66824887b),
-including [the log types](https://github.com/colony-2/pulse-provider-api/blob/2919f1ed5e42893f759af0fdd930c1a66824887b/launch_logs.go)
-and [SDK lifecycle and migration rules](https://github.com/colony-2/pulse-provider-api/blob/2919f1ed5e42893f759af0fdd930c1a66824887b/plugin/README.md#launch-log-listeners).
-This repository pins both modules to `2919f1ed5e42`.
+A requested listener receives admission decisions and observed persisted execution
+phase transitions in `launch`, and unmodified worker bytes in `combined`.
+`stdout` and `stderr` are explicitly unavailable because capture combines them.
+For macOS with Docker, output comes from the macOS primary, not the Docker daemon
+or Linux companion. Linux allocations expose their primary's worker output.
 
-The required method becomes:
+Launch events contain only allowlisted status/phase values. They do not contain
+lease bytes, process arguments, environment variables, guest scripts, arbitrary
+backend errors, or credential URLs. The worker's own output is not redacted or
+reformatted. Preparation/download telemetry remains the separate preparation
+progress API. Individual SSH attempts and native start/restore operations are
+not currently emitted as separate launch events.
 
-```go
-Submit(context.Context, []api.Launch, api.SubmitOptions) (
-    []api.Submission, api.LogSubscription, error,
-)
+Listener lifetime is independent of the admission context. Duration zero means
+no cutoff. Stop, context cancellation, callback failure, a slow callback, source
+loss, or provider Close terminates observation without canceling accepted work.
+Callbacks may reenter Stop, List, and Close. Coverage and terminal results are
+copied. Normal closure drains queued records; abnormal termination discards them.
+A native output closure is not a claim that the job succeeded.
+
+Limits per Runtime are 32 resident subscriptions, 64 queued records per
+subscription, and a five-second callback deadline. Each callback has a cancelable
+deadline context. Records contain at most 4096 bytes, preserving NULs and partial
+UTF-8. Sequence numbers start at one per launch across sources and count callback
+dispatch. Timestamps are host observation times. A callback that ignores
+cancellation retains its capacity reservation until it returns; Done and Wait do
+not wait for it, and no replacement callback goroutines are created.
+
+## Storage and configuration
+
+Guest capture uses the versioned worker layout:
+
+```
+/var/db/pulse-macvz/
+  intent, fingerprint, launch.json, complete, service.lock, ingest.lock
+  logs/<sha256-of-launch-id>/manifest.json
+  logs/<sha256-of-launch-id>/output.log
+  logs/<sha256-of-launch-id>/output-<rotation-timestamp>.log.gz
 ```
 
-A nil listener must return a nil subscription and create no logging readers or
-callback workers. A requested listener gets a handle even when logging fails;
-those failures must not replace admission results or errors. The listener has
-its own context and duration, independent of the Submit context. Zero duration
-means no lifetime cutoff. Callbacks can occur before Submit returns.
+The helper owns capture independently of Pulse and of listeners. A bounded queue
+feeds `gopkg.in/natefinch/lumberjack.v2` v2.2.1. By default it rotates at 16 MiB,
+retains three backups plus the active segment, and compresses backups. The limit
+counts encoded journal bytes (including framing/base64), not raw worker bytes.
+Compression/backup cleanup are asynchronous and may temporarily retain both
+representations. This is a retention target, not an instantaneous disk quota.
+Storage failure or queue overflow continues draining stdout/stderr and preserves
+the worker's exit status; missing byte ranges are observable.
 
-The root API and plugin modules have been upgraded together using the upstream
-Git revision, without a local replacement. Public Submit callers, wrappers,
-fakes, and tests use the new signature. A requested listener currently receives
-an already-completed subscription reporting all sources unavailable; it invokes
-no callbacks and never changes admission outcomes. Replace that stub when
-implementing this proposal.
-Both plugin peers must support protocol baseline 3; there is no baseline-2
-downgrade. Coordinate the Pulse collector/host update with this provider.
-At the reviewed revision, the plugin's own go.mod still pins an older root API;
-the upstream documentation explicitly distinguishes candidate checks from an
-independently released SDK. Verify the selected module pair in a clean consumer
-build before rollout. A matching explicit root pin can resolve the dependency
-through Go module version selection, but does not establish an upstream release.
+Frames contain absolute raw-byte offsets, bounded binary payloads, and CRC32
+integrity checks. A private versioned manifest binds the stream to its LaunchID,
+records the produced byte count and known loss, and distinguishes live output
+from explicit closure. Readers handle uncompressed and gzip segments and deduplicate
+by offset. Temporary EOF is not closure. Torn frames and expired history produce
+gaps instead of fabricated success.
 
-## What to stream
+Host copies live at:
 
-| Source | Initial implementation |
-| --- | --- |
-| `launch` | Base selection, admission decision, allocation assignment, native start/restore, SSH readiness, requested Docker/KVM readiness, guest handoff, and relevant failures. |
-| `combined` | Unmodified payload bytes from the assigned primary guest's per-launch log under `/var/db/pulse-macvz/logs/<launch-key>/`, with the legacy path supported for existing images as described below. |
-| `stdout`, `stderr` | Explicitly unavailable initially: the guest currently writes both streams to one file. |
+```
+<directory>/<owner-scope>/<sha256-of-launch-id>/
+  identity.json
+  manifest.json
+  <start-offset>-<end-offset>.log.gz
+```
 
-`guest/main.go` already redirects both executor streams into `worker.log`.
-Its current directory is `/var/db/pulse-tart`; the implementation will introduce
-the new guest layout together with logging support.
-Do not attempt to reconstruct their origin or label combined bytes as stdout.
-For macOS plus Docker, execution output belongs to the macOS primary guest;
-companion readiness belongs to `launch`. Do not stream Docker daemon logs as
-executor output. For Linux allocations, use their Linux primary guest.
+`identity.json` stores the immutable VM UID/name and JobDB instance, tenant, and
+job identifiers, without the lease or assignment envelope. Host copies use
+bounded, atomically published batches, optionally gzip-compressed, rather than
+keeping a Lumberjack writer and compression goroutine for every historical job.
+Data is synced before the durable cursor advances. Deterministic range filenames
+make replay after a crash idempotent. Scope and per-launch directories are private.
+Tenant metadata is correlation information, not an access-control boundary.
 
-Launch events should carry stable, allowlisted fields in their Data payload:
-event name, phase, resolved base, VM role, elapsed time, and a safe failure code.
-Use transitions rather than repeating identical reconciliation messages. A
-declined launch can receive its admission explanation, then close its launch
-source and disclose execution output as unavailable. An uncertain submission
-must remain uncertain; listening must never trigger a second dispatch.
-
-## Native subscription implementation
-
-Add an internal subscription manager owned by Runtime. The SDK handles transport,
-but direct Go callers need the same semantics; the reviewed SDK's subscription
-implementation is private, not an exported native-provider helper.
-
-Register the batch listener before dispatch and associate accepted or uncertain
-launches with immutable VM UIDs and LaunchIDs. Copy retained inputs. Keep listener
-state out of durable VM/job records. Separate event production from delivery:
-enqueue bounded data under short internal locks, then invoke callbacks outside
-all runtime, provider, and VM locks. A callback must be able to call Stop or
-read provider status without deadlocking.
-
-Use one serial callback worker per subscription. Start with limits matching the
-SDK defaults: 32 resident subscriptions, 64 queued records each, and a five-second
-callback deadline. Enforce native bounds even when a transport also supplies
-bounds. Queue exhaustion, callback failure, and slow listeners terminate the
-subscription with the corresponding typed reason. Never block VM operations on
-a consumer. A callback that ignores cancellation retains its capacity reservation
-until it returns; do not replace it with an unlimited sequence of workers.
-
-Split reads into at most 4096-byte records before assigning consecutive sequence
-numbers per launch across all sources. Preserve arbitrary bytes, including NULs
-and partial UTF-8, without line buffering or display prefixes. Stamp file-derived
-records with host observation time; do not imply that this is the original guest
-write time. Source prefixes are consumer display metadata.
-
-Implement Stop, Done, Wait, Coverage, duration, callback cancellation, and runtime
-close with stable terminal results. Normal source closure drains already queued
-records. Other termination reasons discard the pending queue and cancel the
-in-flight callback context. Wait's context only bounds that Wait. Coverage must
-be copied, report unavailable/interrupted sources honestly, and count sequence
-numbers at callback dispatch rather than callback completion. Output closure is
-not a claim that the workload succeeded.
-
-## Guest state directory migration
-
-Newly prepared macOS and Linux images will use `/var/db/pulse-macvz`, with
-logs partitioned by launch as described below. This is guest storage, separate
-from the host's `~/.pulse/vz`.
-The old directory name is a compatibility detail, not a Tart runtime dependency.
-
-Migrate the whole worker state directory together. It also holds the assignment,
-fingerprint, execution intent, completion marker, and service/ingest locks; moving
-only the log would leave delivery and recovery split across two layouts. Update
-`guest/main.go`, guest installation/bootstrap and image cleanup scripts, host
-handoff/completion checks, Docker fingerprint checks, and diagnostic readers.
-Retain private ownership and permissions.
-
-Use an explicit guest layout version, recorded in prepared-image metadata and
-reported by the guest helper. The provider selects one layout for a VM before
-handoff, and every state reader and writer uses that selection. Include the
-layout version in prepared-template compatibility checks so an old suspended
-template cannot be mistaken for a new-layout template.
-
-Existing images and running jobs keep their original directory. The updated host
-supports their legacy layout until the operator refreshes the images with
-`upgrade`; `setup` continues to reuse compatible prepared images. Do not move
-active state, reset execution-intent markers, or start a second guest service to
-perform this migration. New images are built with the new layout rather than
-rewriting a running VM. Install the updated host before using new-layout images.
-
-For older images without layout metadata, permit the legacy directory only when
-the new layout is absent and the VM/assignment identity checks pass. A permission
-error, corrupt marker, or mismatched LaunchID in the new directory is an error,
-not a reason to fall back. If both layouts contain assignment state, report the
-ambiguity and do not merge them or replay execution. Do not add a permanent
-symlink or write duplicate state to both locations.
-
-Log capture follows the selected layout. Legacy-path support does not imply that
-an older helper supports streaming: if it lacks the read-only logging operation,
-report execution coverage as unavailable until the image is upgraded. Keep
-legacy readers explicitly identified so they can be removed in a later deliberate
-compatibility change.
-
-## Per-launch storage, rotation, and recovery
-
-Today `worker.log` is an append-only file with no size limit. It is implicitly
-associated with a one-shot VM, not named by LaunchID, and disappears when that
-VM is deleted. The new design should retain bounded output by launch explicitly.
-
-Use `/var/db/pulse-macvz/logs/<launch-key>/` for guest capture, with a private
-manifest containing the original LaunchID, stream identity, format version,
-retained byte range, closure information, and any known loss. Derive launch-key
-from a collision-resistant hash of the LaunchID rather than placing arbitrary
-IDs directly in paths. Host copies live under
-`<log-directory>/<owner-scope>/<launch-key>/` (default log directory:
-`~/.pulse/vz/logs`) and additionally record the immutable
-VM UID and JobDB instance/tenant/job association. Never include the lease or
-assignment envelope. Tenant metadata is correlation information, not authorization
-to read another tenant's logs.
-
-Expose the host root through a public `Config.Logging` configuration, including
-`LoggingConfig.Directory`, so embedding Pulse can supply its own destination:
+The default directory is `<VZ home>/logs`, normally `~/.pulse/vz/logs`. Go callers
+can configure it without changing pool identity:
 
 ```go
-cfg := macvz.Config{
-    Logging: &macvz.LoggingConfig{Directory: "/path/to/provider-logs"},
+cfg.Logging = macvz.LoggingConfig{
+    Directory: "/path/to/private/provider-logs",
+    SegmentMiB: 16,
+    Backups: 3,
+    MaxBytes: 1 << 30,
+    MaxAge: 7 * 24 * time.Hour,
+    // Compress: nil means true; a pointer to false disables compression.
 }
 ```
 
-These are proposed fields, not existing API. A nil logging configuration or empty
-directory selects `<VZ home>/logs`, normally `~/.pulse/vz/logs`. Add a persisted
-`--log-directory` option to server, setup, and upgrade, including embedded Cobra
-commands. Explicit flags override saved values; saved relative paths resolve
-against the configuration file, following the existing path-option rules. Direct
-Go callers supply an absolute path when overriding the default. Keep scope and
-launch subdirectories even with a custom root. Create private directories and
-files; reject an unusable explicitly configured destination during initialization
-without exposing credentials. Later storage failures affect logging, not accepted
-work. Changing the root does not move or delete old logs automatically; document
-how to retain access to the previous location. This host setting does not change
-the guest's fixed state layout or require rebuilding prepared images.
+Zero values select defaults. Segment size is 1–64 MiB and backup count is 1–16.
+Direct Go callers must supply an absolute override directory. Directory creation
+or later storage failures affect logging, never admission. A pre-existing
+permissive or symlinked scope/stream directory is rejected for writes.
 
-Use an existing library for rotation rather than maintaining our own rename and
-backup cleanup code. The initial candidate is
-[`gopkg.in/natefinch/lumberjack.v2`](https://github.com/natefinch/lumberjack): it is
-an `io.Writer` with size rotation and backup retention, intended for one writer
-process per file set. Pin a reviewed version. One guest helper owns each launch's
-writer; the host never writes into the guest's rotating files. Do not put the
-library behind slog or another text formatter: executor output is arbitrary bytes.
+The shared Cobra commands expose and persist:
 
-Proposed configurable defaults are 16 MiB of uncompressed data per segment and
-three backups plus the active segment, approximately 64 MiB of uncompressed
-history per launch after cleanup. This retains
-the newest output, not the complete history of an arbitrarily verbose job.
-Enable Lumberjack's `Compress` option by default for guest capture and host
-copies: rotated segments become gzip files while the current segment remains
-uncompressed. Compression and rotation cleanup are asynchronous, so compression
-can temporarily retain both representations and this is a retention target rather
-than an instantaneous filesystem quota. Expose compression and rotation limits
-alongside Directory in LoggingConfig, with an explicit default-versus-false value
-for compression (for example `*bool`), and corresponding persisted CLI options.
-Guest rotation settings are applied to future launches through versioned helper
-configuration; host Directory is never passed into the guest. Add a host-wide
-retained-byte budget (initially 1 GiB, measured in actual stored bytes) and
-seven-day completed-launch retention, enforced at startup and periodically;
-per-file rotation alone does not bound the number of launches. Evict completed
-launches first and explicitly record any active-stream history lost to the
-aggregate budget. Expiry and eviction must never restart or cancel execution.
+- `--log-directory`: host archive root.
+- `--log-segment-mib`: guest rotation size, default 16.
+- `--log-backups`: retained guest backups, default 3.
+- `--log-compress`: guest backup and host batch compression, default true.
+- `--log-max-bytes`: host archive budget per owner scope, default 1 GiB.
+- `--log-max-age`: completed archive retention, default 168h.
 
-Rotation is not a replay protocol. Put a small, versioned framing adapter above
-the writer: bounded records contain stable stream identity, absolute payload
-offset, length, and integrity information. Payload bytes remain unchanged when
-delivered to the API. Recover cursors from valid persisted frames and publish
-sidecar manifests atomically; ignore a torn final frame and report the gap. Do
-not derive a resume cursor from a rotated filename, modification time, or the
-API's subscription-local Sequence. Test the library's rotation/read races and
-restart behavior before accepting it as the storage component.
+Saved relative paths resolve against the configuration file; explicit flags win.
+Guest rotation options travel as versioned helper controls for future launches
+and are removed from the worker environment. The host directory never travels
+to the guest. Changing the directory does not relocate older archives. Use the
+old `--log-directory` to inspect those files.
 
-Readers support both uncompressed and gzip segments and identify them by their
-framed stream/offset metadata. During compression, treat the two representations
-as the same segment, never duplicate output, and rediscover the segment if its
-path changes before opening. Resume offsets refer to uncompressed payload bytes;
-reading a gzip segment may require decompressing and skipping to that offset.
-Bound decompression memory and validate integrity before trusting recovered data.
-Compression errors must remain observable without losing the original segment
-or being reported as successful archival completion.
+Retention runs at collector startup and between collection passes. It counts
+stored compressed bytes, removes expired completed streams, then evicts oldest
+completed streams before active ones when over budget. Small consecutive host batches coalesce into bounded files to avoid a file
+per poll. There are also 4096-stream and 65536-file limits. An active eviction interrupts logging, not the job. The budget is a
+cleanup target; in-flight batches can temporarily exceed it.
 
-The guest capture writer continues independently of Pulse and of listeners.
-When Pulse restarts, it may recover the retained guest ranges for owned VMs into
-the bounded host store. Persist the host's copied cursor only after the data it
-describes is durable. If the requested cursor predates retained data, report the
-missing range instead of silently pretending the stream is complete. Host copies
-allow later retrieval after VM deletion, but cannot recover bytes never copied
-before a VM or disk was lost. VM cleanup gets only a bounded final-copy attempt,
-not an unlimited wait for logging; store partial coverage when necessary.
+## Recovery and VM lifecycle
 
-Persisted output does not revive an old callback subscription. The current API
-has no attach/read-existing-launch method. Propose a separate upstream operation
-that accepts an existing launch identity and opaque cursor, verifies caller
-access, and returns retained data plus gap/closure information. It must never
-call Submit. Until that exists, support storage recovery and a provider-local
-inspection interface without claiming automatic listener reconnection. Remote
-replay requires coordinated changes in Pulse and the provider API.
+The provider collector checks immutable VM identity before each guest read. The
+read-only `logs` helper checks the LaunchID against the queued assignment or
+execution intent and returns at most 64 KiB of payload. The host uses at most
+four concurrent management reads. Collection resumes from the host's durable
+raw-byte cursor after a provider restart and never calls Submit to reattach.
+If reconciliation temporarily holds the store lock, collection continues using
+its previously verified identities.
 
-## Guest capture and VM lifecycle
+On normal execution completion, the guest gives the host up to ten seconds to
+acknowledge durable final output, then proceeds with its normal three-second
+shutdown delay. Acknowledgement is a separate operation that validates the
+LaunchID and final byte count. It does not change the execution result or replay
+work. The provider never holds a VM indefinitely for logging. If the VM stops,
+is deleted, or loses its disk before bytes are copied, the archive can be partial;
+those bytes cannot be recovered from the host. Loss/interruption is not reported
+as a complete stream.
 
-The guest helper owns capture and rotation for the lifetime of the worker;
-listeners only read its stored output. Unlike today's direct file descriptor,
-an `io.Writer` rotation library requires guest-owned stdout/stderr copying.
-Bound the capture queue, keep draining output after storage failure or overflow,
-and report lost ranges. Do not let a failed writer close the worker's output
-pipe or turn a log failure into an execution failure. This changes guest capture,
-not the signed host executable layout, and adds no host Python dependency.
+The guest can keep capturing while Pulse is absent. Recovery requires the VM and
+retained guest data still to exist. Persisted output does not revive a previous
+callback. The current API has no attach-existing-launch operation; remote
+listener replay requires an upstream API addition. For local inspection, without
+opening a controller or acquiring its pool lock:
 
-Add a read-only guest helper operation for following output. It must verify the
-requested LaunchID against the guest's current assignment, open only the fixed
-per-launch log, and emit bounded binary frames for data and explicit closure. It
-must not print the assignment envelope. The host also verifies the VM UID before
-attaching. A warm VM must not expose a previous launch's output; establish a
-fresh per-launch log identity when accepting an assignment and reject mismatches.
+```sh
+pulse-macvz logs --launch-id LAUNCH_ID
+pulse-macvz logs --launch-id LAUNCH_ID --offset 4096 --log-directory /old/log/root
+```
 
-The reader can start before capture exists and follow from the earliest retained
-offset for that launch, reporting any missing prefix. This allows early output
-to be delivered after handoff. Cancellation closes
-only that SSH observation session. A missing helper in an older prepared image
-means execution coverage is unavailable, not that the job should be refused or
-the image rebuilt automatically. Deploy the helper through the normal image
-upgrade path and disclose this limitation until those bases are refreshed.
+Standard output contains raw worker bytes. Gap/incomplete notices go to stderr.
+The command is a snapshot, not a follow operation, and never submits work.
 
-An ordinary read reaching the current file size is not EOF for a live worker.
-Declare closure only after the writer has closed and the captured final byte
-count has been consumed. VM shutdown, deletion, source truncation, or loss of the
-SSH session before that evidence must report interrupted coverage. Do not delay
-job completion or retain a VM indefinitely to satisfy a listener. Bounded guest
-retention and host copying improve recovery but do not guarantee lossless archival
-delivery across shutdown. Test the shutdown race explicitly.
+## Existing images
 
-On provider shutdown or plugin session loss, detach subscriptions while accepted
-work continues. A new provider can recover stored output, but must not reconnect
-an old subscription or replay Submit. Log lifetime is not job lifetime.
+The updated helper identifies itself as `pulse-macvz-guest 0.2.0`. Newly built
+images use `/var/db/pulse-macvz` for the whole worker state directory, including
+intent/fingerprint/completion/locks. The host recognizes the old
+`pulse-tart-guest 0.1.0` layout only when the new directory is absent. New capture
+never reads legacy `worker.log` as if it were the new journal, and new helpers
+refuse legacy execution state rather than moving it or resetting intent.
 
-## Pool preparation and diagnostics
+Old prepared images remain usable but report `combined` unavailable because
+their helper lacks the log-read operation. `setup` can continue reusing these
+images; run the normal `upgrade` workflow to rebuild them with capture support.
+Running jobs are not migrated and logging never automatically rebuilds images.
+Install the new host before preparing new-layout images. The executable/service
+names under `/opt/pulse-tart` remain compatibility details, not a Tart dependency.
 
-The launch-log API does not expose a pool-wide subscription or a source inventory
-for work done before Submit. It will not, by itself, answer “what is setup doing?”
-or “which warm VMs are idle?” Do not create fake launches for base builders or
-keep a declined launch subscribed to unrelated background preparation.
+## Validation
 
-Keep `Images`, `Slots`, `DockerAllocations`, and delivery observations as the
-authoritative status inputs. Propose a separate provider-local progress sink
-shared by the CLI and an embedding Pulse process. It can report base/slot phases,
-download bytes and estimates, guest readiness, shutdown/finalization, idle worker
-counts, and assigned jobs. Reuse those events for the interactive and linear
-setup displays. When a real launch is waiting on an already assigned resource,
-forward only its relevant progress into that launch's stream.
+Tests cover binary subprocess output, storage failures preserving exit status,
+assignment isolation, acknowledgement validation, compressed rotation and retention
+gaps, cursor recovery, idempotent replay, immutable VM identities, private storage,
+archive expiry/budget eviction, callback reentrancy/deadlines, retained capacity
+for stuck callbacks, queue overflow, copied coverage, configuration persistence,
+local inspection, and real reverse SDK delivery over the tested authentication
+and transport variants. The full suite runs with the race detector.
 
-Provider-generated events must exclude leases, launch envelopes, stdin, environment
-values, SSH credentials, and credential-bearing URLs. Do not forward arbitrary
-raw errors or entire native logs without reviewing their contents. Executor
-output is application-controlled and can contain secrets; preserve its bytes
-under the requested listener contract rather than claiming automatic redaction.
-Apply the bounded retention policy above to host copies and restrict access to
-the owning user and authorized launch consumers.
-
-## Delivery sequence and validation
-
-1. Migrate both module pins and Submit signatures. Implement bounded native
-   subscriptions with explicit unavailable execution coverage; keep existing
-   admission behavior unchanged.
-2. Add launch progress events and direct-library lifecycle tests. Cover callback
-   reentrancy, panic, blocked callbacks, overflow, duration zero, cancellation,
-   mixed accepted/declined batches, uncertain admission, and provider close.
-3. Introduce the versioned guest state layout and update all state consumers.
-   Test new images, legacy images, mixed pools, interrupted preparation, and
-   restart of an already assigned legacy job. Test both-directory ambiguity,
-   permission failures, and mismatched identity without fallback or replay.
-4. Add per-launch rotation, stable cursors, bounded host storage, and recovery.
-   Test size rotation during reads, expired cursors, truncated records, disk full,
-   capture overflow, aggregate retention, and provider downtime followed by
-   recovery. Cover asynchronous compression, simultaneous compressed/uncompressed
-   representations, resume inside a gzip segment, and interrupted compression.
-   Test custom directories through direct configuration and CLI persistence,
-   relative saved paths, permissions, and unchanged guest/image identity when
-   only the host log root changes. Prove that private job/tenant association
-   cannot mix streams.
-5. Add guest output capture and immutable launch/VM identity checks. Test binary
-   output, writes larger than 4096 bytes, output before Submit returns, long streams
-   without a cumulative quota, terminal byte accounting, old images, and VM
-   shutdown during capture. Verify that detaching never stops the worker.
-6. Exercise the same contract through inbound and outbound SDK transports,
-   including protocol mismatch, disconnect, reconnect, and independent admission
-   and listener cancellation. Test a fresh published-module consumer.
-7. Qualify on macOS, Linux, and macOS with Docker using a stopped production pool
-   and cold fixture source. Verify one real execution despite listener failures.
-
-Recommended scope: launch progress plus combined output, per-launch bounded
-storage, and recoverable cursors. Implement remote reattachment only with an
-explicit API extension; do not promise lossless output across VM shutdown. Keep
-pool progress separate because the per-launch contract cannot represent it.
+VM qualification remains opt-in. Unit and SDK tests do not establish that an
+existing prepared image already contains the new helper; live qualification must
+build/upgrade disposable images before asserting execution-log availability.

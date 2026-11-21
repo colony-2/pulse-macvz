@@ -22,6 +22,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/colony-2/pulse-macvz/guest/logstore"
+	"github.com/colony-2/pulse-macvz/internal/launchlogs"
 	"github.com/colony-2/pulse-macvz/internal/nologging"
 	api "github.com/colony-2/pulse-provider-api"
 	"github.com/colony-2/pulse-provider-api/plugin"
@@ -209,6 +211,24 @@ func (fixtureAPI) List(context.Context, api.ListRequest) (api.ListResponse, erro
 	return api.ListResponse{}, nil
 }
 func (fixtureAPI) Submit(_ context.Context, launches []api.Launch, options api.SubmitOptions) ([]api.Submission, api.LogSubscription, error) {
+	if len(launches) == 1 && launches[0].LaunchID == "logs-stream" {
+		m := launchlogs.New(func(_ context.Context, id string, offset uint64) (logstore.Page, string, error) {
+			p := logstore.Page{Manifest: logstore.Manifest{Version: 1, LaunchID: id, End: 3, Closed: true}, Next: 3}
+			if offset == 0 {
+				p.Frames = []logstore.Frame{{Data: []byte{0, 255, 10}}}
+			}
+			return p, "running", nil
+		})
+		sub := m.Subscribe(launches, options)
+		out := []api.Submission{{LaunchID: launches[0].LaunchID, Status: api.Accepted}}
+		m.Admitted(sub, out, nil)
+		if sub != nil {
+			go func() { <-sub.Done(); m.Close() }()
+		} else {
+			m.Close()
+		}
+		return out, sub, nil
+	}
 	out := make([]api.Submission, len(launches))
 	for i, l := range launches {
 		out[i] = api.Submission{LaunchID: l.LaunchID, Status: api.Unsupported, Reason: "fixture has no native executor"}
@@ -396,6 +416,19 @@ func testOutboundSDKReconnectAndCalls(t *testing.T, mode string) {
 	logResult, logErr := sub.Wait(ctx)
 	if logResult.Reason != api.ListenerSourceUnavailable || !errors.Is(logErr, api.ErrLogSource) || len(logResult.Coverage) != 4 {
 		t.Fatalf("unavailable logging result: %+v %v", logResult, logErr)
+	}
+
+	var received []api.LaunchLog
+	_, stream, err := first.Provider.Submit(ctx, []api.Launch{{LaunchID: "logs-stream", Allocation: api.Allocation{Base: "fixture-arm64"}, Job: api.JobRef{JobDB: "https://jobdb.invalid/test", InstanceID: "fixture", TenantID: "test", JobID: "job"}, Lease: api.Lease("fixture-only")}}, api.SubmitOptions{Listener: &api.ListenOptions{Context: ctx, OnLog: func(_ context.Context, l api.LaunchLog) error { received = append(received, l); return nil }}})
+	if err != nil || stream == nil {
+		t.Fatal("stream submit", err)
+	}
+	completion, err := stream.Wait(ctx)
+	if err != nil || completion.Reason != api.ListenerSourcesClosed || len(received) != 3 {
+		t.Fatalf("stream: %+v %v logs=%d", completion, err, len(received))
+	}
+	if string(received[2].Data) != string([]byte{0, 255, 10}) || received[2].Sequence != 3 {
+		t.Fatal("transport changed bytes or sequence")
 	}
 	listener.disconnect()
 	second := waitProvider(first.Generation)

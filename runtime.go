@@ -12,14 +12,15 @@ import (
 	"github.com/colony-2/pulse-macvz/internal/backend"
 	"github.com/colony-2/pulse-macvz/internal/bundle"
 	"github.com/colony-2/pulse-macvz/internal/config"
+	"github.com/colony-2/pulse-macvz/internal/launchlogs"
 	"github.com/colony-2/pulse-macvz/internal/local"
-	"github.com/colony-2/pulse-macvz/internal/nologging"
 	engine "github.com/colony-2/pulse-macvz/internal/provider"
 	"github.com/colony-2/pulse-macvz/internal/releases"
 	api "github.com/colony-2/pulse-provider-api"
 )
 
 type Config = config.Config
+type LoggingConfig = config.Logging
 type Base = config.Base
 type SlotGroup = config.SlotGroup
 type VMCounts = config.VMCounts
@@ -48,11 +49,14 @@ var _ api.Provider = (*Runtime)(nil)
 // Never run two hosts for
 // the same backend/owner scope.
 type Runtime struct {
-	mu      sync.RWMutex
-	p       *engine.Provider
-	closed  bool
-	period  time.Duration
-	profile string
+	logs        *launchlogs.Manager
+	archive     *launchlogs.Archive
+	loggingOnce sync.Once
+	mu          sync.RWMutex
+	p           *engine.Provider
+	closed      bool
+	period      time.Duration
+	profile     string
 }
 
 func prepare(c Config) (Config, error) {
@@ -78,17 +82,22 @@ func newRuntime(p *engine.Provider, c Config) *Runtime {
 		setup, err = bundle.Build(assets, r.profile, revision)
 		return setup, err
 	}
+	r.initLogging()
 	return r
 }
 
 func (r *Runtime) Submit(ctx context.Context, launches []api.Launch, options api.SubmitOptions) ([]api.Submission, api.LogSubscription, error) {
-	subscription := nologging.Subscription(launches, options)
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	if r.closed {
-		return nil, subscription, ErrClosed
+		m := launchlogs.New(nil)
+		m.Close()
+		return nil, m.Subscribe(launches, options), ErrClosed
 	}
+	r.initLogging()
+	subscription := r.logs.Subscribe(launches, options)
 	results, err := r.p.Submit(ctx, launches)
+	r.logs.Admitted(subscription, results, err)
 	return results, subscription, err
 }
 
@@ -166,6 +175,14 @@ func (r *Runtime) PreparationProgress() (PreparationProgress, error) {
 	}
 	return PreparationProgress{}, nil
 }
+func (r *Runtime) initLogging() {
+	r.loggingOnce.Do(func() {
+		c, _ := r.p.Config.Logging.Normalize()
+		r.archive = launchlogs.NewArchive(r.p, c)
+		r.logs = launchlogs.New(r.archive.Read)
+	})
+}
+
 func (r *Runtime) Reconcile(ctx context.Context) error {
 	return r.reconcile(ctx, true)
 }
@@ -184,6 +201,7 @@ func (r *Runtime) reconcile(ctx context.Context, reportHealth bool) error {
 	if r.closed {
 		return ErrClosed
 	}
+	r.initLogging()
 	var recovery error
 	if b, ok := r.p.Backend.(interface{ Recover(context.Context) error }); ok {
 		recovery = b.Recover(ctx)
@@ -265,6 +283,10 @@ func (r *Runtime) Close() error {
 		return nil
 	}
 	r.closed = true
+	if r.logs != nil {
+		r.logs.Close()
+		r.archive.Close()
+	}
 	if b, ok := r.p.Backend.(interface{ Close() error }); ok {
 		_ = b.Close()
 	}

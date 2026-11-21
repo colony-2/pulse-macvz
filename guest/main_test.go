@@ -3,8 +3,10 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"github.com/colony-2/pulse-macvz/guest/logstore"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -34,7 +36,7 @@ func TestLiteralProcessAndEOF(t *testing.T) {
 		if err != nil || code != 0 {
 			t.Fatal(code, err)
 		}
-		b, _ := os.ReadFile(filepath.Join(dir, "worker.log"))
+		b := captured(t, dir, e.LaunchID)
 		var got struct {
 			Args            []string
 			Env, Cwd, Stdin string
@@ -132,8 +134,77 @@ func TestOpaqueLeaseBytesSurviveJournalAndDelivery(t *testing.T) {
 	if err != nil || code != 0 {
 		t.Fatal("worker failed", err)
 	}
-	got, err := os.ReadFile(filepath.Join(dir, "worker.log"))
+	got := captured(t, dir, e.LaunchID)
 	if err != nil || !bytes.Equal(got, lease) {
 		t.Fatal("opaque lease bytes changed")
+	}
+}
+
+func captured(t *testing.T, dir, id string) []byte {
+	t.Helper()
+	p, err := logstore.Read(filepath.Join(dir, "logs"), id, 0)
+	if err != nil || p.Gap || !p.Manifest.Closed {
+		t.Fatalf("capture: %+v %v", p, err)
+	}
+	var b []byte
+	for _, f := range p.Frames {
+		b = append(b, f.Data...)
+	}
+	return b
+}
+
+func TestExecutionSurvivesLogStorageFailure(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "logs"), []byte("not a directory"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	sh, err := exec.LookPath("sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := Envelope{Version: 1, LaunchID: "no-disk", Process: Process{Command: []string{sh, "-c", "printf output; printf error >&2; exit 7"}, WorkingDir: dir}}
+	code, err := execute(e, dir, uint32(os.Getuid()), uint32(os.Getgid()))
+	if err != nil || code != 7 {
+		t.Fatal("logging changed execution result", code, err)
+	}
+}
+func TestLogReadAssignmentAndAcknowledgement(t *testing.T) {
+	dir := t.TempDir()
+	c := logstore.New(filepath.Join(dir, "logs"), "launch", 1, 1, true)
+	_, _ = c.Write([]byte("output"))
+	c.Close()
+	if err := os.WriteFile(filepath.Join(dir, "intent"), []byte("launch"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	if err := readLogs(dir, strings.NewReader(`{"launch_id":"other"}`), &out); err == nil {
+		t.Fatal("cross-assignment read")
+	}
+	if err := readLogs(dir, strings.NewReader(`{"launch_id":"launch"}`), &out); err != nil {
+		t.Fatal(err)
+	}
+	if err := ackLogs(dir, strings.NewReader(`{"launch_id":"launch","offset":5}`)); err == nil {
+		t.Fatal("premature ack")
+	}
+	if err := ackLogs(dir, strings.NewReader(`{"launch_id":"launch","offset":6}`)); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCaptureConfigurationIsBoundedAndNotWorkerEnvironment(t *testing.T) {
+	env := map[string]string{"PULSE_LOG_CONFIG_VERSION": "1", "PULSE_LOG_SEGMENT_MIB": "32", "PULSE_LOG_BACKUPS": "4", "PULSE_LOG_COMPRESS": "false"}
+	size, backups, compress := captureOptions(env)
+	if size != 32 || backups != 4 || compress {
+		t.Fatal(size, backups, compress)
+	}
+	for _, v := range environment(Process{Env: env}) {
+		if strings.HasPrefix(v, "PULSE_LOG_") {
+			t.Fatal("helper control exposed to worker")
+		}
+	}
+	env["PULSE_LOG_SEGMENT_MIB"] = "99999"
+	size, _, _ = captureOptions(env)
+	if size != 16 {
+		t.Fatal("unbounded segment")
 	}
 }

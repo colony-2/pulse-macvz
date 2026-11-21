@@ -18,6 +18,7 @@ require (
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/pflag v1.0.9
 	github.com/tmc/apple v0.6.19-0.20260907023617-4c51c1664813
+	gopkg.in/natefinch/lumberjack.v2 v2.2.1
 )
 
 require (

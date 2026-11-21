@@ -32,6 +32,7 @@ func (Secret) GoString() string { return "[REDACTED]" }
 // Config describes the VZ execution pool. Paths are absolute; the host
 // owns configuration loading. C2JVersion is used only to prepare missing images.
 type Config struct {
+	Logging          Logging
 	OwnerID          string
 	StateDir         string      // Optional legacy journal migration directory.
 	Bases            []Base      // Most preferred first; nil selects the conventional macOS and Linux bases.
@@ -170,6 +171,9 @@ func Normalize(c Config) (Config, error) {
 		c.StateDir = filepath.Clean(c.StateDir)
 	}
 	var err error
+	if c.Logging, err = c.Logging.Normalize(); err != nil {
+		return Config{}, err
+	}
 	if c.VMCounts, err = c.VMCounts.Normalize(); err != nil {
 		return Config{}, err
 	}

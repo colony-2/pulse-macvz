@@ -159,3 +159,15 @@ func workerHome(b config.Base) string {
 	}
 	return "/Users/pulseworker"
 }
+
+// Logging options are versioned helper controls. Old helpers ignore them; they
+// never change a lease or require a new envelope version for legacy images.
+func (p *Provider) workerProcess(l compute.Launch, b config.Base, cpu, memory int64) process {
+	proc := workerProcess(l, b, cpu, memory)
+	c, _ := p.Config.Logging.Normalize()
+	proc.Env["PULSE_LOG_CONFIG_VERSION"] = "1"
+	proc.Env["PULSE_LOG_SEGMENT_MIB"] = strconv.Itoa(c.SegmentMiB)
+	proc.Env["PULSE_LOG_BACKUPS"] = strconv.Itoa(c.Backups)
+	proc.Env["PULSE_LOG_COMPRESS"] = strconv.FormatBool(*c.Compress)
+	return proc
+}

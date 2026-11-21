@@ -50,15 +50,17 @@ if /usr/bin/pgrep -u 55050 >/dev/null 2>&1; then
   echo 'Worker-user processes exist. Start with a fresh image builder.' >&2
   exit 1
 fi
-if [[ -d /var/db/pulse-tart ]]; then
-  shopt -s nullglob dotglob
-  for entry in /var/db/pulse-tart/*; do
-    [[ $entry == /var/db/pulse-tart/nix-installer ]] && continue
-    echo 'Runtime state exists. Start with a fresh image builder.' >&2
-    exit 1
-  done
-  shopt -u nullglob dotglob
-fi
+for runtime_state in /var/db/pulse-tart /var/db/pulse-macvz; do
+  if [[ -d $runtime_state ]]; then
+    shopt -s nullglob dotglob
+    for entry in "$runtime_state"/*; do
+      [[ $entry == "$runtime_state/nix-installer" ]] && continue
+      echo 'Runtime state exists. Start with a fresh image builder.' >&2
+      exit 1
+    done
+    shopt -u nullglob dotglob
+  fi
+done
 if [[ $version != bundled ]]; then /bin/bash "$bundle/select-c2j.sh" "$bundle" "$version"; fi
 /bin/bash "$bundle/install-guest.sh" "$bundle"
 # Preserve installed provenance for offline status and cloned images.
@@ -66,8 +68,12 @@ if [[ $version != bundled ]]; then /bin/bash "$bundle/select-c2j.sh" "$bundle" "
 mkdir -p /opt/pulse-tart-image
 cp "$bundle/bootstrap-guest.sh" "$bundle/prepare-template.sh" /opt/pulse-tart-image/
 chmod 755 /opt/pulse-tart-image /opt/pulse-tart-image/*.sh
-rm -f /var/db/pulse-tart/nix-installer
-rmdir /var/db/pulse-tart
+for runtime_state in /var/db/pulse-tart /var/db/pulse-macvz; do
+  if [[ -d $runtime_state ]]; then
+    rm -f "$runtime_state/nix-installer"
+    rmdir "$runtime_state"
+  fi
+done
 sync
 echo PULSE_IMAGE_PREPARED
 /opt/pulse-tart/bin/c2j version

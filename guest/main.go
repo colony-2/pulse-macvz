@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/colony-2/pulse-macvz/guest/logstore"
 	"io"
 	"os"
 	"os/exec"
@@ -22,7 +23,10 @@ import (
 	"time"
 )
 
-const stateDir = "/var/db/pulse-tart"
+const stateDir = "/var/db/pulse-macvz"
+
+var launchPattern = regexp.MustCompile(`^[A-Za-z0-9._-]{1,128}$`)
+
 const workerUID = 55050
 
 var workerGID uint32 = 20
@@ -55,7 +59,7 @@ var invalid = errors.New("invalid launch envelope")
 
 func validate(e Envelope) error {
 	p := e.Process
-	if e.Version != 1 || !regexp.MustCompile(`^[A-Za-z0-9._-]{1,128}$`).MatchString(e.LaunchID) || len(p.Command) == 0 || p.Command[0] == "" || len(p.Stdin)+len(p.StdinBytes) > 1<<20 || (p.Stdin != "" && p.StdinBytes != nil) {
+	if e.Version != 1 || !launchPattern.MatchString(e.LaunchID) || len(p.Command) == 0 || p.Command[0] == "" || len(p.Stdin)+len(p.StdinBytes) > 1<<20 || (p.Stdin != "" && p.StdinBytes != nil) {
 		return invalid
 	}
 	for _, s := range append(append([]string{p.WorkingDir}, p.Command...), p.Args...) {
@@ -118,6 +122,11 @@ func writeAtomic(dir, name string, b []byte) error {
 	return e
 }
 func ingest(dir string, r io.Reader) error {
+	if dir == stateDir {
+		if _, err := os.Lstat("/var/db/pulse-tart"); !os.IsNotExist(err) {
+			return invalid
+		}
+	}
 	e, err := decode(r)
 	if err != nil {
 		return err
@@ -156,7 +165,9 @@ func ingest(dir string, r io.Reader) error {
 func environment(p Process) []string {
 	env := map[string]string{"PATH": profile + "/bin:/nix/var/nix/profiles/default/bin:/usr/bin:/bin:/usr/sbin:/sbin", "HOME": workerHome, "USER": "pulseworker", "LOGNAME": "pulseworker", "TMPDIR": "/tmp", "SSL_CERT_FILE": profile + "/etc/ssl/certs/ca-bundle.crt", "NIX_SSL_CERT_FILE": profile + "/etc/ssl/certs/ca-bundle.crt", "C2J_TOOL_CACHE_DIR": workerHome + "/.cache/c2j/tools"}
 	for k, v := range p.Env {
-		env[k] = v
+		if !strings.HasPrefix(k, "PULSE_LOG_") {
+			env[k] = v
+		}
 	}
 	keys := make([]string, 0, len(env))
 	for k := range env {
@@ -218,13 +229,12 @@ func execute(e Envelope, dir string, uid, gid uint32) (int, error) {
 	if p.StdinBytes != nil {
 		cmd.Stdin = bytes.NewReader(p.StdinBytes)
 	}
-	log, err := os.OpenFile(filepath.Join(dir, "worker.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
-	if err != nil {
-		return -1, err
-	}
+	size, backups, compress := captureOptions(p.Env)
+	log := logstore.New(filepath.Join(dir, "logs"), e.LaunchID, size, backups, compress)
 	defer log.Close()
 	cmd.Stdout = log
 	cmd.Stderr = log
+	cmd.WaitDelay = 2 * time.Second
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if os.Geteuid() == 0 {
 		cmd.SysProcAttr.Credential = &syscall.Credential{Uid: uid, Gid: gid}
@@ -251,7 +261,7 @@ func execute(e Envelope, dir string, uid, gid uint32) (int, error) {
 	err = cmd.Wait()
 	_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 	code := 0
-	if err != nil {
+	if err != nil && !errors.Is(err, exec.ErrWaitDelay) {
 		code = 1
 		if x, ok := err.(*exec.ExitError); ok {
 			code = x.ExitCode()
@@ -265,6 +275,7 @@ func runningWorker() bool {
 	return exec.Command("/usr/bin/pgrep", "-u", strconv.Itoa(workerUID)).Run() == nil
 }
 func shutdown() {
+	waitLogAck(stateDir, 10*time.Second)
 	time.Sleep(3 * time.Second)
 	_ = exec.Command("/sbin/shutdown", "-h", "now").Run()
 }
@@ -317,7 +328,14 @@ func main() {
 	} else {
 		switch os.Args[1] {
 		case "version":
-			fmt.Println("pulse-tart-guest 0.1.0")
+			fmt.Println("pulse-macvz-guest 0.2.0")
+			return
+		case "logs-ack":
+			err = ackLogs(stateDir, os.Stdin)
+		case "logs":
+			err = readLogs(stateDir, os.Stdin, os.Stdout)
+		case "state-dir":
+			fmt.Println(stateDir)
 			return
 		case "ingest":
 			err = ingest(stateDir, os.Stdin)

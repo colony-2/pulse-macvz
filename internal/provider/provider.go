@@ -322,6 +322,12 @@ set +x
 umask 077
 work=$(mktemp -d /tmp/pulse-bootstrap.XXXXXX)
 trap 'rm -rf "$work"' EXIT
+state=$(sudo -n /opt/pulse-tart/bin/pulse-tart-guest version)
+case "$state" in
+ 'pulse-tart-guest 0.1.0') state=/var/db/pulse-tart; sudo -n test ! -e /var/db/pulse-macvz ;;
+ 'pulse-macvz-guest 0.2.0') state=/var/db/pulse-macvz; sudo -n test ! -e /var/db/pulse-tart ;;
+ *) exit 1 ;;
+esac
 # Tools already live in the suspended image. Never reinstall them on a job.
 sudo -n /bin/bash /opt/pulse-tart-image/bootstrap-guest.sh
 /usr/bin/base64 -D > "$work/envelope.json" <<'PULSE_ENVELOPE'
@@ -329,8 +335,8 @@ sudo -n /bin/bash /opt/pulse-tart-image/bootstrap-guest.sh
 PULSE_ENVELOPE
 sudo -n /opt/pulse-tart/bin/pulse-tart-guest ingest < "$work/envelope.json"
 echo PULSE_HANDOFF_OK
-while ! sudo -n test -f /var/db/pulse-tart/complete; do sleep 1; done
-if [ "$(sudo -n cat /var/db/pulse-tart/complete)" = 0 ]; then echo PULSE_WORKER_OK; else echo PULSE_WORKER_FAILED; fi
+while ! sudo -n test -f "$state/complete"; do sleep 1; done
+if [ "$(sudo -n cat "$state/complete")" = 0 ]; then echo PULSE_WORKER_OK; else echo PULSE_WORKER_FAILED; fi
 `, base64.StdEncoding.EncodeToString(envelope))
 }
 func normalized(v backend.Spec) backend.Spec {
