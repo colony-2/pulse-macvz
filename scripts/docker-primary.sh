@@ -20,17 +20,7 @@ if [[ $(uname -s) == Linux ]]; then
  for receipt in launch.json fingerprint intent; do test ! -e "$state/$receipt"; done
  install -d -m 700 -o pulseworker -g pulseworker /home/pulseworker/work /home/pulseworker/work/tmp
  /bin/bash "$(dirname "$0")/setup-linux-nix.sh"
- # Nested virtualization is a boot-time platform feature. All Linux workers
- # with a KVM device grant access to the ordinary job account, without sudo.
- # Apply this to each unused allocation so existing prepared images are reusable.
- if [[ -c /dev/kvm ]]; then
-  getent group kvm >/dev/null || groupadd --system kvm
-  usermod -aG kvm pulseworker
-  install -d -m 755 /etc/udev/rules.d
-  printf 'KERNEL=="kvm", GROUP="kvm", MODE="0660"\n' > /etc/udev/rules.d/70-pulse-kvm.rules
-  chgrp kvm /dev/kvm
-  chmod 660 /dev/kvm
- fi
+ /bin/bash "$(dirname "$0")/setup-linux-kvm.sh"
  # Plain workers use the same prepared software, with no daemon or socket.
  if [[ ${1:-docker} == plain ]]; then
   ! systemctl is-active --quiet docker.service docker.socket containerd.service

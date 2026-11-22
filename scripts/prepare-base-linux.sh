@@ -56,6 +56,7 @@ install -d -m 700 -o pulseworker -g pulseworker /home/pulseworker /home/pulsewor
 # Ubuntu restricts the daemon socket to nix-users. Preserve other memberships
 # (notably docker), and exercise the daemon as the account that runs jobs.
 /bin/bash "$bundle/setup-linux-nix.sh"
+/bin/bash "$bundle/setup-linux-kvm.sh"
 mkdir -p /opt/pulse-tart-image
 cp "$bundle/bootstrap-guest.sh" /opt/pulse-tart-image/
 /bin/bash "$bundle/record-c2j-version.sh" "$bundle"

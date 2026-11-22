@@ -24,6 +24,7 @@ type dockerFake struct {
 	nixSetupDenied                              bool
 	nixSetups                                   int
 	kvmDenied                                   bool
+	kvmNetworkDenied                            bool
 	engineBlocked                               bool
 	engineStarts                                int
 	payload                                     envelope
@@ -108,6 +109,9 @@ func (f *dockerFake) Exec(_ context.Context, name, uid string, script []byte) ([
 		return nil, errors.New("no receipt")
 	}
 	if strings.Contains(s, "PULSE_DOCKER_PRIMARY_READY") {
+		if f.kvmNetworkDenied && strings.Contains(s, "PULSE_KVM_NETWORK_READY") {
+			return nil, errors.New("ordinary user network or service unavailable")
+		}
 		if f.kvmDenied && strings.Contains(s, "PULSE_KVM_READY") {
 			return nil, errors.New("job user cannot create a KVM VM")
 		}
@@ -149,7 +153,7 @@ func dockerFixture(t *testing.T, linux bool) (*Provider, *dockerFake) {
 		p.Config.Bases[0].OS = "linux"
 		p.Config.Bases[0].OSVersion = "24.04"
 	}
-	p.Assets = fstest.MapFS{"scripts/prepare-docker-engine.sh": &fstest.MapFile{Data: []byte("base engine installer")}, "scripts/docker-engine.sh": &fstest.MapFile{Data: []byte("engine installer")}, "scripts/setup-linux-nix.sh": &fstest.MapFile{Data: []byte("shared Nix setup")}, "scripts/docker-primary.sh": &fstest.MapFile{Data: []byte("primary setup")}}
+	p.Assets = fstest.MapFS{"scripts/setup-linux-kvm.sh": &fstest.MapFile{Data: []byte("shared KVM setup")}, "scripts/linux-kvm-network.py": &fstest.MapFile{Data: []byte("KVM network/probe")}, "scripts/prepare-docker-engine.sh": &fstest.MapFile{Data: []byte("base engine installer")}, "scripts/docker-engine.sh": &fstest.MapFile{Data: []byte("engine installer")}, "scripts/setup-linux-nix.sh": &fstest.MapFile{Data: []byte("shared Nix setup")}, "scripts/docker-primary.sh": &fstest.MapFile{Data: []byte("primary setup")}}
 	return p, d
 }
 

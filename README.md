@@ -137,7 +137,9 @@ protect unrelated VMs. Shared host volumes remain unsupported.
 Default slots support Docker when a launch requests `docker`. Linux starts its
 own daemon on demand; macOS uses a private Linux companion and the signed Go
 bridge child mode. No host Python is needed for serving. On supported hardware,
-Linux guests expose KVM and advertise `kvm`; see [VZ tests](docs/vz-testing.md).
+Linux guests expose KVM and advertise `kvm`. Jobs can create TAPs dynamically,
+use a shared outbound network, and run independent user services; see
+[Linux/KVM networking](docs/linux-kvm.md) and [VZ tests](docs/vz-testing.md).
 
 ## Tests
 

@@ -256,4 +256,7 @@ sha256sum -c expected
 	if _, err = os.Stat(filepath.Join(home, "vms", "job")); !os.IsNotExist(err) {
 		t.Fatal("job remains after deletion")
 	}
+	if os.Getenv("PULSE_TEST_VZ_KVM") == "1" {
+		verifyLiveKVMHandoff(t, ctx, b, check)
+	}
 }

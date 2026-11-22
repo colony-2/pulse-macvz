@@ -135,7 +135,7 @@ func vzPreparationInput(name string) bool {
 	switch name {
 	case "assets.go", "runtime.go", "bases.go", "bases.json", "go.mod", "go.sum", "flake.nix", "flake.lock", "vz_live_test.go",
 		"internal/provider/images.go", "internal/provider/slots.go", "internal/provider/engine_images.go",
-		"scripts/bootstrap-guest.sh", "scripts/install-guest.sh", "scripts/prepare-image.sh", "scripts/prepare-base.sh", "scripts/prepare-base-linux.sh", "scripts/prepare-docker-engine.sh", "scripts/prepare-template.sh", "scripts/select-c2j.sh", "scripts/resolve-c2j-vendor.sh", "scripts/record-c2j-version.sh",
+		"scripts/setup-linux-kvm.sh", "scripts/linux-kvm-network.py", "scripts/setup-linux-nix.sh", "scripts/bootstrap-guest.sh", "scripts/install-guest.sh", "scripts/prepare-image.sh", "scripts/prepare-base.sh", "scripts/prepare-base-linux.sh", "scripts/prepare-docker-engine.sh", "scripts/prepare-template.sh", "scripts/select-c2j.sh", "scripts/resolve-c2j-vendor.sh", "scripts/record-c2j-version.sh",
 		"tests/integration/c2j-fixture.go.txt", "tests/integration/docker-fixture.go.txt":
 		return true
 	}

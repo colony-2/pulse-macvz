@@ -41,6 +41,7 @@ type PairRecord struct {
 	Port                                           int
 	EngineID, LaunchID, DeliveryHash               string
 	DockerRequested                                bool
+	LinuxKVMVersion                                int    // Network/supervision repair revision, independent of Nix.
 	LinuxNixVersion                                int    // Idle repair revision; never changes the VM/config identity.
 	RequestID                                      string // Preparation hint only; never an accepted launch or lease.
 	Created                                        time.Time
@@ -271,21 +272,32 @@ func (p *Provider) configurePrimary(ctx context.Context, pair *PairRecord) error
 	}
 	content := "set -eu\nset +x\nsudo -n install -d -m 700 /var/lib/pulse-docker\n"
 	if linux {
-		setup, err := p.asset("setup-linux-nix.sh")
-		if err != nil {
-			return err
+		for _, name := range []string{"setup-linux-nix.sh", "setup-linux-kvm.sh", "linux-kvm-network.py"} {
+			setup, err := p.asset(name)
+			if err != nil {
+				return err
+			}
+			content += fileScript("/var/lib/pulse-docker/"+name, setup, true)
 		}
-		content += fileScript("/var/lib/pulse-docker/setup-linux-nix.sh", setup, true)
 	}
 	content += fileScript("/var/lib/pulse-docker/primary.sh", script, linux) + "sudo -n /bin/bash /var/lib/pulse-docker/primary.sh " + mode + "\n"
 	_, e = p.Backend.(dockerBackend).Exec(ctx, pair.Primary.Name, pair.PrimaryUID, []byte(content))
 	if e == nil && linux {
 		pair.LinuxNixVersion = linuxNixVersion
+		if slices.Contains(b.Capabilities, "kvm") {
+			pair.LinuxKVMVersion = linuxKVMVersion
+		}
 	}
 	return e
 }
 
 const linuxNixVersion = 1
+const linuxKVMVersion = 1
+
+func (p *Provider) needsLinuxKVMSetup(pair *PairRecord) bool {
+	b := p.base(pair.Base)
+	return pair.LaunchID == "" && b.OS == "linux" && slices.Contains(b.Capabilities, "kvm") && pair.LinuxKVMVersion != linuxKVMVersion
+}
 
 func (p *Provider) needsLinuxNixSetup(pair *PairRecord) bool {
 	return pair.LaunchID == "" && p.base(pair.Base).OS == "linux" && pair.LinuxNixVersion != linuxNixVersion
@@ -321,6 +333,7 @@ assert r('/opt/pulse-tart/bin/c2j','version')
 			// Test the actual job user's access and the KVM API, not merely a
 			// device-node name or a privileged root open. No guest is launched.
 			code += "assert r('sudo','-n','-H','-u','pulseworker','/opt/pulse-tart/bin/python3','-c'," + strconv.Quote(kvmReadinessProbe) + ") == 'PULSE_KVM_READY'\n"
+			code += "assert r('sudo','-n','-H','-u','pulseworker','/usr/local/bin/pulse-kvm-run','/usr/bin/python3','/usr/local/libexec/pulse-macvz/linux-kvm-network.py','--probe') == 'PULSE_KVM_NETWORK_READY'\n"
 			continue
 		}
 		tool := cap
@@ -645,7 +658,7 @@ func (p *Provider) reconcilePairs(ctx context.Context) error {
 		if !hasPrimary {
 			continue
 		}
-		if pair.Phase == "ready" && p.needsLinuxNixSetup(pair) {
+		if pair.Phase == "ready" && (p.needsLinuxNixSetup(pair) || p.needsLinuxKVMSetup(pair)) {
 			// Repair reused idle allocations in place, without invalidating bases,
 			// changing VM identity, or disturbing an accepted launch.
 			pair.Phase = "configuring"
@@ -854,13 +867,13 @@ func (p *Provider) submitDocker(ctx context.Context, l api.Launch, hash string) 
 				continue
 			}
 		}
-		if p.needsLinuxNixSetup(pair) {
+		if p.needsLinuxNixSetup(pair) || p.needsLinuxKVMSetup(pair) {
 			if e := p.configurePrimary(ctx, pair); e != nil {
-				p.observeError("configure idle Linux Nix", e)
+				p.observeError("configure idle Linux capabilities", e)
 				return p.submission(l.LaunchID, api.Unavailable), true
 			}
 			if e := p.Store.save(); e != nil {
-				p.observeError("save idle Linux Nix setup", e)
+				p.observeError("save idle Linux capability setup", e)
 				return p.submission(l.LaunchID, api.Unavailable), true
 			}
 		}

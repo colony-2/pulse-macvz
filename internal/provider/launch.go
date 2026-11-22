@@ -133,7 +133,14 @@ func workerProcess(l compute.Launch, b config.Base, cpu, memory int64) process {
 	for _, cap := range b.Capabilities {
 		args = append(args, "--execution-capability", cap)
 	}
-	return process{Command: []string{"/opt/pulse-tart/bin/c2j"}, Args: args, Env: map[string]string{"PULSE_LAUNCH_ID": l.LaunchID, "PULSE_BASE": b.Name, "PULSE_JOBDB_INSTANCE_ID": l.Job.InstanceID, "PULSE_TENANT_ID": l.Job.TenantID}, WorkingDir: workerHome(b), StdinBytes: []byte(l.Lease)}
+	proc := process{Command: []string{"/opt/pulse-tart/bin/c2j"}, Args: args, Env: map[string]string{"PULSE_LAUNCH_ID": l.LaunchID, "PULSE_BASE": b.Name, "PULSE_JOBDB_INSTANCE_ID": l.Job.InstanceID, "PULSE_TENANT_ID": l.Job.TenantID}, WorkingDir: workerHome(b), StdinBytes: []byte(l.Lease)}
+	if b.OS == "linux" && slices.Contains(b.Capabilities, "kvm") {
+		proc.Command = []string{"/usr/local/bin/pulse-kvm-run", "/opt/pulse-tart/bin/c2j"}
+		proc.Env["XDG_RUNTIME_DIR"] = "/run/user/55050"
+		proc.Env["DBUS_SESSION_BUS_ADDRESS"] = "unix:path=/run/user/55050/bus"
+		proc.Env["PULSE_KVM_NETWORK"] = "/etc/pulse-macvz/network.json"
+	}
+	return proc
 }
 
 // JSON replaces invalid UTF-8 in strings. Hash the opaque credential as bytes

@@ -18,7 +18,7 @@ python3 - "$out" "${positional[1]:-default}" "$version" <<'PY'
 import gzip,io,tarfile,sys,subprocess,tempfile
 from pathlib import Path
 files={'bootstrap-guest.sh':Path('scripts/bootstrap-guest.sh'),'flake.nix':Path('flake.nix'),'flake.lock':Path('flake.lock'),'tests/integration/c2j-fixture.go.txt':Path('tests/integration/c2j-fixture.go.txt'),'tests/integration/docker-fixture.go.txt':Path('tests/integration/docker-fixture.go.txt')}
-files.update({name:Path('scripts')/name for name in ['install-guest.sh','prepare-image.sh','prepare-template.sh','prepare-base.sh','prepare-base-linux.sh','docker-engine.sh','prepare-docker-engine.sh','docker-primary.sh','setup-linux-nix.sh','select-c2j.sh','resolve-c2j-vendor.sh','record-c2j-version.sh']})
+files.update({name:Path('scripts')/name for name in ['install-guest.sh','prepare-image.sh','prepare-template.sh','prepare-base.sh','prepare-base-linux.sh','docker-engine.sh','prepare-docker-engine.sh','docker-primary.sh','setup-linux-nix.sh','setup-linux-kvm.sh','linux-kvm-network.py','select-c2j.sh','resolve-c2j-vendor.sh','record-c2j-version.sh']})
 files.update({str(p):p for p in Path('guest').rglob('*') if p.suffix=='.go' or p.name in ('go.mod.txt','go.sum.txt')})
 assert sys.argv[2] in ('default','integration','docker','docker-integration')
 with tempfile.TemporaryDirectory(prefix='pulse-bundle-') as temp:

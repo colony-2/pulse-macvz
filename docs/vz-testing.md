@@ -4,6 +4,24 @@ Build and unit checks do not qualify live virtualization. The core native,
 provider lifecycle, public API/JobDB, registry import, Go endpoint, and full
 paired Docker qualification checks have passed as recorded below.
 
+## Linux/KVM networking qualification (2026-11-22 UTC)
+
+The [networking and user-supervision implementation](linux-kvm.md) passed
+`TestLiveLinuxLifecycle` with `PULSE_TEST_VZ_KVM=1` and
+`PULSE_TEST_VZ_KVM_DOCKER=1`, using a private clone of the prepared Ubuntu base.
+Both plain and Docker modes booted two real nested ARM64 guests with QEMU/KVM
+as UID/GID 55050. Checks covered dynamic TAPs, peer/outer/Internet HTTP, DNS,
+independent user services, and Docker access through a user service. The installed
+launcher preserved NET_ADMIN through its UID transition, and preparation refused
+the accepted synthetic test launch. Cold boot and disk verification also passed.
+
+Additional disposable checks verified UDP/TCP DNS, reboot readiness with a new
+boot ID, and repeated setup preserving unrelated interfaces, rules, and TAPs.
+Evidence: `test-results/kvm-networking/` (especially `live-lifecycle.log`).
+All test VMs were stopped. Production allocations were not mutated. This is
+provider/guest-launcher qualification; Cloud Hypervisor's eleven assertions and
+normal JobDB extension qualification remain separate.
+
 ## Ubuntu/KVM Nix extension qualification (2026-11-21 UTC)
 
 Job `3MOoQxmVuDcaxBbYLu6DIJ2U5H4` failed three Codex extension preparations:
