@@ -24,6 +24,7 @@ type VMProgress struct {
 	ObservedAt         time.Time
 	LogBytes           int64
 	Reboots            int
+	RetryAttempt       int // Number of unused-builder replacements in this maintenance cycle.
 }
 
 type PreparationProgress struct {

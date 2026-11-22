@@ -29,3 +29,18 @@ Incident: 2026-11-21. Restore the server pool before further feature work.
 - [x] Commit recovery work at the user's request. No publication/push is authorized.
 
 Do not rebuild completed images unnecessarily, change accepted jobs, or modify the protected candidate `8187fb785dc8b076f32059929c7dbb7a6651429b` / excluded job `Uv7dTrifueEo48PogJxlTtjRwpt`.
+
+## Upgrade recovery, 2026-11-22 UTC
+
+- [x] Diagnose macOS 15 base failure: initial guest time was October 3, causing the Nix installer download to reject a not-yet-valid TLS certificate. A later launchd attempt finished successfully on November 22 (exit 0 and ready receipt), but retained the first attempt's failed receipt. The observer correctly rejected contradictory receipts.
+- [x] Make each macOS builder service attempt invalidate prior ready/failed receipts before preparation. Regression tests execute the service path with isolated fake guest paths, covering successful retry after failure and failed retry after success. TLS verification remains enabled.
+- [x] Verify current macOS 15 tools, OS, ready receipt, completed service and absence of accepted job state; preserve the stale failed receipt under a diagnostic name, then recover readiness through normal setup.
+- [x] Retire only the two stopped, unused builders whose delivery expired before any exec: companion UID `e57e8f590fe2cc6ba5ce9ef520757acf` and macOS 26 UID `a0f80fa6229f20762f99aefd994d8bb8`. Validate owner, UID, image phase, absence of job/pair, no possible execution and native stopped state under the controller lock. Preserve metadata locally. Keep completed bases and recovered Linux allocations.
+- [x] Install the signed receipt fix and restart normal setup. Linux's four idle allocations, both macOS 15 suspended templates and the companion base recovered.
+- [x] Finish macOS 26 preparation/templates and verify repeat setup preserves all prepared VM identities. Recovery setup took about 5m17s; repeat setup completed immediately. All eight slots report c2j `unstable-98fcda4`; direct checks of all four Linux guests confirm KVM read/write access and Docker stopped. Receipt regression tests, local/provider/servercli Go tests, vet and shell syntax checks passed. Evidence: `.local/pool-recovery-1121b/`.
+
+## Preparation reliability follow-through, 2026-11-22 UTC
+
+- [x] Implement the [reliability plan](preparation-reliability-plan.md): fenced attempt receipts, bounded maintenance-only builder replacement, independent preparation, durable upgrade checkpoints, interruption recovery and rollback.
+- [x] Test full Go suite, targeted race/fault tests, shell receipt execution, vet and signed installation. Record evidence in `.local/preparation-reliability/`.
+- [x] Verify the running pool without interruption: four idle Linux workers and four ready macOS templates; slot/image snapshots unchanged across installation. The provider holds the pool lock; no setup, live destructive qualification, server restart, or accepted-job mutation performed.

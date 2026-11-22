@@ -199,9 +199,11 @@ For a partially prepared pool, run `setup` again with the same owner and options
 It resumes missing work and reuses completed bases instead of draining jobs or
 discarding images. If the interrupted command had not saved its settings yet,
 repeat its configuration flags. `upgrade` is an intentional refresh: it first
-waits for accepted work to finish, removes prepared images, and then rebuilds
-the pool. Re-running `upgrade` is not a checkpointed resume of an earlier upgrade;
-use `setup` to finish preparation that was interrupted during rebuilding.
+waits for accepted work to finish, checkpoints the configured ready bases, and
+then rebuilds the pool. Both `setup` and `upgrade` resume a pending checkpoint
+with the same configuration rather than restarting the upgrade. A terminal
+preparation failure restores the previous bases and warms capacity again; the
+command still exits with the original failure so the unsuccessful update is visible.
 
 Ctrl-C stops host reconciliation but does not cancel accepted jobs. A dispatched
 base installation runs in a guest service and can finish without the controller
@@ -297,8 +299,9 @@ with the server stopped. Containers launched by a job still need explicit device
 access, for example `docker run --device=/dev/kvm ...`.
 
 `upgrade` waits for accepted jobs to finish, retires this owner's allocations,
-removes its inactive prepared images, and prepares fresh capacity using the
-selected c2j version. For example:
+checkpoints its configured ready bases, and prepares fresh capacity using the
+selected c2j version. Checkpointed bases are removed only after all configured
+capacity passes readiness checks. For example:
 
 ```sh
 # Stop the provider server first; accepted VM jobs survive server shutdown.
@@ -308,10 +311,26 @@ pulse-macvz server
 
 Maintenance uses the normal ownership lock and refuses to race another server.
 A timeout or cancellation does not cancel accepted jobs. There is downtime for
-rebuilding capacity; once old sources have been removed, a preparation failure
-requires retrying. `upgrade` refreshes guest images/tools, not the host executable:
+rebuilding capacity. Cancellation leaves partial preparation and the previous
+bases intact for the next maintenance invocation. Disk/identity errors fail
+closed and retain the checkpoint. `upgrade` refreshes guest images/tools, not the host executable:
 install a newer signed app bundle separately, then run it. No background service
 is installed by these commands.
+
+Setup and upgrade replace failed **unused** builders at most twice per VM name.
+The budget survives controller restarts. Each replacement gets a new VM identity;
+uncertain guest commands are never replayed in place. Accepted jobs, ready
+sources and quarantined identities are excluded. Exhausted failures are reported
+after independent preparation finishes, within the command's overall timeout.
+A successful setup clears retry budgets. A new upgrade resets them after retiring
+the old builders; resuming preparation does not. Rollback grants a fresh budget for
+preparing templates from the restored bases. Private failure metadata remains in
+`~/.pulse/vz/.pulse/<owner-scope>/preparation-retries/`.
+
+The upgrade journal and previous disks live beside that directory as
+`image-upgrade.json` and `previous-images/`. They are private recovery state,
+not additional running VMs. Do not remove them during an interrupted upgrade.
+The checkpoint preserves bases; templates are recreated as needed after draining.
 
 All commands read `~/.pulse/vz/provider.json`, or `--config/-f PATH`. When the
 default file does not exist, `~/.pulse/provider.json` is used with a stderr

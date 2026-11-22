@@ -50,14 +50,15 @@ var _ api.ProviderWithLaunchLogs = (*Runtime)(nil)
 // Never run two hosts for
 // the same backend/owner scope.
 type Runtime struct {
-	logs        *launchlogs.Manager
-	archive     *launchlogs.Archive
-	loggingOnce sync.Once
-	mu          sync.RWMutex
-	p           *engine.Provider
-	closed      bool
-	period      time.Duration
-	profile     string
+	logs              *launchlogs.Manager
+	archive           *launchlogs.Archive
+	loggingOnce       sync.Once
+	mu                sync.RWMutex
+	p                 *engine.Provider
+	closed            bool
+	period            time.Duration
+	profile           string
+	maintenanceImages []string
 }
 
 func prepare(c Config) (Config, error) {
@@ -231,6 +232,17 @@ func (r *Runtime) reconcile(ctx context.Context, reportHealth bool) error {
 	return errors.Join(recovery, reconciled, health)
 }
 
+// RepairPreparations retries only verified unused builders during explicit maintenance.
+// A durable two-replacement budget prevents unbounded rebuild loops.
+func (r *Runtime) RepairPreparations(ctx context.Context) (bool, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if r.closed {
+		return false, ErrClosed
+	}
+	return r.p.RepairPreparations(ctx)
+}
+
 // DeliveryHealth reports observed delivery failures, independently of controller
 // liveness. A nil result does not certify connectivity when no guest was probed.
 func (r *Runtime) DeliveryHealth(ctx context.Context) error {
@@ -285,6 +297,16 @@ func (r *Runtime) Drain(ctx context.Context) error {
 	defer r.mu.Unlock()
 	if r.closed {
 		return ErrClosed
+	}
+	images, err := r.p.Images()
+	if err != nil {
+		return err
+	}
+	r.maintenanceImages = nil
+	for _, image := range images {
+		if image.Kind == "base" && !image.Obsolete && image.Phase == "ready" {
+			r.maintenanceImages = append(r.maintenanceImages, image.Name)
+		}
 	}
 	for i := range r.p.Config.Slots {
 		r.p.Config.Slots[i].Count = 0

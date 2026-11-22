@@ -380,3 +380,38 @@ func TestVMPropertiesMigrationOnlyImportsExistingResources(t *testing.T) {
 		t.Fatal("migration did not persist attached properties", err)
 	}
 }
+
+type checkpointProperties struct {
+	props map[string]json.RawMessage
+	key   []byte
+}
+
+func (b *checkpointProperties) ReadVMProperties() (map[string]json.RawMessage, error) {
+	return b.props, nil
+}
+func (b *checkpointProperties) WriteVMProperties(p map[string]json.RawMessage) error {
+	b.props = p
+	return nil
+}
+func (b *checkpointProperties) UpgradePropertyKey() ([]byte, error) { return b.key, nil }
+func TestEmptyUpgradeInventoryPreservesPropertyKeyAcrossRestart(t *testing.T) {
+	key := bytes.Repeat([]byte{7}, 32)
+	b := &checkpointProperties{props: map[string]json.RawMessage{}, key: key}
+	store, err := OpenVMStore("", "scope", b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(store.data.Key, key) {
+		t.Fatal("empty inventory replaced upgrade key")
+	}
+	store.data.Images["new-base"] = &ImageRecord{Name: "new-base", UID: "new", Phase: "ready", Kind: "base", NativeHash: "hash", Worker: "worker"}
+	if err = store.save(); err != nil {
+		t.Fatal(err)
+	}
+	restored, _ := json.Marshal(vmProperties{Version: 1, Scope: "scope", Key: key, Image: &ImageRecord{Name: "restored", UID: "old", NativeHash: "hash", Worker: "worker", Phase: "ready", Kind: "base"}})
+	b.props["restored"] = restored
+	next, err := OpenVMStore("", "scope", b)
+	if err != nil || len(next.data.Images) != 2 {
+		t.Fatal("restored/new sources cannot coexist", err)
+	}
+}

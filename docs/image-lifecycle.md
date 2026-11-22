@@ -28,12 +28,15 @@ The unprivileged c2j process receives the lease through stdin and uses it to ret
 ## Updating without a Pulse release
 
 Run `pulse-macvz upgrade` with the same owner/configuration after stopping the
-controller. It drains accepted work before removing owned sources and rebuilding
-capacity. Names identify owner/base/group/size/slot, never a c2j version. Changing
+controller. It drains accepted work, checkpoints configured ready bases, and
+rebuilds capacity before removing the checkpoint. Failed updates restore the
+previous bases; interrupted maintenance resumes its checkpoint. Names identify owner/base/group/size/slot, never a c2j version. Changing
 a library version or `C2JVersion` alone does not replace existing sources.
 
 ## Retention and recovery
 
 `Close` preserves native resources. `Drain` stops admissions and releases slots after active work completes, keeping images for reuse. `PurgeImages` explicitly removes known, stopped sources after draining. Images not recorded in the runtime's inventory, including extra canonical aliases, are outside that operation.
 
-VZ keeps ownership, preparation and delivery properties in each VM's private `pulse.json`. Restart reconstructs the pool from existing VMs; deletion removes the reservation. Pulse submits each LaunchID once. Native operations are never replayed, and ambiguous creation without a VM leaves no permanent reservation. Failed builders remain inspectable. There is no attempt to clean an executed VM for another job. See the README for legacy migration.
+VZ keeps ownership, preparation and delivery properties in each VM's private `pulse.json`. Restart reconstructs the pool from existing VMs; deletion removes the reservation. Pulse submits each LaunchID once. Native operations are never replayed, and ambiguous creation without a VM leaves no permanent reservation. Normal reconciliation leaves failed builders inspectable. Explicit setup/upgrade
+can replace verified unused failed builders twice, preserving private metadata
+and a retry budget across restarts. There is no attempt to clean an executed VM for another job. See the README for legacy migration.

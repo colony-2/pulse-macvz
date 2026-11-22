@@ -45,6 +45,18 @@ func OpenVMStore(legacyDir, scope string, b VMPropertyBackend) (*Store, error) {
 	if _, err := rand.Read(key); err != nil {
 		return nil, err
 	}
+	if checkpoint, ok := b.(interface{ UpgradePropertyKey() ([]byte, error) }); ok {
+		saved, err := checkpoint.UpgradePropertyKey()
+		if err != nil {
+			return nil, err
+		}
+		if len(saved) != 0 {
+			if len(saved) != 32 {
+				return nil, fmt.Errorf("invalid upgrade property key")
+			}
+			key = saved
+		}
+	}
 	s := &Store{properties: b, data: emptyState(scope, key)}
 	props, err := b.ReadVMProperties()
 	if err != nil {

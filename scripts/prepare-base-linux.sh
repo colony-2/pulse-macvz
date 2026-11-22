@@ -34,6 +34,7 @@ UNIT
  done
  exit 1
 fi
+rm -f /var/lib/pulse-tart-build/ready
 export DEBIAN_FRONTEND=noninteractive HOME=/root
 apt-get update
 # Fresh Ubuntu boots may still be applying unattended updates. Let apt wait

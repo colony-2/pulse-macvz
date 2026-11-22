@@ -1,8 +1,6 @@
 package provider
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"time"
 
@@ -10,8 +8,7 @@ import (
 )
 
 func (p *Provider) engineBaseName(ep config.EngineProfile) string {
-	sum := sha256.Sum256([]byte("apt-engine-v1\n" + ep.Image + "\n" + ep.EngineVersion))
-	return config.BaseImageName(p.Config.OwnerID, "docker-engine-"+hex.EncodeToString(sum[:12]))
+	return config.EngineBaseImageName(p.Config.OwnerID, ep)
 }
 
 func (p *Provider) engineBases() map[string]config.EngineProfile {

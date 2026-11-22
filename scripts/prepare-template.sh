@@ -41,6 +41,7 @@ PLIST
 fi
 # A restored clone must never repeat template preparation.
 [[ ! -f $state/ready ]] || exit 0
+rm -f "$state/failed"
 (sleep "$seconds"; touch "$state/failed"; /sbin/shutdown -h now) &
 guard=$!
 trap 'kill "$guard" 2>/dev/null || true' EXIT

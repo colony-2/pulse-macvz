@@ -2,6 +2,8 @@ package local
 
 import (
 	"context"
+	"encoding/json"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -89,6 +91,12 @@ func (b *Client) PreparationProgress() backend.PreparationProgress {
 	}
 	for name, r := range b.records {
 		v := backend.VMProgress{Name: name, Stage: r.Phase}
+		if !r.Reusable {
+			var retry preparationRetries
+			if data, err := privateFile(filepath.Join(b.dir, "preparation-retries", name+".json")); err == nil && json.Unmarshal(data, &retry) == nil {
+				v.RetryAttempt = retry.Count
+			}
+		}
 		if r.Delivery != nil {
 			v.Stage, v.Cause = r.Delivery.Stage, r.Delivery.Cause
 		}

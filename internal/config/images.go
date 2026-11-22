@@ -21,3 +21,9 @@ func BaseImageName(owner, base string) string {
 func SlotImageName(owner string, g SlotGroup, index int) string {
 	return fmt.Sprintf("pulse-%s-%s-%s-%dcpu-%dm-slot-%04d", ImageToken(owner), ImageToken(g.Base), ImageToken(g.Name), g.CPU, g.MemoryMiB, index)
 }
+
+// EngineBaseImageName identifies the software-only companion source.
+func EngineBaseImageName(owner string, ep EngineProfile) string {
+	sum := sha256.Sum256([]byte("apt-engine-v1\n" + ep.Image + "\n" + ep.EngineVersion))
+	return BaseImageName(owner, fmt.Sprintf("docker-engine-%x", sum[:12]))
+}

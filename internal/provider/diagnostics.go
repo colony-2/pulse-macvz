@@ -68,6 +68,12 @@ func (p *Provider) preparationSignature(key string) string {
 			return p.Store.hash([]string{r.UID, r.NativeHash, r.Phase, p.Store.hash(p.Config.Config)})
 		}
 	}
+	if strings.HasPrefix(key, "image:") {
+		name := strings.TrimPrefix(key, "image:")
+		if base, ok := p.requiredBaseImages()[name]; ok {
+			return p.Store.hash([]string{"registry", base.Image, p.Store.hash(p.Config.Config)})
+		}
+	}
 	if strings.HasPrefix(key, "slot:") {
 		if r := p.Store.data.Slots[strings.TrimPrefix(key, "slot:")]; r != nil {
 			return p.Store.hash([]string{r.UID, r.NativeHash, r.ConfigHash, r.Phase, p.Store.hash(p.Config.Config)})

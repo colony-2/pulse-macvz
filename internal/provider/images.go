@@ -390,7 +390,8 @@ func (p *Provider) reconcileImages(ctx context.Context) error {
 			}); ok {
 				ready, err := preparer.PrepareSource(ctx, base.Image)
 				if err != nil {
-					return backendError("prepare registry source", err)
+					p.preparation("image:"+name, backendError("prepare registry source", err))
+					continue
 				}
 				if !ready {
 					continue
@@ -493,7 +494,16 @@ func (p *Provider) PurgeImages(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		if !p.imageMatches(r, v) || !v.Stopped() {
+		if !p.imageMatches(r, v) || r.Phase == "quarantine" {
+			return fmt.Errorf("image %s is not safely removable", name)
+		}
+		if stopper, ok := p.Backend.(interface {
+			StopPreparation(context.Context, string, string) error
+		}); ok {
+			if err := stopper.StopPreparation(ctx, name, v.UID); err != nil {
+				return err
+			}
+		} else if !v.Stopped() {
 			return fmt.Errorf("image %s is not safely removable", name)
 		}
 		if err := p.Backend.Delete(ctx, name); err != nil {

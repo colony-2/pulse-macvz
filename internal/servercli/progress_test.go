@@ -28,11 +28,11 @@ func TestGuestObservationProgressShowsActivityAndReboots(t *testing.T) {
 }
 
 func TestSetupReportsObservedFailureOnlyForRequiredImages(t *testing.T) {
-	c, err := (capacityOptions{macOS: 1, linux: 1}).config("test", "", "", 0, 0)
+	c, err := (capacityOptions{macOS: 1, macBase: "macos-26-arm64"}).config("test", "", "", 0, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	f := &progressRuntime{images: []macvz.ImageStatus{{Name: "base15", Phase: "preparing"}},
+	f := &progressRuntime{images: []macvz.ImageStatus{{Name: "base15", Base: "macos-26-arm64", Phase: "preparing"}},
 		progress: macvz.PreparationProgress{VMs: []macvz.VMProgress{{Name: "base15", Stage: "base_failed", Cause: "guest_reboot_loop", Reboots: 3}}}}
 	if _, err := capacityReady(c, f); err == nil || !strings.Contains(err.Error(), "guest_reboot_loop") {
 		t.Fatal(err)

@@ -69,6 +69,8 @@ type basePreparation struct {
 	reboots                 int
 	logBytes                int64
 	observed                time.Time
+	ctx                     context.Context
+	cancel                  context.CancelFunc
 	done                    bool
 	err                     error
 }
@@ -168,6 +170,7 @@ func (b *Client) observePreparation(ctx context.Context, name, uid, version, kin
 	}
 	deadline := r.Created.Add(b.timeout)
 	s.done = false
+	s.ctx, s.cancel = context.WithCancel(b.ctx)
 	b.wg.Add(1)
 	go b.monitorBase(name, r, s, version, deadline, b.Exec)
 	return nil
@@ -180,7 +183,11 @@ func (b *Client) monitorBase(name string, r *record, s *basePreparation, version
 	// one bounded observation of a matching builder, even after its original
 	// deadline. This recovers completed work without restarting installation or
 	// giving unfinished work a fresh preparation budget.
-	ctx, cancel := context.WithCancel(b.ctx)
+	parent := b.ctx
+	if s.ctx != nil {
+		parent = s.ctx
+	}
+	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
 	observe, shutdown := observeMacBase, shutdownReadyMacBase
 	if r.Spec.OS == "linux" {
@@ -250,7 +257,7 @@ func (b *Client) monitorBase(name string, r *record, s *basePreparation, version
 		}
 	}
 	b.mu.Lock()
-	if !b.closed && b.ctx.Err() == nil {
+	if !b.closed && ctx.Err() == nil {
 		s.stage, s.cause = "base_failed", "preparation_timeout"
 		s.err = errors.New("base preparation deadline expired before readiness was observed")
 	}

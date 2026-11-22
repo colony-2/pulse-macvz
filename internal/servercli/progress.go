@@ -159,7 +159,12 @@ func preparationRows(c macvz.Config, r managedRuntime, now time.Time) ([]progres
 	return rows, nil
 }
 
-func vmStage(phase string, v macvz.VMProgress) string {
+func vmStage(phase string, v macvz.VMProgress) (detail string) {
+	defer func() {
+		if v.RetryAttempt > 0 {
+			detail = fmt.Sprintf("replacement %d/2; %s", v.RetryAttempt, detail)
+		}
+	}()
 	if phase == "ready" || phase == "failed" || phase == "quarantine" {
 		return phase
 	}

@@ -43,10 +43,24 @@ PLIST
   /sbin/shutdown -h now
   exit 1
 fi
-(sleep "$seconds"; touch "$state/failed"; /sbin/shutdown -h now) &
+# launchd can restart this unused builder after a guest reboot. Receipts belong
+# to the current attempt: a recovered install must not retain an earlier failure,
+# and a failed retry must not expose an earlier successful receipt.
+attempt=$(/usr/bin/uuidgen)
+printf '%s\n' "$attempt" > "$state/attempt.tmp"
+mv -f "$state/attempt.tmp" "$state/attempt"
+rm -f "$state/ready" "$state/failed"
+current_attempt() { [[ $(cat "$state/attempt") == "$attempt" ]]; }
+fail_attempt() {
+  current_attempt || return 0
+  printf '%s\n' "$attempt" > "$state/failed.tmp"
+  mv -f "$state/failed.tmp" "$state/failed"
+  /sbin/shutdown -h now
+}
+(sleep "$seconds"; fail_attempt) &
 guard=$!
 trap 'kill "$guard" 2>/dev/null || true' EXIT
-trap 'touch "$state/failed"; sleep 5; /sbin/shutdown -h now' ERR
+trap 'fail_attempt' ERR
 [[ $(/usr/bin/sw_vers -productVersion) == "$expected_os" ]]
 if [[ $mode == install ]]; then
   /bin/bash "$bundle/prepare-image.sh" "$bundle"
@@ -63,4 +77,6 @@ sync
 kill "$guard" 2>/dev/null || true
 wait "$guard" 2>/dev/null || true
 trap - EXIT
-printf 'ready\n' > "$state/ready"
+current_attempt
+printf '%s\n' "$attempt" > "$state/ready.tmp"
+mv -f "$state/ready.tmp" "$state/ready"

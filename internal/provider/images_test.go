@@ -79,8 +79,8 @@ func TestPendingSourceDoesNotBlockReadyAllocation(t *testing.T) {
 		t.Fatal("pending source blocked ready capacity", out, err)
 	}
 	b.err = errors.New("registry unavailable")
-	if err := p.Reconcile(t.Context()); !errors.Is(err, b.err) {
-		t.Fatal("registry failure not reported", err)
+	if err := p.Reconcile(t.Context()); err != nil || !errors.Is(p.preparationCauses["image:"+p.baseImageName(cold.Name)].cause, b.err) {
+		t.Fatal("registry failure must remain scoped while other capacity reconciles", err)
 	}
 	b.err, b.ready = nil, true
 	if err := p.Reconcile(t.Context()); err != nil {
@@ -248,5 +248,41 @@ func TestImageStatusDistinguishesSupersededBaseFromCompanion(t *testing.T) {
 		if image.Name == companion && (image.Obsolete || !image.Companion) {
 			t.Fatal("companion mislabeled", image)
 		}
+	}
+}
+
+type repairingBackend struct {
+	*fake
+	repaired []string
+}
+
+func (b *repairingBackend) RetryPreparation(_ context.Context, name, uid string) (bool, error) {
+	b.repaired = append(b.repaired, name)
+	return true, nil
+}
+func TestMaintenanceRepairRequiresCurrentMatchingUnusedImage(t *testing.T) {
+	for _, mode := range []string{"failed", "ready", "quarantine", "replacement", "obsolete"} {
+		t.Run(mode, func(t *testing.T) {
+			p, f := fixture(t)
+			b := &repairingBackend{fake: f}
+			p.Backend = b
+			r := p.Store.data.Images[f.baseVM.Name]
+			r.Phase = "failed"
+			switch mode {
+			case "ready", "quarantine":
+				r.Phase = mode
+			case "replacement":
+				f.baseVM.UID = "different"
+			case "obsolete":
+				p.Config.Slots = nil
+			}
+			pending, err := p.RepairPreparations(t.Context())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if pending != (mode == "failed") || len(b.repaired) != map[bool]int{true: 1, false: 0}[mode == "failed"] {
+				t.Fatal(mode, pending, b.repaired)
+			}
+		})
 	}
 }
