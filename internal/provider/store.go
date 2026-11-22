@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/colony-2/pulse-macvz/internal/ctxlock"
+	"github.com/colony-2/pulse-macvz/internal/workerhealth"
 
 	compute "github.com/colony-2/pulse-provider-api"
 	"golang.org/x/sys/unix"
@@ -21,19 +22,20 @@ import (
 var ErrState = errors.New("provider state unavailable")
 
 type Record struct {
-	diagnostic  string         // Latest in-memory outcome detail; never persisted.
-	LaunchID    string         `json:"launch_id"`
-	Fingerprint string         `json:"fingerprint"`
-	NativeHash  string         `json:"native_hash"`
-	Name        string         `json:"name"`
-	UID         string         `json:"uid"`
-	Job         compute.JobRef `json:"job"`
-	Created     time.Time      `json:"created"`
-	Outcome     compute.Status `json:"outcome"`
-	Phase       string         `json:"phase"`
-	PairID      string         `json:"pair_id,omitempty"`
-	SlotID      string         `json:"slot_id,omitempty"`
-	Base        string         `json:"base,omitempty"`
+	Health      *workerhealth.State `json:"health,omitempty"`
+	diagnostic  string              // Latest in-memory outcome detail; never persisted.
+	LaunchID    string              `json:"launch_id"`
+	Fingerprint string              `json:"fingerprint"`
+	NativeHash  string              `json:"native_hash"`
+	Name        string              `json:"name"`
+	UID         string              `json:"uid"`
+	Job         compute.JobRef      `json:"job"`
+	Created     time.Time           `json:"created"`
+	Outcome     compute.Status      `json:"outcome"`
+	Phase       string              `json:"phase"`
+	PairID      string              `json:"pair_id,omitempty"`
+	SlotID      string              `json:"slot_id,omitempty"`
+	Base        string              `json:"base,omitempty"`
 }
 type state struct {
 	Version int                     `json:"version"`

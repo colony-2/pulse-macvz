@@ -16,6 +16,7 @@ import (
 	"github.com/colony-2/pulse-macvz/internal/local"
 	engine "github.com/colony-2/pulse-macvz/internal/provider"
 	"github.com/colony-2/pulse-macvz/internal/vz"
+	"github.com/colony-2/pulse-macvz/internal/workerhealth"
 	"github.com/spf13/cobra"
 )
 
@@ -88,15 +89,16 @@ type statusAllocation struct {
 	Companion *statusVM `json:"companion,omitempty"`
 }
 type statusJob struct {
-	LaunchID   string    `json:"launch_id"`
-	Base       string    `json:"base,omitempty"`
-	InstanceID string    `json:"jobdb_instance"`
-	TenantID   string    `json:"tenant"`
-	JobID      string    `json:"job_id"`
-	Phase      string    `json:"recorded_phase"`
-	Outcome    string    `json:"recorded_outcome"`
-	RecordedAt time.Time `json:"submission_recorded_at"`
-	VM         *statusVM `json:"vm,omitempty"`
+	Health     *workerhealth.State `json:"health,omitempty"`
+	LaunchID   string              `json:"launch_id"`
+	Base       string              `json:"base,omitempty"`
+	InstanceID string              `json:"jobdb_instance"`
+	TenantID   string              `json:"tenant"`
+	JobID      string              `json:"job_id"`
+	Phase      string              `json:"recorded_phase"`
+	Outcome    string              `json:"recorded_outcome"`
+	RecordedAt time.Time           `json:"submission_recorded_at"`
+	VM         *statusVM           `json:"vm,omitempty"`
 }
 type imageStatus struct {
 	Kind string    `json:"kind"`
@@ -308,7 +310,7 @@ func readPoolStatus(ctx context.Context, o serverOptions) (poolStatus, error) {
 	for _, id := range ids {
 		r := jobs[id]
 		s := getSlot(r.SlotID)
-		j := statusJob{LaunchID: r.LaunchID, Base: r.Base, InstanceID: r.Job.InstanceID, TenantID: r.Job.TenantID, JobID: r.Job.JobID, Phase: r.Phase, Outcome: string(r.Outcome), RecordedAt: r.Created, VM: lookup(r.Name, r.UID)}
+		j := statusJob{Health: r.Health, LaunchID: r.LaunchID, Base: r.Base, InstanceID: r.Job.InstanceID, TenantID: r.Job.TenantID, JobID: r.Job.JobID, Phase: r.Phase, Outcome: string(r.Outcome), RecordedAt: r.Created, VM: lookup(r.Name, r.UID)}
 		s.Jobs = append(s.Jobs, j)
 		if !r.Created.IsZero() && (s.LastRecordedSubmission == nil || r.Created.After(*s.LastRecordedSubmission)) {
 			stamp := r.Created

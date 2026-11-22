@@ -185,5 +185,5 @@ func (o *serverOptions) resolvePool() error {
 }
 
 func inspectionCommand(name string) bool {
-	return name == "status" || name == "images" || name == "logs" || name == "launches" || name == "show"
+	return name == "status" || name == "images" || name == "logs" || name == "launches" || name == "show" || name == "health"
 }

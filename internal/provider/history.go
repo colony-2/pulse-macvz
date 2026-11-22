@@ -21,7 +21,7 @@ func (p *Provider) EnableHistory() {
 		failed := false
 		for _, r := range p.Store.data.Records {
 			now := time.Now().UTC()
-			h := launchhistory.Record{LaunchID: r.LaunchID, InstanceID: r.Job.InstanceID, Tenant: r.Job.TenantID, JobID: r.Job.JobID, VMName: r.Name, VMUID: r.UID, Slot: r.SlotID, Base: r.Base, Admission: string(r.Outcome), Phase: r.Phase, ObservedAt: &now}
+			h := launchhistory.Record{Health: r.Health, LaunchID: r.LaunchID, InstanceID: r.Job.InstanceID, Tenant: r.Job.TenantID, JobID: r.Job.JobID, VMName: r.Name, VMUID: r.UID, Slot: r.SlotID, Base: r.Base, Admission: string(r.Outcome), Phase: r.Phase, ObservedAt: &now}
 			if !r.Created.IsZero() {
 				stamp := r.Created
 				h.SubmittedAt = &stamp

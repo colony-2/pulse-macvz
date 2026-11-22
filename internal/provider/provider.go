@@ -12,6 +12,7 @@ import (
 
 	"github.com/colony-2/pulse-macvz/internal/backend"
 	"github.com/colony-2/pulse-macvz/internal/config"
+	"github.com/colony-2/pulse-macvz/internal/workerhealth"
 	compute "github.com/colony-2/pulse-provider-api"
 )
 
@@ -251,7 +252,7 @@ func (p *Provider) Submit(ctx context.Context, ls []compute.Launch) ([]compute.S
 			out = append(out, p.submission(l.LaunchID, compute.NoCapacity))
 			continue
 		}
-		r := &Record{LaunchID: l.LaunchID, Fingerprint: hash, NativeHash: p.Store.hash(spec), Name: spec.Name, Job: l.Job, Created: time.Now().UTC(), Outcome: compute.Unknown, Phase: "dispatch", SlotID: slotID, Base: p.dockerGroup(slotID).Base}
+		r := &Record{Health: &workerhealth.State{Status: "pending"}, LaunchID: l.LaunchID, Fingerprint: hash, NativeHash: p.Store.hash(spec), Name: spec.Name, Job: l.Job, Created: time.Now().UTC(), Outcome: compute.Unknown, Phase: "dispatch", SlotID: slotID, Base: p.dockerGroup(slotID).Base}
 		p.Store.data.Records[l.LaunchID] = r
 		p.preferredGroup = ""
 		if e := p.Store.save(); e != nil {

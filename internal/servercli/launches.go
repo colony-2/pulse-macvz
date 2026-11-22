@@ -42,7 +42,7 @@ func logRoot(o serverOptions) string {
 
 func NewLaunchesCommand() *cobra.Command {
 	cmd := launchCommand(false)
-	cmd.AddCommand(launchCommand(true))
+	cmd.AddCommand(launchCommand(true), NewLaunchHealthCommand())
 	return cmd
 }
 func launchCommand(detail bool) *cobra.Command {
@@ -197,7 +197,7 @@ func readLaunches(ctx context.Context, o serverOptions) (launchReport, error) {
 	report.Warnings = append(report.Warnings, live.Warnings...)
 	for _, s := range live.Slots {
 		for _, j := range s.Jobs {
-			r := launchhistory.Record{LaunchID: j.LaunchID, InstanceID: j.InstanceID, Tenant: j.TenantID, JobID: j.JobID, Base: j.Base, Slot: s.ID, Phase: j.Phase, Admission: j.Outcome, ObservedAt: &live.ObservedAt}
+			r := launchhistory.Record{Health: j.Health, LaunchID: j.LaunchID, InstanceID: j.InstanceID, Tenant: j.TenantID, JobID: j.JobID, Base: j.Base, Slot: s.ID, Phase: j.Phase, Admission: j.Outcome, ObservedAt: &live.ObservedAt}
 			if !j.RecordedAt.IsZero() {
 				t := j.RecordedAt
 				r.SubmittedAt = &t

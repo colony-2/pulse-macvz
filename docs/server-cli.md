@@ -114,6 +114,8 @@ pulse-macvz launches --tenant c2 --since 24h --limit 20
 pulse-macvz launches --job JOB_ID --json
 pulse-macvz launches show LAUNCH_ID
 pulse-macvz launches show LAUNCH_ID --json
+pulse-macvz launches health LAUNCH_ID
+pulse-macvz launches health LAUNCH_ID --json
 pulse-macvz logs LAUNCH_ID
 pulse-macvz logs LAUNCH_ID --follow
 pulse-macvz logs LAUNCH_ID --offset 4096
@@ -123,6 +125,10 @@ These commands read host-side metadata and archives and can run alongside the
 reverse provider. They do not acquire the controller lock, contact guests, change
 configuration, or start VMs. Select the same `--owner`, `--vm-home`, `--config`,
 and, when customized, `--log-directory` as the server.
+
+`launches health LAUNCH_ID` probes a running c2j worker and shows its recorded
+heartbeat status. See [worker health monitoring](worker-health.md) for startup
+and failure windows, cleanup, restart behavior, and image compatibility.
 
 `launches` shows submission time, tenant, job ID, c2j version/short commit, base,
 log availability, and launch ID. Results are sorted by submission time, newest

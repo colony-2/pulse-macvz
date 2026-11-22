@@ -47,6 +47,6 @@ func NewImagesCommand() *cobra.Command { return servercli.NewImagesCommand() }
 // NewLogsCommand reads retained per-launch output without opening a controller.
 func NewLogsCommand() *cobra.Command { return servercli.NewLogsCommand() }
 
-// NewLaunchesCommand lists retained launch history and supplies its show subcommand.
+// NewLaunchesCommand lists retained launch history and supplies show and health subcommands.
 // It is read-only and can run alongside the active reverse provider.
 func NewLaunchesCommand() *cobra.Command { return servercli.NewLaunchesCommand() }

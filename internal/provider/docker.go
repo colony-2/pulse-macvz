@@ -21,6 +21,7 @@ import (
 
 	"github.com/colony-2/pulse-macvz/internal/backend"
 	"github.com/colony-2/pulse-macvz/internal/config"
+	"github.com/colony-2/pulse-macvz/internal/workerhealth"
 	api "github.com/colony-2/pulse-provider-api"
 	"golang.org/x/crypto/ssh"
 )
@@ -897,7 +898,7 @@ func (p *Provider) submitDocker(ctx context.Context, l api.Launch, hash string) 
 		pair.DeliveryHash = hex.EncodeToString(sum[:])
 		pair.LaunchID = l.LaunchID
 		pair.Phase = "handoff-intent"
-		r := &Record{LaunchID: l.LaunchID, Fingerprint: hash, Name: pair.Primary.Name, UID: pair.PrimaryUID, NativeHash: pair.PrimaryHash, Job: l.Job, Created: time.Now().UTC(), Outcome: api.Unknown, Phase: "dispatch", SlotID: pair.SlotID, PairID: pair.ID, Base: pair.Base}
+		r := &Record{Health: &workerhealth.State{Status: "pending"}, LaunchID: l.LaunchID, Fingerprint: hash, Name: pair.Primary.Name, UID: pair.PrimaryUID, NativeHash: pair.PrimaryHash, Job: l.Job, Created: time.Now().UTC(), Outcome: api.Unknown, Phase: "dispatch", SlotID: pair.SlotID, PairID: pair.ID, Base: pair.Base}
 		p.Store.data.Records[l.LaunchID] = r
 		p.preferredGroup = ""
 		if e := p.Store.save(); e != nil {

@@ -15,9 +15,11 @@ import (
 	"github.com/colony-2/pulse-macvz/guest/logstore"
 	"github.com/colony-2/pulse-macvz/internal/config"
 	"github.com/colony-2/pulse-macvz/internal/local"
+	"github.com/colony-2/pulse-macvz/internal/workerhealth"
 )
 
 type Record struct {
+	Health            *workerhealth.State `json:"health,omitempty"`
 	Version           int                 `json:"version"`
 	LaunchID          string              `json:"launch_id"`
 	InstanceID        string              `json:"jobdb_instance,omitempty"`
@@ -113,6 +115,9 @@ func Merge(old, next Record) (Record, error) {
 	}
 	if next.ObservedAt != nil && (old.ObservedAt == nil || !next.ObservedAt.Before(*old.ObservedAt)) {
 		old.ObservedAt = next.ObservedAt
+		if next.Health != nil {
+			old.Health = next.Health
+		}
 		if next.Phase != "" {
 			old.Phase = next.Phase
 		}

@@ -13,8 +13,9 @@ import (
 const ImageVersionFile = "pulse.c2j.json"
 
 type ImageVersion struct {
-	Version  string `json:"version,omitempty"`
-	Revision string `json:"revision,omitempty"`
+	HealthProbe bool   `json:"health_probe,omitempty"`
+	Version     string `json:"version,omitempty"`
+	Revision    string `json:"revision,omitempty"`
 }
 
 var versionToken = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._+/-]{0,199}$`)
@@ -22,10 +23,13 @@ var revisionToken = regexp.MustCompile(`^[a-f0-9]{7,40}$`)
 
 func parseImageVersion(line string) *ImageVersion {
 	f := strings.Fields(line)
-	if len(f) != 3 || f[0] != "PULSE_C2J" || (f[1] != "-" && !revisionToken.MatchString(f[1])) || (f[2] != "-" && !versionToken.MatchString(f[2])) {
+	if (len(f) != 3 && len(f) != 4) || f[0] != "PULSE_C2J" || (f[1] != "-" && !revisionToken.MatchString(f[1])) || (f[2] != "-" && !versionToken.MatchString(f[2])) {
 		return nil
 	}
-	v := &ImageVersion{Version: f[2], Revision: f[1]}
+	if len(f) == 4 && f[3] != "health-v1" {
+		return nil
+	}
+	v := &ImageVersion{Version: f[2], Revision: f[1], HealthProbe: len(f) == 4}
 	if v.Version == "-" {
 		v.Version = ""
 	}
@@ -85,6 +89,8 @@ const observeImageVersion = `if test -x /opt/pulse-tart/bin/c2j; then
   pulse_c2j_version=$(/opt/pulse-tart/bin/c2j version 2>/dev/null | head -n 1)
   pulse_c2j_version=${pulse_c2j_version#c2j version }
   pulse_c2j_revision=$(cat /opt/pulse-tart-image/c2j-revision 2>/dev/null) || pulse_c2j_revision=-
-  printf 'PULSE_C2J %s %s\n' "$pulse_c2j_revision" "$pulse_c2j_version"
+  pulse_c2j_health=
+  if /opt/pulse-tart/bin/c2j run with-lease --help 2>/dev/null | grep -- '--health-port' >/dev/null; then pulse_c2j_health=' health-v1'; fi
+  printf 'PULSE_C2J %s %s%s\n' "$pulse_c2j_revision" "$pulse_c2j_version" "$pulse_c2j_health"
 fi
 `

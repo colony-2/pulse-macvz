@@ -50,6 +50,7 @@ var _ api.ProviderWithLaunchLogs = (*Runtime)(nil)
 // Never run two hosts for
 // the same backend/owner scope.
 type Runtime struct {
+	health            *engine.HealthMonitor
 	logs              *launchlogs.Manager
 	archive           *launchlogs.Archive
 	loggingOnce       sync.Once
@@ -85,6 +86,7 @@ func newRuntime(p *engine.Provider, c Config) *Runtime {
 		return setup, err
 	}
 	r.initLogging()
+	r.health = engine.StartHealthMonitor(p)
 	return r
 }
 
@@ -320,6 +322,7 @@ func (r *Runtime) Close() error {
 		return nil
 	}
 	r.closed = true
+	r.health.Close()
 	if r.logs != nil {
 		r.logs.Close()
 		r.archive.Close()
