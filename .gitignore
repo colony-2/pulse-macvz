@@ -8,5 +8,7 @@
 /test-results/
 /tart-debug-*.log
 
+pulse-image-update*
+pulse-tart-*
 # Python test/compiler caches.
 __pycache__/

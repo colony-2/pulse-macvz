@@ -1,6 +1,6 @@
 self:
   cell: pulse-tart
-  repo: https://github.com/colony-2/pulse-tart.git
+  repo: https://github.com/colony-2/pulse-macvz.git
   ref: main
 root:
   repo: https://github.com/colony-2/c2-root.git
