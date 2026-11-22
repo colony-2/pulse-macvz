@@ -75,6 +75,7 @@ type Client struct {
 	ctx                 context.Context
 	cancel              context.CancelFunc
 	workers             map[string]bool
+	workerCancels       map[string]context.CancelFunc
 	sources             map[string]*sourcePreparation
 	basePreparations    map[string]*basePreparation
 	wg                  sync.WaitGroup
@@ -527,7 +528,12 @@ func (b *Client) Suspend(ctx context.Context, name, uid string) error {
 	e = b.hypervisor().Suspend(ctx, name)
 	return e
 }
-func (b *Client) Delete(ctx context.Context, name string) error {
+func (b *Client) Delete(ctx context.Context, name string) (err error) {
+	defer func() {
+		if err != nil {
+			err = fmt.Errorf("delete VM %s: %w", name, err)
+		}
+	}()
 	if e := b.mu.LockContext(ctx); e != nil {
 		return e
 	}
@@ -540,7 +546,12 @@ func (b *Client) Delete(ctx context.Context, name string) error {
 		return failure("delete requires observed stopped VM", nil)
 	}
 	if b.workers[name] {
-		return failure("delete blocked by native delivery worker", nil)
+		// Only a positively observed stopped VM reaches this point. Cancel
+		// its SSH delivery so it can release files before a later deletion.
+		if cancel := b.workerCancels[name]; cancel != nil {
+			cancel()
+		}
+		return fmt.Errorf("%w: VM %s uid=%s: waiting for native delivery worker", backend.ErrBusy, name, v.UID)
 	}
 	if e = b.hypervisor().Delete(ctx, name); e != nil {
 		return e
@@ -642,6 +653,12 @@ func (b *Client) deliver(r *record) {
 		return
 	}
 	b.workers[r.Spec.Name] = true
+	ctx, cancel := context.WithTimeout(b.ctx, b.timeout)
+	ctx, cancelCause := context.WithCancelCause(ctx)
+	if b.workerCancels == nil {
+		b.workerCancels = map[string]context.CancelFunc{}
+	}
+	b.workerCancels[r.Spec.Name] = func() { cancelCause(backend.ErrBusy) }
 	if r.Delivery == nil {
 		// Old records have no durable pre-exec fence. Do not infer that absence
 		// of local events proves that a guest command never ran.
@@ -655,9 +672,14 @@ func (b *Client) deliver(r *record) {
 	name := spec.Name
 	go func() {
 		defer b.wg.Done()
-		defer func() { b.mu.Lock(); delete(b.workers, name); b.mu.Unlock() }()
-		ctx, cancel := context.WithTimeout(b.ctx, b.timeout)
+		defer func() {
+			b.mu.Lock()
+			delete(b.workers, name)
+			delete(b.workerCancels, name)
+			b.mu.Unlock()
+		}()
 		defer cancel()
+		defer cancelCause(context.Canceled)
 		for ctx.Err() == nil {
 			b.mu.Lock()
 			if r.Delivered {
@@ -720,10 +742,10 @@ func (b *Client) deliver(r *record) {
 				} else if e == nil {
 					e = errors.New("invalid IP observation")
 				}
-				if e != nil {
+				if e != nil && !errors.Is(context.Cause(ctx), backend.ErrBusy) {
 					b.deliveryFailed(r, e)
 				}
-			} else if err != nil {
+			} else if err != nil && !errors.Is(context.Cause(ctx), backend.ErrBusy) {
 				b.deliveryFailed(r, err)
 			}
 			cancelSetup()

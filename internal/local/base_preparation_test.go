@@ -179,3 +179,52 @@ func TestObservedBaseReadinessIsDurableWithoutStartupReplay(t *testing.T) {
 		t.Fatal("readiness observation must not start work or shut down before host persistence")
 	}
 }
+
+func TestLinuxBaseRecoveryObservesServiceWithoutReplayingBuild(t *testing.T) {
+	for _, state := range []string{"ready", "failed"} {
+		t.Run(state, func(t *testing.T) {
+			b, _, spec := fixture(t)
+			if _, err := b.Create(t.Context(), spec); err != nil {
+				t.Fatal(err)
+			}
+			b.Close()
+			r := b.records[spec.Name]
+			r.Spec.OS = "linux"
+			b.closed = false
+			b.ctx = t.Context()
+			s := &basePreparation{uid: r.UID}
+			observed, stopped := 0, 0
+			exec := func(_ context.Context, name, uid string, script []byte) ([]byte, error) {
+				if name != spec.Name || uid != r.UID {
+					t.Fatal("wrong recovery identity")
+				}
+				switch string(script) {
+				case "expected='24.04'\n" + observeLinuxBase + observeImageVersion:
+					observed++
+					return []byte("PULSE_BASE_OBSERVATION 00000000-0000-0000-0000-000000000001 " + state + " 100\nPULSE_C2J 123abcd v1\n"), nil
+				case shutdownReadyLinuxBase:
+					stopped++
+					if !r.Delivered || !b.deliveryMarker(name) {
+						t.Fatal("shutdown before readiness persisted")
+					}
+					return nil, nil
+				default:
+					t.Fatal("replayed startup instead of observing")
+					return nil, nil
+				}
+			}
+			b.wg.Add(1)
+			b.monitorBase(spec.Name, r, s, "24.04", time.Now().Add(time.Minute), exec)
+			if observed != 1 || !s.done {
+				t.Fatal("service observation did not finish", s)
+			}
+			if state == "ready" {
+				if stopped != 1 || s.err != nil {
+					t.Fatal("ready Linux base not recovered", s)
+				}
+			} else if stopped != 0 || s.err == nil || r.Delivered {
+				t.Fatal("failed build incorrectly accepted or stopped", s)
+			}
+		})
+	}
+}

@@ -166,6 +166,28 @@ func TestStatusReadsOwnedSlotsAndAssignmentsWithoutSecrets(t *testing.T) {
 	}
 }
 
+func TestStatusPreservesUncertainHandoffWithJobAttached(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	o := statusOptions(t)
+	scope := (config.Settings{Config: o.config, Kind: "vz", Endpoint: o.vmHome}).Scope()
+	job := map[string]any{"launch_id": "launch", "slot_id": "linux-0001", "pair_id": "pair", "name": "primary", "uid": "primary-uid", "job": map[string]any{"job_id": "job"}}
+	pair := map[string]any{"ID": "pair", "SlotID": "linux-0001", "Base": "ubuntu-24.04-arm64", "Phase": "handoff-intent", "LaunchID": "launch", "Primary": map[string]any{"Name": "primary"}, "PrimaryUID": "primary-uid"}
+	writeStatusFixture(t, o.vmHome, scope, "primary", map[string]any{"pair": pair, "job": job}, true)
+	r, err := readPoolStatus(t.Context(), o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range r.Slots {
+		if s.ID == "linux-0001" {
+			if s.State != "handoff uncertain" || len(s.Jobs) != 1 {
+				t.Fatal("assignment hid uncertainty", s.State)
+			}
+			return
+		}
+	}
+	t.Fatal("missing assigned slot")
+}
+
 func TestStatusCommandWorksWithControllerLockAndDoesNotSave(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

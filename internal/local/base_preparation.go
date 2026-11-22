@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-// Only the provider's verified, unused macOS base builders use this observer.
+// Only the provider's verified, unused base builders use this observer.
 // It never replays StartupScript: preparation survives SSH in a guest service,
 // whereas a job with an uncertain execution outcome must never be replayed.
 const observeMacBase = `set -eu
@@ -38,8 +38,34 @@ sync
 sudo -n /sbin/shutdown -h now
 `
 
+const observeLinuxBase = `set -eu
+boot=$(cat /proc/sys/kernel/random/boot_id)
+. /etc/os-release
+state=absent
+if [[ $ID != ubuntu || $VERSION_ID != "$expected" ]]; then state=failed
+elif sudo -n test -f /var/lib/pulse-tart-build/ready; then
+  state=ready
+  for tool in c2j pulse-tart-guest git node pnpm uv python3; do
+    sudo -n test -x "/opt/pulse-tart/bin/$tool" || state=failed
+  done
+  sudo -n test -f /opt/pulse-tart-image/bootstrap-guest.sh || state=failed
+elif sudo -n systemctl is-failed --quiet pulse-tart-build.service; then state=failed
+elif sudo -n systemctl is-active --quiet pulse-tart-build.service; then state=preparing
+elif sudo -n test -d /var/lib/pulse-tart-build; then state=preparing
+fi
+bytes=$(sudo -n stat -c %s /var/log/pulse-tart-build.log 2>/dev/null || echo 0)
+printf 'PULSE_BASE_OBSERVATION %s %s %s\n' "$boot" "$state" "$bytes"
+`
+
+const shutdownReadyLinuxBase = `set -eu
+sudo -n test -f /var/lib/pulse-tart-build/ready
+sync
+sudo -n /sbin/shutdown -h now
+`
+
 type basePreparation struct {
 	uid, boot, stage, cause string
+	kind                    string
 	reboots                 int
 	logBytes                int64
 	observed                time.Time
@@ -85,7 +111,7 @@ func (s *basePreparation) observe(data []byte, now time.Time) error {
 	s.boot, s.logBytes, s.observed = boot, size, now
 	s.stage, s.cause = "base_"+state, ""
 	if state == "failed" {
-		s.err = errors.New("guest preparation service reported failure; inspect /var/log/pulse-tart-base.log in the builder")
+		s.err = errors.New("guest preparation service reported failure; inspect its build log in the builder")
 	} else if state != "ready" && s.reboots >= 3 {
 		s.stage, s.cause = "base_failed", "guest_reboot_loop"
 		s.err = fmt.Errorf("guest rebooted %d times during base preparation; preparation cannot complete while the guest keeps rebooting", s.reboots)
@@ -96,7 +122,19 @@ func (s *basePreparation) observe(data []byte, now time.Time) error {
 // ObserveBasePreparation is called only after the provider has checked the
 // image record's UID and full spec. SSH observation runs outside reconciliation.
 func (b *Client) ObserveBasePreparation(ctx context.Context, name, uid, version string) error {
-	if version == "" || strings.Trim(version, "0123456789.") != "" {
+	return b.observePreparation(ctx, name, uid, version, "base")
+}
+
+func (b *Client) ObserveTemplatePreparation(ctx context.Context, name, uid, version string) error {
+	return b.observePreparation(ctx, name, uid, version, "template")
+}
+
+func (b *Client) ObserveCompanionPreparation(ctx context.Context, name, uid string) error {
+	return b.observePreparation(ctx, name, uid, "", "companion")
+}
+
+func (b *Client) observePreparation(ctx context.Context, name, uid, version, kind string) error {
+	if kind != "companion" && (version == "" || strings.Trim(version, "0123456789.") != "") {
 		return Err
 	}
 	if err := b.mu.LockContext(ctx); err != nil {
@@ -104,7 +142,10 @@ func (b *Client) ObserveBasePreparation(ctx context.Context, name, uid, version 
 	}
 	defer b.mu.Unlock()
 	r := b.records[name]
-	if b.closed || r == nil || r.UID != uid || r.Spec.OS != "darwin" || r.Reusable {
+	if b.closed || r == nil || r.UID != uid || (r.Spec.OS != "darwin" && r.Spec.OS != "linux") || r.Reusable {
+		return Err
+	}
+	if kind == "template" && r.Spec.OS != "darwin" || kind == "companion" && r.Spec.OS != "linux" {
 		return Err
 	}
 	if r.Delivery == nil || !r.Delivery.ExecutionPossible {
@@ -114,7 +155,7 @@ func (b *Client) ObserveBasePreparation(ctx context.Context, name, uid, version 
 		b.basePreparations = map[string]*basePreparation{}
 	}
 	s := b.basePreparations[name]
-	if s != nil && s.uid == uid {
+	if s != nil && s.uid == uid && s.kind == kind {
 		if s.err != nil {
 			return fmt.Errorf("base %s: %w", name, s.err)
 		}
@@ -122,7 +163,7 @@ func (b *Client) ObserveBasePreparation(ctx context.Context, name, uid, version 
 			return nil
 		}
 	} else {
-		s = &basePreparation{uid: uid, stage: "base_observing"}
+		s = &basePreparation{uid: uid, kind: kind, stage: "base_observing"}
 		b.basePreparations[name] = s
 	}
 	deadline := r.Created.Add(b.timeout)
@@ -141,9 +182,18 @@ func (b *Client) monitorBase(name string, r *record, s *basePreparation, version
 	// giving unfinished work a fresh preparation budget.
 	ctx, cancel := context.WithCancel(b.ctx)
 	defer cancel()
+	observe, shutdown := observeMacBase, shutdownReadyMacBase
+	if r.Spec.OS == "linux" {
+		observe, shutdown = observeLinuxBase, shutdownReadyLinuxBase
+	}
+	if s.kind == "template" {
+		observe, shutdown = observeMacTemplate, ""
+	} else if s.kind == "companion" {
+		observe, shutdown = observeCompanionBase, shutdownReadyCompanionBase
+	}
 	for ctx.Err() == nil {
 		call, done := context.WithTimeout(ctx, 15*time.Second)
-		data, err := exec(call, name, s.uid, []byte("expected='"+version+"'\n"+observeMacBase+observeImageVersion))
+		data, err := exec(call, name, s.uid, []byte("expected='"+version+"'\n"+observe+observeImageVersion))
 		done()
 		b.mu.Lock()
 		if b.closed || b.records[name] != r {
@@ -167,15 +217,19 @@ func (b *Client) monitorBase(name string, r *record, s *basePreparation, version
 		} else if s.stage == "base_ready" {
 			// Save actual guest readiness before requesting shutdown. If SSH
 			// drops during shutdown, the next controller still has the marker.
-			err = b.recordBaseReady(r)
+			if s.kind == "template" {
+				err = b.recordTemplateReady(r, data)
+			} else {
+				err = b.recordBaseReady(r)
+			}
 			if err != nil {
 				s.err = err
 				s.stage = "base_failed"
 			}
 			b.mu.Unlock()
-			if err == nil {
+			if err == nil && shutdown != "" {
 				call, done := context.WithTimeout(ctx, 15*time.Second)
-				_, _ = exec(call, name, s.uid, []byte(shutdownReadyMacBase))
+				_, _ = exec(call, name, s.uid, []byte(shutdown))
 				done()
 			}
 			return

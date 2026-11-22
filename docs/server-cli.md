@@ -99,12 +99,68 @@ startup through the updated provider. A release version alone does not establish
 its commit, so older images may still show an unknown commit until rebuilt.
 
 “Last recorded submission” is the creation time of the newest surviving job
-record for that slot. Deleted job records and declined submissions have no
-retained history, so an empty timestamp means unknown, not “never used.” The
+record for that slot. Deleted job records and declined submissions are not
+included in this slot snapshot, so an empty timestamp means unknown, not “never used.” The
 snapshot is observational: phases may lag reconciliation, and in-memory download
 progress is not visible. `cli.NewStatusCommand()` exposes the same read-only
 command for embedding in Pulse. `cli.NewImagesCommand()` exposes the separate
 read-only image inventory.
+
+### Launch history and worker logs
+
+```sh
+pulse-macvz launches
+pulse-macvz launches --tenant c2 --since 24h --limit 20
+pulse-macvz launches --job JOB_ID --json
+pulse-macvz launches show LAUNCH_ID
+pulse-macvz launches show LAUNCH_ID --json
+pulse-macvz logs LAUNCH_ID
+pulse-macvz logs LAUNCH_ID --follow
+pulse-macvz logs LAUNCH_ID --offset 4096
+```
+
+These commands read host-side metadata and archives and can run alongside the
+reverse provider. They do not acquire the controller lock, contact guests, change
+configuration, or start VMs. Select the same `--owner`, `--vm-home`, `--config`,
+and, when customized, `--log-directory` as the server.
+
+`launches` shows submission time, tenant, job ID, c2j version/short commit, base,
+log availability, and launch ID. Results are sorted by submission time, newest
+first, with unknown times last. The default limit is 100; `--limit 0` shows all.
+`--tenant` and `--job` match exactly. `--since` accepts an RFC3339 timestamp or
+a nonnegative duration such as `24h`; records without submission time cannot
+match this filter. `show` adds JobDB instance, slot, immutable VM identity, recorded
+admission/phase, metadata observation and VM cleanup times, and log offsets.
+VM cleanup and log closure do not establish job success or its exact finish time.
+
+The provider snapshots public launch metadata when saving dispatch/admission and
+reconciliation state, including the actual VM's c2j sidecar. Lightweight history
+lives in `<log-directory>/<owner-scope>/history/` independently of VM deletion
+and log byte/age retention. History is not currently expired automatically. It
+contains no leases, SSH passwords, JobDB URLs, or worker command arguments, and
+is never used to restore capacity or resubmit jobs. A history write failure is
+reported as a warning and does not stop accepted work.
+
+Existing archive identities and surviving VM records remain readable. Missing
+historical submission times, image versions, or phases are shown as unknown;
+archive update times are not substituted for launch times. Retention preserves
+legacy archive identities in history before deleting their log files. The `status`
+command remains a current slot snapshot rather than a historical last-use report.
+
+`logs` prints retained combined worker stdout/stderr, including compressed rotated
+segments. `--follow` (`-F`) waits for new bytes and exits when capture closes; Ctrl-C
+stops waiting. The existing `--launch-id` (`-i`) form remains supported. `--offset`
+is a raw-byte offset, not a line number. Missing output, unavailable guest helpers,
+and interrupted capture are explicit errors; retention gaps and reported byte loss
+produce warnings. Log bytes are emitted unchanged; informational messages go to stderr.
+
+Install the updated executable and restart the separate provider to persist the
+new metadata for future launches. Older images need `upgrade` to install the
+logging-capable guest helper; restarting the provider alone cannot add missing
+guest capture or recover logs that were never collected.
+
+`cli.NewLaunchesCommand()` (including `show`) and `cli.NewLogsCommand()` expose
+these commands to embedding applications.
 
 On Apple Silicon macOS, `make install` builds and signs `PulseProvider.app`
 in that directory and installs `pulse-macvz` as a symlink to its executable.
@@ -148,14 +204,34 @@ the pool. Re-running `upgrade` is not a checkpointed resume of an earlier upgrad
 use `setup` to finish preparation that was interrupted during rebuilding.
 
 Ctrl-C stops host reconciliation but does not cancel accepted jobs. A dispatched
-macOS base installation runs in a guest launchd service and can finish without
-the controller. On the next `setup` or normal provider reconciliation, the
-provider checks the guest's readiness, records it durably, and requests shutdown
-before publishing the base. It checks completed builders even after their original
+base installation runs in a guest service and can finish without the controller
+(launchd on macOS, systemd on Ubuntu). On the next `setup` or normal provider
+reconciliation, the provider checks worker and Docker companion base readiness,
+records it durably, and requests shutdown before publishing the base. macOS
+template receipts are recovered similarly, but the guest stays running until
+the provider saves its suspended snapshot. Template receipts must match the
+current guest boot and configured MAC address. These checks never replay a job
+launch or restart an uncertain preparation command. Explicit service failures
+are reported by setup instead of waiting indefinitely. Ubuntu package installs
+wait up to five minutes for unattended updates to release the dpkg lock.
+
+The provider checks completed builders even after their original
 preparation deadline; unfinished builders do not get a fresh timeout. With no
 controller running, a finished builder may remain powered on and occupy capacity.
 The normal provider uses the same recovery logic, so a separate `setup` is not
 required if that provider is restarted with the updated library and configuration.
+
+Deletion of a confirmed stopped VM may briefly wait for its local delivery
+worker to exit. Reconciliation cancels that delivery, retains the reservation,
+and retries cleanup without reconnecting the reverse session. Other cleanup
+continues. Cleanup errors identify the VM and, for job allocations, the launch.
+
+`status` reports an unconfirmed worker handoff as `handoff uncertain`. A running
+VM or retained assignment does not prove that its JobDB job is running. The
+current provider protocol has no cancellation operation or JobDB terminal-state
+feed; macvz does not infer cancellation from elapsed time, network failure, or
+missing controller contact. Recovering a cancelled job's orphan VM still requires
+verification of its exact job/launch/VM identity before stopping it.
 
 VZ registry imports run in the background before a VM is created. An import
 does not hold the VM lifecycle or reconciliation locks while downloading, so

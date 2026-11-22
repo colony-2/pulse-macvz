@@ -89,6 +89,7 @@ type statusAllocation struct {
 }
 type statusJob struct {
 	LaunchID   string    `json:"launch_id"`
+	Base       string    `json:"base,omitempty"`
 	InstanceID string    `json:"jobdb_instance"`
 	TenantID   string    `json:"tenant"`
 	JobID      string    `json:"job_id"`
@@ -132,7 +133,7 @@ func readPoolStatus(ctx context.Context, o serverOptions) (poolStatus, error) {
 	scope := (config.Settings{Config: o.config, Kind: "vz", Endpoint: o.vmHome}).Scope()
 	out := poolStatus{ObservedAt: time.Now().UTC(), Owner: o.owner, Home: o.vmHome, Scope: scope, Slots: []*slotStatus{}, Images: []imageStatus{}, Notes: []string{
 		"Read-only snapshot; persisted phases may lag the running controller. In-memory preparation/download progress is not available here.",
-		"Last recorded submission is the newest surviving job record, not a historical last-use time. Deleted jobs and declined submissions are not retained.",
+		"Last recorded submission is the newest surviving job record, not a historical last-use time. Use launches for retained launch history; declined submissions are not included.",
 	}}
 	slots := map[string]*slotStatus{}
 	getSlot := func(id string) *slotStatus {
@@ -293,6 +294,9 @@ func readPoolStatus(ctx context.Context, o serverOptions) (poolStatus, error) {
 			}
 		}
 		if r := f.Properties.Job; r != nil && r.PairID == p.ID && r.LaunchID == p.LaunchID {
+			if r.Base == "" {
+				r.Base = p.Base
+			}
 			jobs[r.LaunchID] = r
 		}
 	}
@@ -304,7 +308,7 @@ func readPoolStatus(ctx context.Context, o serverOptions) (poolStatus, error) {
 	for _, id := range ids {
 		r := jobs[id]
 		s := getSlot(r.SlotID)
-		j := statusJob{LaunchID: r.LaunchID, InstanceID: r.Job.InstanceID, TenantID: r.Job.TenantID, JobID: r.Job.JobID, Phase: r.Phase, Outcome: string(r.Outcome), RecordedAt: r.Created, VM: lookup(r.Name, r.UID)}
+		j := statusJob{LaunchID: r.LaunchID, Base: r.Base, InstanceID: r.Job.InstanceID, TenantID: r.Job.TenantID, JobID: r.Job.JobID, Phase: r.Phase, Outcome: string(r.Outcome), RecordedAt: r.Created, VM: lookup(r.Name, r.UID)}
 		s.Jobs = append(s.Jobs, j)
 		if !r.Created.IsZero() && (s.LastRecordedSubmission == nil || r.Created.After(*s.LastRecordedSubmission)) {
 			stamp := r.Created
@@ -312,7 +316,14 @@ func readPoolStatus(ctx context.Context, o serverOptions) (poolStatus, error) {
 		}
 		if r.Phase != "done" {
 			s.State = "assigned"
-			if j.VM.Power != "running" {
+			for _, allocation := range s.Allocations {
+				if allocation.LaunchID == r.LaunchID && allocation.Phase == "handoff-intent" {
+					s.State = "handoff uncertain"
+				}
+			}
+			if j.VM == nil {
+				s.State += "; VM unavailable"
+			} else if j.VM.Power != "running" {
 				s.State = "assigned; " + j.VM.Power + " (awaiting reconciliation)"
 			}
 		}
@@ -376,6 +387,7 @@ func printPoolStatus(w io.Writer, r poolStatus) error {
 		return err
 	}
 	fmt.Fprintln(w, "\nStates: ready = suspended template available; idle = running worker available; assigned = job attached.")
+	fmt.Fprintln(w, "Handoff uncertain = worker start unconfirmed. An assignment or running VM does not establish JobDB job status.")
 	fmt.Fprintln(w, "VM and image details: pulse-macvz images")
 	return printStatusNotes(w, r)
 }

@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -259,6 +260,9 @@ func (p *Provider) retireObsoleteBuilders(ctx context.Context, inventory []backe
 			continue
 		}
 		if err := p.Backend.Delete(ctx, name); err != nil {
+			if errors.Is(err, backend.ErrBusy) {
+				continue
+			}
 			return backendError("retire obsolete builder", err)
 		}
 		delete(p.Store.data.Images, name)
@@ -309,11 +313,23 @@ func (p *Provider) reconcileImages(ctx context.Context) error {
 				}
 				continue
 			}
-			if base.OS != "linux" && v.PowerState == "running" {
+			// Versioned worker bases have a preparation service observer. The
+			// software-only companion uses a different service/receipt protocol.
+			if base.OSVersion != "" && v.PowerState == "running" {
 				if observer, ok := p.Backend.(interface {
 					ObserveBasePreparation(context.Context, string, string, string) error
 				}); ok {
 					if err := observer.ObserveBasePreparation(ctx, name, v.UID, base.OSVersion); err != nil {
+						p.preparation("image:"+name, err)
+						continue
+					}
+				}
+			}
+			if _, companion := engines[name]; companion && v.PowerState == "running" {
+				if observer, ok := p.Backend.(interface {
+					ObserveCompanionPreparation(context.Context, string, string) error
+				}); ok {
+					if err := observer.ObserveCompanionPreparation(ctx, name, v.UID); err != nil {
 						p.preparation("image:"+name, err)
 						continue
 					}
@@ -336,6 +352,9 @@ func (p *Provider) reconcileImages(ctx context.Context) error {
 					// The worker-local alias was absent or unusable. The exact observed
 					// probe is disposable and has never contained a lease.
 					if err := p.Backend.Delete(ctx, name); err != nil {
+						if errors.Is(err, backend.ErrBusy) {
+							continue
+						}
 						return err
 					}
 					r.Probe = false

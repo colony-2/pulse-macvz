@@ -12,7 +12,7 @@ import (
 )
 
 // NewCommand constructs the complete standalone CLI with setup, upgrade, status,
-// images, logs, and server subcommands. version is the host executable's version.
+// images, launches, logs, and server subcommands. version is the host executable's version.
 func NewCommand(version string) *cobra.Command {
 	return servercli.NewCommand(version)
 }
@@ -46,3 +46,7 @@ func NewImagesCommand() *cobra.Command { return servercli.NewImagesCommand() }
 
 // NewLogsCommand reads retained per-launch output without opening a controller.
 func NewLogsCommand() *cobra.Command { return servercli.NewLogsCommand() }
+
+// NewLaunchesCommand lists retained launch history and supplies its show subcommand.
+// It is read-only and can run alongside the active reverse provider.
+func NewLaunchesCommand() *cobra.Command { return servercli.NewLaunchesCommand() }

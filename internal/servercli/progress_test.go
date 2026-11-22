@@ -43,6 +43,30 @@ func TestSetupReportsObservedFailureOnlyForRequiredImages(t *testing.T) {
 	}
 }
 
+func TestSetupReportsFailedRequiredTemplateButNotBusyOrObsoleteTemplates(t *testing.T) {
+	c, err := (capacityOptions{macOS: 1, macBase: "macos-26-arm64"}).config("test", "", "", 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := &progressRuntime{
+		images:   []macvz.ImageStatus{{Name: "base", Phase: "ready"}},
+		slots:    []macvz.SlotStatus{{ID: "standard-0001", Template: "template", Phase: "preparing"}},
+		progress: macvz.PreparationProgress{VMs: []macvz.VMProgress{{Name: "template", Stage: "base_failed", Cause: "preparation_timeout"}}},
+	}
+	if _, err := capacityReady(c, f); err == nil || !strings.Contains(err.Error(), "template") {
+		t.Fatal("template failure hidden", err)
+	}
+	f.slots[0].Busy = true
+	if _, err := capacityReady(c, f); err != nil {
+		t.Fatal("accepted work treated as failed preparation", err)
+	}
+	f.slots[0].Busy = false
+	f.slots[0].ID = "obsolete-0001"
+	if _, err := capacityReady(c, f); err != nil {
+		t.Fatal("obsolete template blocked setup", err)
+	}
+}
+
 func (f *progressRuntime) Images() ([]macvz.ImageStatus, error)             { return f.images, nil }
 func (f *progressRuntime) Slots() ([]macvz.SlotStatus, error)               { return f.slots, nil }
 func (f *progressRuntime) DockerAllocations() ([]macvz.DockerStatus, error) { return f.pairs, nil }

@@ -401,7 +401,10 @@ func (p *Provider) reclaimPair(ctx context.Context, pair *PairRecord) error {
 			return b.Stop(ctx, v.Name, v.UID)
 		}
 		if e = p.Backend.Delete(ctx, v.Name); e != nil && !backend.IsStatus(e, 404) {
-			return backendError("Docker delete allocation", e)
+			if errors.Is(e, backend.ErrBusy) {
+				return nil // Keep the slot and companion port reserved until deletion.
+			}
+			return backendError(fmt.Sprintf("Docker delete allocation VM %s launch=%s", v.Name, pair.LaunchID), e)
 		}
 		if _, exists, e = p.pairVM(ctx, pair, primary); e != nil {
 			return e
@@ -881,7 +884,7 @@ func (p *Provider) submitDocker(ctx context.Context, l api.Launch, hash string) 
 		pair.DeliveryHash = hex.EncodeToString(sum[:])
 		pair.LaunchID = l.LaunchID
 		pair.Phase = "handoff-intent"
-		r := &Record{LaunchID: l.LaunchID, Fingerprint: hash, Name: pair.Primary.Name, UID: pair.PrimaryUID, NativeHash: pair.PrimaryHash, Job: l.Job, Created: time.Now().UTC(), Outcome: api.Unknown, Phase: "dispatch", SlotID: pair.SlotID, PairID: pair.ID}
+		r := &Record{LaunchID: l.LaunchID, Fingerprint: hash, Name: pair.Primary.Name, UID: pair.PrimaryUID, NativeHash: pair.PrimaryHash, Job: l.Job, Created: time.Now().UTC(), Outcome: api.Unknown, Phase: "dispatch", SlotID: pair.SlotID, PairID: pair.ID, Base: pair.Base}
 		p.Store.data.Records[l.LaunchID] = r
 		p.preferredGroup = ""
 		if e := p.Store.save(); e != nil {

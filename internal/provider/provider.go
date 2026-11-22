@@ -251,7 +251,7 @@ func (p *Provider) Submit(ctx context.Context, ls []compute.Launch) ([]compute.S
 			out = append(out, p.submission(l.LaunchID, compute.NoCapacity))
 			continue
 		}
-		r := &Record{LaunchID: l.LaunchID, Fingerprint: hash, NativeHash: p.Store.hash(spec), Name: spec.Name, Job: l.Job, Created: time.Now().UTC(), Outcome: compute.Unknown, Phase: "dispatch", SlotID: slotID}
+		r := &Record{LaunchID: l.LaunchID, Fingerprint: hash, NativeHash: p.Store.hash(spec), Name: spec.Name, Job: l.Job, Created: time.Now().UTC(), Outcome: compute.Unknown, Phase: "dispatch", SlotID: slotID, Base: p.dockerGroup(slotID).Base}
 		p.Store.data.Records[l.LaunchID] = r
 		p.preferredGroup = ""
 		if e := p.Store.save(); e != nil {
@@ -434,7 +434,10 @@ func (p *Provider) reconcileRecords(ctx context.Context, vms []backend.VM) error
 				continue
 			}
 			if e = p.Backend.Delete(ctx, r.Name); e != nil && !backend.IsStatus(e, 404) {
-				return backendError("Reconcile Delete", e)
+				if errors.Is(e, backend.ErrBusy) {
+					continue
+				}
+				return backendError(fmt.Sprintf("Reconcile Delete VM %s launch=%s", r.Name, r.LaunchID), e)
 			}
 			_, e = p.Backend.Get(ctx, r.Name)
 			if backend.IsStatus(e, 404) {

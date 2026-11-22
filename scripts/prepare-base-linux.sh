@@ -36,7 +36,9 @@ UNIT
 fi
 export DEBIAN_FRONTEND=noninteractive HOME=/root
 apt-get update
-apt-get install -y nix-bin nix-setup-systemd curl ca-certificates git xz-utils python3
+# Fresh Ubuntu boots may still be applying unattended updates. Let apt wait
+# for its own lock rather than failing a disposable builder immediately.
+apt-get -o DPkg::Lock::Timeout=300 install -y nix-bin nix-setup-systemd curl ca-certificates git xz-utils python3
 systemctl enable --now nix-daemon.socket
 export PATH=/nix/var/nix/profiles/default/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
 /bin/bash "$bundle/setup-linux-nix.sh"

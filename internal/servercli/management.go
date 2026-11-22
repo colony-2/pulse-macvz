@@ -155,6 +155,10 @@ func capacityReady(c macvz.Config, r managedRuntime) (bool, error) {
 	if err != nil {
 		return false, err
 	}
+	slots, err := r.Slots()
+	if err != nil {
+		return false, err
+	}
 	// A failed guest observation belongs to its base; it must not prevent
 	// reconciliation of unrelated ready capacity. Setup still fails explicitly.
 	if observer, ok := r.(interface {
@@ -168,6 +172,17 @@ func capacityReady(c macvz.Config, r managedRuntime) (bool, error) {
 		for _, image := range images {
 			if !image.Obsolete && image.Phase != "ready" {
 				wanted[image.Name] = true
+			}
+		}
+		configured := map[string]bool{}
+		for _, group := range c.Slots {
+			for i := 1; i <= group.Count; i++ {
+				configured[fmt.Sprintf("%s-%04d", group.Name, i)] = true
+			}
+		}
+		for _, slot := range slots {
+			if configured[slot.ID] && !slot.Busy && slot.Phase != "ready" {
+				wanted[slot.Template] = true
 			}
 		}
 		for _, vm := range progress.VMs {
@@ -186,10 +201,6 @@ func capacityReady(c macvz.Config, r managedRuntime) (bool, error) {
 		if image.Phase != "ready" {
 			return false, nil
 		}
-	}
-	slots, err := r.Slots()
-	if err != nil {
-		return false, err
 	}
 	pairs, err := r.DockerAllocations()
 	if err != nil {

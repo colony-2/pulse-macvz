@@ -177,6 +177,7 @@ func (r *Runtime) PreparationProgress() (PreparationProgress, error) {
 }
 func (r *Runtime) initLogging() {
 	r.loggingOnce.Do(func() {
+		r.p.EnableHistory()
 		c, _ := r.p.Config.Logging.Normalize()
 		r.archive = launchlogs.NewArchive(r.p, c)
 		r.logs = launchlogs.New(r.archive.Read)

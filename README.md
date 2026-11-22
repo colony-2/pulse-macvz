@@ -163,7 +163,9 @@ Host archives default to `~/.pulse/vz/logs`, partitioned by owner scope and hash
 LaunchID. Inspect copied output without opening a second controller:
 
 ```sh
-pulse-macvz logs --launch-id LAUNCH_ID
+pulse-macvz launches
+pulse-macvz launches show LAUNCH_ID
+pulse-macvz logs LAUNCH_ID --follow
 ```
 
 Use `Config.Logging.Directory` when embedding, or `--log-directory` on the CLI.

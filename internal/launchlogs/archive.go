@@ -12,6 +12,7 @@ import (
 
 	"github.com/colony-2/pulse-macvz/guest/logstore"
 	"github.com/colony-2/pulse-macvz/internal/config"
+	"github.com/colony-2/pulse-macvz/internal/launchhistory"
 	"github.com/colony-2/pulse-macvz/internal/provider"
 )
 
@@ -27,15 +28,11 @@ type Archive struct {
 }
 
 func NewArchive(p *provider.Provider, c config.Logging) *Archive {
-	root := c.Directory
-	if root == "" {
-		root = filepath.Join(p.Config.Endpoint, "logs")
-		if p.Config.Endpoint == "" {
-			root = filepath.Join(p.Config.StateDir, "logs")
-		}
-	}
+	settings := p.Config
+	settings.Logging = c
+	root := launchhistory.Root(settings)
 	ctx, cancel := context.WithCancel(context.Background())
-	a := &Archive{root: filepath.Join(root, p.Config.Scope()), config: c, provider: p, phases: map[string]string{}, failures: map[string]error{}, cancel: cancel, done: make(chan struct{})}
+	a := &Archive{root: root, config: c, provider: p, phases: map[string]string{}, failures: map[string]error{}, cancel: cancel, done: make(chan struct{})}
 	go a.run(ctx)
 	return a
 }
@@ -290,6 +287,11 @@ func (a *Archive) clean() {
 		if !expired && total <= a.config.MaxBytes && remaining <= 4096 && totalFiles <= 65536 {
 			continue
 		}
+		// Retain identity independently before removing the log directory.
+		// A failed history write postpones eviction rather than silently losing it.
+		if err := a.preserveHistory(c.dir, c.id); err != nil {
+			continue
+		}
 		a.fail(c.id, logstore.ErrJournal)
 		if os.RemoveAll(c.dir) == nil {
 			total -= c.size
@@ -297,4 +299,24 @@ func (a *Archive) clean() {
 			remaining--
 		}
 	}
+}
+
+func (a *Archive) preserveHistory(dir, id string) error {
+	r := launchhistory.Record{LaunchID: id}
+	data, e := launchhistory.ReadJSON(filepath.Join(dir, "identity.json"))
+	if e == nil {
+		var t provider.LogTarget
+		if json.Unmarshal(data, &t) != nil || t.LaunchID != id {
+			return launchhistory.ErrIdentity
+		}
+		r.VMName = t.Name
+		r.VMUID = t.UID
+		r.InstanceID = t.Job.InstanceID
+		r.Tenant = t.Job.TenantID
+		r.JobID = t.Job.JobID
+		r.Phase = t.Phase
+	} else if !os.IsNotExist(e) {
+		return e
+	}
+	return launchhistory.Save(a.root, r)
 }

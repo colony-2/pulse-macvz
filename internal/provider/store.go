@@ -33,6 +33,7 @@ type Record struct {
 	Phase       string         `json:"phase"`
 	PairID      string         `json:"pair_id,omitempty"`
 	SlotID      string         `json:"slot_id,omitempty"`
+	Base        string         `json:"base,omitempty"`
 }
 type state struct {
 	Version int                     `json:"version"`
@@ -53,6 +54,7 @@ type Store struct {
 	io               *journalIO
 	properties       VMPropertyBackend
 	propertySnapshot map[string]json.RawMessage
+	onSave           func() // Observational launch history; called with mu held.
 }
 
 func OpenStore(dir, scope string) (*Store, error) {
@@ -151,6 +153,14 @@ func (s *Store) hash(v any) string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 func (s *Store) save() error {
+	err := s.saveState()
+	if err == nil && s.onSave != nil {
+		s.onSave()
+	}
+	return err
+}
+
+func (s *Store) saveState() error {
 	if s.properties != nil {
 		return s.saveProperties()
 	}

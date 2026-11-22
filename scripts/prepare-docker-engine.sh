@@ -14,7 +14,7 @@ if ! command -v docker >/dev/null || [[ $(docker --version) != *" $version,"* ]]
  # Drain the complete producer under pipefail, including large inventories.
  selected=$(apt-cache madison docker.io | awk -v v="$version" '!found && $3 ~ "^([0-9]+:)?" v "([+~.-]|$)" {print $3;found=1}')
  [[ -n $selected ]]
- apt-get install -y "docker.io=$selected" docker-buildx docker-compose-v2 openssh-server e2fsprogs
+ apt-get -o DPkg::Lock::Timeout=300 install -y "docker.io=$selected" docker-buildx docker-compose-v2 openssh-server e2fsprogs
 fi
 [[ $(docker --version) == *" $version,"* ]]
 docker buildx version
@@ -27,5 +27,8 @@ systemctl disable docker.service docker.socket containerd.service
 ! systemctl is-active --quiet docker.service docker.socket containerd.service
 rm -f /var/run/docker.sock
 rm -rf /var/lib/docker /var/lib/containerd
+sync
+install -d -m 700 /var/lib/pulse-docker-image
+touch /var/lib/pulse-docker-image/ready
 sync
 echo PULSE_DOCKER_ENGINE_BASE_READY

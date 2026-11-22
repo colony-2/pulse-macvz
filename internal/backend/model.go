@@ -8,6 +8,10 @@ import (
 
 type Error struct{ Code int }
 
+// ErrBusy means a verified stopped resource still has local work to join.
+// Reconciliation must retain its reservation and retry on a later pass.
+var ErrBusy = errors.New("native resource cleanup pending")
+
 func (e *Error) Error() string     { return fmt.Sprintf("native operation failed (%d)", e.Code) }
 func IsStatus(e error, n int) bool { var x *Error; return errors.As(e, &x) && x.Code == n }
 

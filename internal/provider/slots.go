@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"regexp"
@@ -247,6 +248,9 @@ func (p *Provider) reconcileSlots(ctx context.Context) error {
 			}
 			// The GET above verified immutable ownership immediately before this deletion.
 			if err = p.Backend.Delete(ctx, s.Name); err != nil && !backend.IsStatus(err, 404) {
+				if errors.Is(err, backend.ErrBusy) {
+					continue
+				}
 				return backendError("retire template Delete", err)
 			}
 			if _, err = p.Backend.Get(ctx, s.Name); backend.IsStatus(err, 404) {
@@ -259,6 +263,9 @@ func (p *Provider) reconcileSlots(ctx context.Context) error {
 		if v.Status == "failed" && v.Stopped() {
 			if s.Probe {
 				if err := p.Backend.Delete(ctx, s.Name); err != nil {
+					if errors.Is(err, backend.ErrBusy) {
+						continue
+					}
 					return err
 				}
 				s.Probe = false
@@ -281,6 +288,16 @@ func (p *Provider) reconcileSlots(ctx context.Context) error {
 		}
 		if s.MAC == "" {
 			s.Phase = "preparing"
+			if v.PowerState == "running" && !p.slotBusy(id) {
+				if observer, ok := p.Backend.(interface {
+					ObserveTemplatePreparation(context.Context, string, string, string) error
+				}); ok {
+					if err := observer.ObserveTemplatePreparation(ctx, s.Name, v.UID, p.base(t.image).OSVersion); err != nil {
+						p.preparation("slot:"+id, err)
+						continue
+					}
+				}
+			}
 			events, err := b.Events(ctx, s.Name)
 			if err != nil {
 				return backendError("template Events", err)

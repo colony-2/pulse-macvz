@@ -3,6 +3,7 @@ package launchlogs
 import (
 	"context"
 	"encoding/json"
+	"github.com/colony-2/pulse-macvz/internal/launchhistory"
 	"hash/crc32"
 	"os"
 	"path/filepath"
@@ -70,9 +71,15 @@ func TestRetentionAndPrivacy(t *testing.T) {
 	if e := logstore.Atomic(dir, "manifest.json", raw); e != nil {
 		t.Fatal(e)
 	}
+	if e := logstore.Atomic(dir, "identity.json", []byte(`{"launch_id":"old","vm_uid":"original","job":{"tenant_id":"tenant","job_id":"job"}}`)); e != nil {
+		t.Fatal(e)
+	}
 	a.clean()
 	if _, e := os.Stat(dir); !os.IsNotExist(e) {
 		t.Fatal("expired archive retained", e)
+	}
+	if h, e := launchhistory.Read(a.root, "old"); e != nil || h.LaunchID != "old" || h.Tenant != "tenant" || h.JobID != "job" || h.SubmittedAt != nil {
+		t.Fatal("retention removed launch history", h, e)
 	}
 	target := provider.LogTarget{LaunchID: "new", UID: "identity"}
 	if e := os.Chmod(a.root, 0755); e != nil {
