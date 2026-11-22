@@ -40,6 +40,7 @@ const DefaultLinuxVMCount = config.DefaultLinuxVMCount
 var ErrConfig = config.Err
 var ErrClosed = errors.New("provider closed")
 var _ api.Provider = (*Runtime)(nil)
+var _ api.ProviderWithLaunchLogs = (*Runtime)(nil)
 
 // Runtime owns one backend/owner scope exclusively. Run or Reconcile prepares slots
 // and cleans up completed instances. GetCapabilities, Submit and List implement
@@ -129,6 +130,19 @@ func (r *Runtime) List(ctx context.Context, q api.ListRequest) (api.ListResponse
 		return api.ListResponse{}, ErrClosed
 	}
 	return r.p.List(ctx, q)
+}
+
+// GetLaunchLog retrieves retained host output without affecting execution.
+func (r *Runtime) GetLaunchLog(ctx context.Context, q api.LaunchLogRequest) (api.LaunchLogResponse, error) {
+	if err := ctx.Err(); err != nil {
+		return api.LaunchLogResponse{}, err
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if r.closed {
+		return api.LaunchLogResponse{}, api.ErrProviderClosed
+	}
+	return r.archive.GetLaunchLog(ctx, q)
 }
 func (r *Runtime) Check(ctx context.Context) error {
 	r.mu.RLock()

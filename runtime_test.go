@@ -17,12 +17,54 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/colony-2/pulse-macvz/guest/logstore"
 	"github.com/colony-2/pulse-macvz/internal/backend"
 	"github.com/colony-2/pulse-macvz/internal/bundle"
 	"github.com/colony-2/pulse-macvz/internal/config"
+	"github.com/colony-2/pulse-macvz/internal/launchhistory"
 	engine "github.com/colony-2/pulse-macvz/internal/provider"
 	api "github.com/colony-2/pulse-provider-api"
 )
+
+func TestRuntimeRetainedLogRestartAndClosed(t *testing.T) {
+	c := testConfig(t)
+	c.Logging.Directory = t.TempDir()
+	r, err := newTestRuntime(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	capture := logstore.New(launchhistory.Root(r.p.Config), "historical", 1, 1, true)
+	capture.Write([]byte("retained output"))
+	capture.Close()
+	p, err := r.GetLaunchLog(t.Context(), api.LaunchLogRequest{LaunchID: "historical"})
+	if err != nil || len(p.Records) != 1 || string(p.Records[0].Data) != "retained output" || !p.Finalized {
+		t.Fatal(p, err)
+	}
+	if len(r.p.Backend.(*failingRecoveryBackend).calls) != 0 {
+		t.Fatal("retrieval contacted backend")
+	}
+	if err := r.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.GetLaunchLog(t.Context(), api.LaunchLogRequest{LaunchID: "historical"}); !errors.Is(err, api.ErrProviderClosed) {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if _, err := r.GetLaunchLog(ctx, api.LaunchLogRequest{LaunchID: "historical"}); !errors.Is(err, context.Canceled) {
+		t.Fatal(err)
+	}
+	reopened, err := newTestRuntime(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	tail, err := reopened.GetLaunchLog(t.Context(), api.LaunchLogRequest{LaunchID: "historical", PageToken: p.NextPageToken})
+	if err != nil || tail.Records == nil || len(tail.Records) != 0 || !tail.Finalized || tail.NextPageToken != p.NextPageToken {
+		t.Fatal(tail, err)
+	}
+}
 
 func TestSubmitLoggingClosedDoesNotReplaceAdmissionError(t *testing.T) {
 	r := &Runtime{closed: true}

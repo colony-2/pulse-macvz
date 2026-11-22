@@ -5,6 +5,7 @@ package logstore
 import (
 	"bufio"
 	"compress/gzip"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -27,6 +28,7 @@ const Chunk = 4096
 const Batch = 64 << 10
 
 var ErrJournal = errors.New("log journal unavailable or corrupt")
+var ErrOffset = errors.New("log offset is not a record boundary")
 
 type Manifest struct {
 	Version     int       `json:"version"`
@@ -39,9 +41,11 @@ type Manifest struct {
 	Updated     time.Time `json:"updated"`
 }
 type Frame struct {
-	Offset uint64 `json:"offset"`
-	Data   []byte `json:"data"`
-	CRC    uint32 `json:"crc"`
+	Sequence  uint64    `json:"sequence,omitempty"`
+	Timestamp time.Time `json:"timestamp,omitempty"`
+	Offset    uint64    `json:"offset"`
+	Data      []byte    `json:"data"`
+	CRC       uint32    `json:"crc"`
 }
 type Page struct {
 	Manifest Manifest `json:"manifest"`
@@ -107,10 +111,23 @@ func Load(dir, id string) (Manifest, error) {
 // Read never treats temporary EOF as closure. Concurrent rotation can produce
 // duplicate segments; frame offsets and checksums provide stable deduplication.
 func Read(root, id string, offset uint64) (Page, error) {
+	return read(context.Background(), root, id, offset, false)
+}
+
+// ReadRecords preserves stored record boundaries for durable API checkpoints.
+func ReadRecords(root, id string, offset uint64) (Page, error) {
+	return ReadRecordsContext(context.Background(), root, id, offset)
+}
+
+func ReadRecordsContext(ctx context.Context, root, id string, offset uint64) (Page, error) {
+	return read(ctx, root, id, offset, true)
+}
+
+func read(ctx context.Context, root, id string, offset uint64, records bool) (Page, error) {
 	var p Page
 	var err error
 	for attempt := 0; attempt < 3; attempt++ {
-		p, err = readOnce(root, id, offset)
+		p, err = readOnce(ctx, root, id, offset, records)
 		if err != nil || !p.Gap {
 			return p, err
 		}
@@ -123,7 +140,10 @@ func Read(root, id string, offset uint64) (Page, error) {
 	return p, err
 }
 
-func readOnce(root, id string, offset uint64) (Page, error) {
+func readOnce(ctx context.Context, root, id string, offset uint64, records bool) (Page, error) {
+	if err := ctx.Err(); err != nil {
+		return Page{}, err
+	}
 	dir := Dir(root, id)
 	m, e := Load(dir, id)
 	if os.IsNotExist(e) {
@@ -156,6 +176,9 @@ func readOnce(root, id string, offset uint64) (Page, error) {
 	})
 	used := 0
 	for _, entry := range files {
+		if err := ctx.Err(); err != nil {
+			return Page{}, err
+		}
 		name := entry.Name()
 		if !(strings.HasSuffix(name, ".log") || strings.HasSuffix(name, ".log.gz")) {
 			continue
@@ -192,6 +215,13 @@ func readOnce(root, id string, offset uint64) (Page, error) {
 		s := bufio.NewScanner(io.LimitReader(r, 129<<20))
 		s.Buffer(make([]byte, 8192), 8192)
 		for s.Scan() {
+			if err := ctx.Err(); err != nil {
+				if z != nil {
+					z.Close()
+				}
+				f.Close()
+				return Page{}, err
+			}
 			var frame Frame
 			if json.Unmarshal(s.Bytes(), &frame) != nil || len(frame.Data) > Chunk || len(frame.Data) == 0 || frame.CRC != crc32.ChecksumIEEE(frame.Data) {
 				if out.Next < m.End {
@@ -211,6 +241,13 @@ func readOnce(root, id string, offset uint64) (Page, error) {
 				out.Next = frame.Offset
 			}
 			if frame.Offset < out.Next {
+				if records {
+					if z != nil {
+						z.Close()
+					}
+					f.Close()
+					return out, ErrOffset
+				}
 				frame.Data = frame.Data[out.Next-frame.Offset:]
 				frame.Offset = out.Next
 				frame.CRC = crc32.ChecksumIEEE(frame.Data)
@@ -244,14 +281,15 @@ func readOnce(root, id string, offset uint64) (Page, error) {
 // Capture drains command output through a bounded queue. A full queue or failed
 // disk loses logging, never execution. Absolute offsets make that loss visible.
 type Capture struct {
-	mu      sync.Mutex
-	q       chan Frame
-	done    chan struct{}
-	m       Manifest
-	dir     string
-	logger  *lumberjack.Logger
-	closed  bool
-	initErr error
+	mu       sync.Mutex
+	q        chan Frame
+	done     chan struct{}
+	m        Manifest
+	dir      string
+	logger   *lumberjack.Logger
+	closed   bool
+	initErr  error
+	sequence uint64
 }
 
 func New(root, id string, size, backups int, compress bool) *Capture {
@@ -271,7 +309,8 @@ func (c *Capture) Write(b []byte) (int, error) {
 	}
 	for len(b) > 0 {
 		l := min(len(b), Chunk)
-		f := Frame{Offset: c.m.End, Data: append([]byte(nil), b[:l]...)}
+		c.sequence++
+		f := Frame{Offset: c.m.End, Sequence: c.sequence, Timestamp: time.Now().UTC(), Data: append([]byte(nil), b[:l]...)}
 		f.CRC = crc32.ChecksumIEEE(f.Data)
 		c.m.End += uint64(l)
 		select {

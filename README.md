@@ -155,7 +155,8 @@ See [VZ setup and qualification](docs/vz-testing.md) and
 ### Per-launch logs
 
 The provider API supports optional `launch` progress and `combined` worker-output
-listeners. Logging does not change admission or cancel jobs. Guest capture and
+listeners, plus `ProviderWithLaunchLogs.GetLaunchLog` for retained output.
+Logging does not change admission or cancel jobs. Guest capture and
 host archival continue independently of listeners, so a restarted provider can
 resume copying retained output from surviving VMs.
 
@@ -175,7 +176,16 @@ three compressed backups, a 1 GiB host budget per owner scope, and seven days fo
 completed archives. Output can be partial after retention, storage failure, or VM
 loss; the API and local reader report this explicitly.
 
-Existing images need `upgrade` to install the new capture helper. They remain
-executable and report worker logs unavailable until upgraded. Old callbacks do
-not reconnect automatically: the provider API has no attach-existing-launch
-operation. See [logging design and limits](docs/provider-logging-proposal.md).
+`GetLaunchLog` reads the host archive without contacting VMs. It returns up to
+100 records per page with checkpoints that survive provider restarts, and reports
+finalization and incomplete output separately from job status. It works through
+both inbound and reverse plugins without a live listener. Poll the returned
+checkpoint with a delay when caught up but not finalized.
+
+Existing archives can be retrieved after updating the provider binary. New guest
+capture helpers also preserve record numbers and capture timestamps; run `upgrade`
+to install them in prepared images. Older captured output remains readable with
+stable offset-based sequence numbers, zero (unknown) timestamps, and
+`Incomplete=true`. Images predating capture report logs unavailable until upgraded.
+Live callbacks do not reconnect automatically; retained retrieval is independent.
+See [logging design and limits](docs/provider-logging-proposal.md).

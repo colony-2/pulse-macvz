@@ -31,6 +31,15 @@ import (
 
 type fixtureAPI struct{}
 
+type retainedLogRuntime struct {
+	*fakeRuntime
+	root string
+}
+
+func (r *retainedLogRuntime) GetLaunchLog(ctx context.Context, q api.LaunchLogRequest) (api.LaunchLogResponse, error) {
+	return launchlogs.ReadLaunchLog(ctx, r.root, q)
+}
+
 func TestSharedKeySources(t *testing.T) {
 	for _, tc := range []struct {
 		name, value, want string
@@ -365,6 +374,11 @@ func testOutboundSDKReconnectAndCalls(t *testing.T, mode string) {
 	}
 	defer collector.Close()
 	var opened atomic.Int32
+	logRoot := t.TempDir()
+	capture := logstore.New(logRoot, "retained", 1, 1, true)
+	capture.Write([]byte{0, 255, 10})
+	capture.Write([]byte("tail"))
+	capture.Close()
 	var previous *fakeRuntime // factory calls are serialized by the SDK
 	command := newCommand(func(ctx context.Context, o serverOptions) error {
 		return runPlugin(ctx, o, func(serverOptions) (runtimeProvider, error) {
@@ -373,7 +387,7 @@ func testOutboundSDKReconnectAndCalls(t *testing.T, mode string) {
 			}
 			previous = fixtureRuntime()
 			opened.Add(1)
-			return previous, nil
+			return &retainedLogRuntime{fakeRuntime: previous, root: logRoot}, nil
 		})
 	})
 	command.SetErr(io.Discard)
@@ -430,10 +444,25 @@ func testOutboundSDKReconnectAndCalls(t *testing.T, mode string) {
 	if string(received[2].Data) != string([]byte{0, 255, 10}) || received[2].Sequence != 3 {
 		t.Fatal("transport changed bytes or sequence")
 	}
+	reader := first.Provider.(api.ProviderWithLaunchLogs)
+	page, err := reader.GetLaunchLog(ctx, api.LaunchLogRequest{LaunchID: "retained", PageSize: 1})
+	if err != nil || len(page.Records) != 1 || string(page.Records[0].Data) != string([]byte{0, 255, 10}) || page.Records[0].Sequence != 1 || page.Records[0].Timestamp.IsZero() || !page.Finalized || !page.HasMore || page.Incomplete || page.EstimatedTotalSizeBytes == nil || *page.EstimatedTotalSizeBytes != 7 {
+		t.Fatalf("retained log transport: %+v %v", page, err)
+	}
+	if _, err := reader.GetLaunchLog(ctx, api.LaunchLogRequest{LaunchID: "missing", PageToken: "bad"}); !errors.Is(err, api.ErrLaunchLogNotFound) {
+		t.Fatal("retrieval error category lost", err)
+	}
+	if _, err := reader.GetLaunchLog(ctx, api.LaunchLogRequest{LaunchID: "retained", PageToken: "bad"}); !errors.Is(err, api.ErrLaunchLogCursor) {
+		t.Fatal("cursor error category lost", err)
+	}
 	listener.disconnect()
 	second := waitProvider(first.Generation)
 	if second.ID != first.ID || opened.Load() != 2 {
 		t.Fatal("did not reconstruct provider on reconnect")
+	}
+	tail, err := second.Provider.(api.ProviderWithLaunchLogs).GetLaunchLog(ctx, api.LaunchLogRequest{LaunchID: "retained", PageToken: page.NextPageToken})
+	if err != nil || len(tail.Records) != 1 || string(tail.Records[0].Data) != "tail" || tail.Records[0].Sequence != 2 || tail.HasMore || !tail.Finalized {
+		t.Fatalf("retained checkpoint after reconnect: %+v %v", tail, err)
 	}
 	// A normal collector shutdown must also reconnect, not exit successfully.
 	address := listener.Addr().String()

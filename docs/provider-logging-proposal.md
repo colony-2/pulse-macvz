@@ -1,6 +1,6 @@
 # Provider launch logging
 
-Status: implemented against provider API and plugin revision `2919f1ed5e42`
+Status: implemented against provider API and plugin revision `bd1a5c559150`
 (protocol baseline 3). This document records the implementation and its limits.
 
 ## API and lifetime
@@ -39,6 +39,37 @@ dispatch. Timestamps are host observation times. A callback that ignores
 cancellation retains its capacity reservation until it returns; Done and Wait do
 not wait for it, and no replacement callback goroutines are created.
 
+## Retained retrieval
+
+`Runtime` implements `api.ProviderWithLaunchLogs.GetLaunchLog`. The inbound and
+reverse plugins expose it automatically. Reads use only the host archive, with no
+VM contact, admission, reconciliation, or dependence on a Submit listener.
+Retained records contain `combined` output; synthetic live `launch` events are not
+archived. Capture begins with worker execution, not base-image preparation.
+
+Pages contain 1–100 immutable records (default 100). Checkpoints bind the archive
+root/owner scope, LaunchID, and next record's byte offset. They survive process
+restarts and page-size changes; relocating the archive root invalidates them.
+Every successful read returns a checkpoint, including an empty active tail.
+`HasMore` describes records available now. `Finalized` means capture cannot append
+more, including interrupted/unavailable capture, and is independent of job status.
+`Incomplete` discloses known loss or missing legacy metadata across the log.
+Missing archives return `ErrLaunchLogNotFound` before cursor validation; invalid,
+cross-launch/scope, and trimmed checkpoints return `ErrLaunchLogCursor` without
+silently skipping output. Cancellation and storage failures remain errors.
+
+The size hint counts raw retained output bytes when the archive has no known
+loss; otherwise it is unknown. It is never a pagination or completion signal.
+Retention remains seven days by default, with earlier exceptional loss possible
+under the configured per-owner byte budget, guest rotation, or storage failure.
+
+No image rebuild is needed to retrieve already captured output. Old frames lack
+capture timestamps and record numbers: retrieval preserves their bytes, exposes
+zero timestamps, uses stable `offset+1` sequences, and sets `Incomplete=true`.
+Upgrade prepared images to capture full metadata for future launches. Stored
+sequences and timestamps are independent of live-listener sequence numbers and
+host observation times. Neither retrieval nor an upgrade fabricates old metadata.
+
 ## Storage and configuration
 
 Guest capture uses the versioned worker layout:
@@ -60,7 +91,8 @@ representations. This is a retention target, not an instantaneous disk quota.
 Storage failure or queue overflow continues draining stdout/stderr and preserves
 the worker's exit status; missing byte ranges are observable.
 
-Frames contain absolute raw-byte offsets, bounded binary payloads, and CRC32
+Frames contain capture timestamps, stable record sequence numbers, absolute
+raw-byte offsets, bounded binary payloads, and CRC32
 integrity checks. A private versioned manifest binds the stream to its LaunchID,
 records the produced byte count and known loss, and distinguishes live output
 from explicit closure. Readers handle uncompressed and gzip segments and deduplicate
@@ -180,8 +212,9 @@ assignment isolation, acknowledgement validation, compressed rotation and retent
 gaps, cursor recovery, idempotent replay, immutable VM identities, private storage,
 archive expiry/budget eviction, callback reentrancy/deadlines, retained capacity
 for stuck callbacks, queue overflow, copied coverage, configuration persistence,
-local inspection, and real reverse SDK delivery over the tested authentication
-and transport variants. The full suite runs with the race detector.
+local inspection, paginated retrieval across runtime restarts, expired and
+cross-scope checkpoints, active tails, legacy metadata, and real reverse SDK
+delivery/retrieval over the tested authentication and transport variants. The full suite runs with the race detector.
 
 VM qualification remains opt-in. Unit and SDK tests do not establish that an
 existing prepared image already contains the new helper; live qualification must

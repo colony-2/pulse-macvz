@@ -3,9 +3,11 @@ package logstore
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"hash/crc32"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 
@@ -26,7 +28,10 @@ func TestCaptureBinaryAndMirrorRestart(t *testing.T) {
 		t.Fatalf("%+v %v", p, e)
 	}
 	var got []byte
-	for _, f := range p.Frames {
+	for i, f := range p.Frames {
+		if f.Sequence != uint64(i+1) || f.Timestamp.IsZero() {
+			t.Fatal("capture omitted record metadata", f.Sequence, f.Timestamp)
+		}
 		got = append(got, f.Data...)
 	}
 	if !bytes.Equal(got, payload) {
@@ -43,6 +48,9 @@ func TestCaptureBinaryAndMirrorRestart(t *testing.T) {
 	if e != nil || saved.Gap || saved.Next != p.Next {
 		t.Fatal(saved, e)
 	}
+	if !reflect.DeepEqual(saved.Frames, p.Frames) {
+		t.Fatal("mirror changed record metadata")
+	}
 	m, e := Load(Dir(host, id), id)
 	if e != nil || m.End != p.Next || !m.Closed {
 		t.Fatal(m, e)
@@ -50,6 +58,9 @@ func TestCaptureBinaryAndMirrorRestart(t *testing.T) {
 	tail, e := Read(host, id, 123)
 	if e != nil || tail.Gap || tail.Frames[0].Offset != 123 {
 		t.Fatal(tail, e)
+	}
+	if _, e = ReadRecords(host, id, 123); !errors.Is(e, ErrOffset) {
+		t.Fatal("record reader split a captured record", e)
 	}
 	if _, e = Load(Dir(host, id), "other"); e == nil {
 		t.Fatal("identity mismatch accepted")
