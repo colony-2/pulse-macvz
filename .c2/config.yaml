@@ -5,7 +5,7 @@ self:
 root:
   repo: https://github.com/colony-2/c2-root.git
   ref: main
-jobdb: http://192.168.1.195:9047/c2
+jobdb: http://db.lab.c2.run:9047/c2
 packages:
   - nix:github:NixOS/nixpkgs/a033e66ab94a6bedf2c3d58d93a36319d3cbbbaf#go_1_26
   - nix:github:NixOS/nixpkgs/a033e66ab94a6bedf2c3d58d93a36319d3cbbbaf#bash
