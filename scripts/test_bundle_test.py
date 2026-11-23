@@ -54,6 +54,7 @@ esac
     def test_latest_default_resolves_release_and_records_commit(self):
         files = self.build()
         self.assertIn(REVISION.encode(), files['flake.nix'])
+        self.assertEqual(files['configure-linux-gic-traps.py'], (ROOT/'scripts/configure-linux-gic-traps.py').read_bytes())
         self.assertEqual(self.requests.read_text().splitlines(), [
             'https://api.github.com/repos/colony-2/c2j/releases/latest',
             'https://api.github.com/repos/colony-2/c2j/commits/v1.2.3'])

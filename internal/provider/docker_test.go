@@ -24,6 +24,7 @@ type dockerFake struct {
 	nixSetupDenied                              bool
 	nixSetups                                   int
 	kvmDenied                                   bool
+	gicDenied                                   bool
 	kvmNetworkDenied                            bool
 	engineBlocked                               bool
 	engineStarts                                int
@@ -78,6 +79,12 @@ func TestDockerPairsRestoreBeforeEnginesReady(t *testing.T) {
 }
 func (f *dockerFake) Exec(_ context.Context, name, uid string, script []byte) ([]byte, error) {
 	s := string(script)
+	if strings.Contains(s, "PULSE_GIC_TRAPS_READY") {
+		if f.gicDenied {
+			return nil, errors.New("missing GIC trap boot arguments")
+		}
+		return []byte("PULSE_GIC_TRAPS_READY"), nil
+	}
 	if strings.Contains(s, "/var/lib/pulse-docker/setup-linux-nix.sh") {
 		f.nixSetups++
 		if f.nixSetupDenied {

@@ -66,13 +66,19 @@ func (p *Provider) dockerHash(g config.SlotGroup) string {
 	g.Count = 0
 	// Refresh unused eager-Docker allocations; active jobs retain their contract.
 	preparationVersion := 2
-	return p.Store.hash(struct {
+	hash := p.Store.hash(struct {
 		Base               config.Base
 		Group              config.SlotGroup
 		Engine             config.EngineProfile
 		Endpoint           config.Endpoint
 		PreparationVersion int
 	}{p.base(g.Base), g, p.Config.Engine(g.DockerProfile), p.Config.DockerEndpoint, preparationVersion})
+	// Keep unrelated allocation identities stable; only ARM64 Linux workers
+	// need replacement to boot the new prepared source.
+	if p.gicTraps(p.base(g.Base)) {
+		return p.Store.hash([]string{hash, "gic-traps-v1"})
+	}
+	return hash
 }
 func (p *Provider) dockerMatch(g config.SlotGroup, l api.Launch) bool {
 	if g.DockerProfile == "" {
@@ -306,6 +312,15 @@ func (p *Provider) needsLinuxNixSetup(pair *PairRecord) bool {
 func (p *Provider) primaryReadyDetail(ctx context.Context, pair *PairRecord) error {
 	b := p.base(pair.Base)
 	g := p.dockerGroup(pair.SlotID)
+	if p.gicTraps(b) {
+		out, err := p.Backend.(dockerBackend).Exec(ctx, pair.Primary.Name, pair.PrimaryUID, []byte(gicTrapsReadinessProbe))
+		if err != nil {
+			return fmt.Errorf("observe ARM64 KVM GIC trap boot arguments: %w", err)
+		}
+		if strings.TrimSpace(string(out)) != "PULSE_GIC_TRAPS_READY" {
+			return errors.New("ARM64 KVM GIC trap boot arguments are not active; prepare the current worker base and boot a fresh allocation")
+		}
+	}
 	// Both the OS/resource facts and the exact engine identity must be observed.
 	code := `import json,os,platform,subprocess
 r=lambda *a:subprocess.check_output(a,text=True).strip()
@@ -1162,4 +1177,15 @@ case "$version" in
  'pulse-macvz-guest 0.2.0') state=/var/db/pulse-macvz; sudo -n test ! -e /var/db/pulse-tart ;;
  *) exit 1 ;;
 esac
+`
+
+const gicTrapsReadinessProbe = `set -eu
+python3 - <<'PULSE_GIC_CHECK'
+args = open('/proc/cmdline').read().split()
+for name in ('vgic_v3_group0_trap', 'vgic_v3_group1_trap', 'vgic_v3_common_trap'):
+    key = 'kvm-arm.' + name
+    values = [arg for arg in args if arg.startswith(key + '=')]
+    assert values and all(value == key + '=1' for value in values), key
+print('PULSE_GIC_TRAPS_READY')
+PULSE_GIC_CHECK
 `

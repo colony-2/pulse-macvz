@@ -86,3 +86,34 @@ including a container launched through the ordinary user's service manager.
 The test also exercises the installed launcher's UID/capability transition and
 checks that preparation refuses an accepted test launch.
 Production base images and accepted jobs remain unchanged.
+
+## ARM64 interrupt-controller trapping
+
+ARM64 Ubuntu worker images enable these outer-kernel arguments by default:
+
+```text
+kvm-arm.vgic_v3_group0_trap=1
+kvm-arm.vgic_v3_group1_trap=1
+kvm-arm.vgic_v3_common_trap=1
+```
+
+These configure the worker's KVM implementation, not the command line of guests
+launched by Cloud Hypervisor or QEMU. They enable emulation of nested GICv3 system
+register accesses. The kernel reports `GICv3 sysreg trapping enabled ([G0G1C],
+reduced performance)`; this trades some performance for reliable nested guest I/O.
+The three-boot reproduction and exact environment are recorded in
+[ARM64 GIC qualification](gic-traps-qualification.md).
+
+There is no opt-in flag. Preparation writes a dedicated
+`/etc/default/grub.d/99-pulse-kvm-gic-traps.cfg` and runs `update-grub`, preserving
+other GRUB settings. The builder shuts down before it is used as a clone source.
+Readiness verifies all three arguments in the booted worker's `/proc/cmdline`
+before handoff, including launches that do not request `kvm`.
+
+The prepared ARM64 Linux image name and allocation revision change with this
+policy. After deploying the new binary, `pulse-macvz setup` prepares the new base
+and replaces unused old workers. Normal provider reconciliation does this too.
+An `upgrade` is only needed if you also want to refresh the software in your
+other bases. Accepted jobs keep their original VM until completion; the provider
+does not edit their boot settings or reboot them. macOS workers, x86 Linux workers,
+and software-only Docker companion images retain their existing preparation.

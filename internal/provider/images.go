@@ -514,15 +514,23 @@ func (p *Provider) PurgeImages(ctx context.Context) error {
 	return p.Store.save()
 }
 
+func (p *Provider) gicTraps(base config.Base) bool {
+	return base.OS == "linux" && base.Architecture() == "arm64"
+}
+
 func (p *Provider) baseImageName(name string) string {
+	label := name
 	for _, g := range p.Config.Slots {
 		if g.Base == name && g.DockerProfile != "" {
-			label := name + "-docker"
+			label += "-docker"
 			if p.base(name).OS == "linux" {
 				label += "-engine-v1-" + p.Config.Engine(g.DockerProfile).EngineVersion
 			}
-			return config.BaseImageName(p.Config.OwnerID, label)
+			break
 		}
 	}
-	return config.BaseImageName(p.Config.OwnerID, name)
+	if p.gicTraps(p.base(name)) {
+		label += "-gic-traps-v1"
+	}
+	return config.BaseImageName(p.Config.OwnerID, label)
 }
