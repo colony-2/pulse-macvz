@@ -20,6 +20,10 @@ const DefaultMemoryMiB int64 = 8192
 const DefaultMacOSVMCount = 2
 const DefaultLinuxVMCount = 4
 
+// Sparse capacity; preparation expands APFS and checks for 30 GiB free.
+const MacOSDiskBytes int64 = 80 << 30
+const MacOSDiskPolicy = "disk80-free30-v1"
+
 // WorkerNameLabel is retained for compatibility with prepared VM metadata.
 const WorkerNameLabel = "org.cirruslabs.orchard.worker-name"
 

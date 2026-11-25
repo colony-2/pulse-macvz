@@ -60,6 +60,15 @@ with **4 vCPU / 8 GiB**. The bases are Tahoe (`macos-26-arm64`), Sequoia
 (`macos-15-arm64`) and Ubuntu 24.04 (`ubuntu-24.04-arm64`). Both macOS versions
 share the same two-job limit. Larger or smaller VM sizes are currently rejected.
 
+macOS workers use an **80 GiB sparse, copy-on-write disk** (larger source disks
+are preserved). Base preparation expands the guest APFS container and requires
+**at least 30 GiB free** on both the data volume and Nix store before publishing
+the image. This is starting free space, not a reservation against subsequent job
+writes. Clones share unchanged host blocks; 80 GiB is not allocated per worker.
+After installing this version, `setup` prepares new bases and suspended templates
+for this storage policy. Existing accepted jobs finish on their original disks;
+their space does not increase in place. `upgrade` also refreshes installed tools.
+
 Override any of the three job counts; omitted per-OS counts stay at 2 and 4,
 and an omitted total becomes their sum:
 

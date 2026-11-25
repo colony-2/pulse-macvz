@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/colony-2/pulse-macvz/internal/config"
 	"github.com/colony-2/pulse-macvz/internal/local"
 )
 
@@ -75,6 +76,44 @@ func TestColdCloneIsolationAndIdentity(t *testing.T) {
 	disk, _ := os.ReadFile(filepath.Join(source, "disk.img"))
 	if string(disk) != "private fixture" {
 		t.Fatal("source disk changed")
+	}
+}
+
+func TestMacOSColdCloneSparseGrowth(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("APFS clone")
+	}
+	for _, tc := range []struct {
+		name, os   string
+		size, want int64
+	}{
+		{"mac-small", "darwin", 50_000_000_000, config.MacOSDiskBytes},
+		{"mac-large", "darwin", 100 << 30, 100 << 30},
+		{"linux", "linux", 50_000_000_000, 50_000_000_000},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, source := fixture(t)
+			c, err := readConfig(source)
+			if err != nil {
+				t.Fatal(err)
+			}
+			c.OS = tc.os
+			if err := atomicJSON(filepath.Join(source, "config.json"), c); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Truncate(filepath.Join(source, "disk.img"), tc.size); err != nil {
+				t.Fatal(err)
+			}
+			if err := s.Clone(t.Context(), "source", "clone"); err != nil {
+				t.Fatal(err)
+			}
+			for name, want := range map[string]int64{"source": tc.size, "clone": tc.want} {
+				info, err := os.Stat(filepath.Join(s.Home, "vms", name, "disk.img"))
+				if err != nil || info.Size() != want {
+					t.Fatalf("%s: %v %v", name, info, err)
+				}
+			}
+		})
 	}
 }
 
@@ -166,6 +205,11 @@ func TestSnapshotRequiresStateAndCompatibleIdentity(t *testing.T) {
 		t.Fatal(err)
 	}
 	cloned, _ := readConfig(filepath.Join(s.Home, "vms", "job"))
+	srcDisk, _ := os.Stat(filepath.Join(dir, "disk.img"))
+	dstDisk, _ := os.Stat(filepath.Join(s.Home, "vms", "job", "disk.img"))
+	if srcDisk.Size() != dstDisk.Size() {
+		t.Fatal("resumed disk geometry changed")
+	}
 	if configHash(c) != configHash(cloned) {
 		t.Fatal("snapshot identity changed")
 	}

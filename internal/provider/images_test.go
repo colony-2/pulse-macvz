@@ -110,7 +110,7 @@ func TestPrepareBaseOnceAndReuseSourcesAfterDrain(t *testing.T) {
 			t.Fatal(s.Phase)
 		}
 	}
-	base := p.Store.data.Images[config.BaseImageName(p.Config.OwnerID, p.Config.Bases[0].Name)]
+	base := p.Store.data.Images[p.baseImageName(p.Config.Bases[0].Name)]
 	for _, s := range p.Store.data.Slots {
 		if f.vms[s.Name].Image != base.LocalName {
 			t.Fatal("slot did not use shared prepared base")

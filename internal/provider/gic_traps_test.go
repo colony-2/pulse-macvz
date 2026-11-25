@@ -36,13 +36,16 @@ func TestGICPolicySeparatesARMWorkerImagesAndAllocations(t *testing.T) {
 			if tc.os == "linux" {
 				label += "-engine-v1-29.1.3"
 			}
+			if tc.os == "darwin" {
+				label += "-" + config.MacOSDiskPolicy
+			}
 			if tc.changed {
 				label += "-gic-traps-v1"
 			}
 			if got, want := p.baseImageName(b.Name), config.BaseImageName(p.Config.OwnerID, label); got != want {
 				t.Fatal(got, want)
 			}
-			if (p.dockerHash(p.Config.Slots[0]) != legacyDockerHash(p, p.Config.Slots[0])) != tc.changed {
+			if (p.dockerHash(p.Config.Slots[0]) != legacyDockerHash(p, p.Config.Slots[0])) != (tc.changed || tc.os == "darwin") {
 				t.Fatal("unexpected allocation policy migration")
 			}
 		})

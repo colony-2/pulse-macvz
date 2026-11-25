@@ -390,6 +390,20 @@ func (s *Store) Clone(ctx context.Context, source, destination string) error {
 			return err
 		}
 	}
+	// Only grow a private cold clone. A saved VM's device geometry must remain
+	// identical on restore, and the shared source must never be modified.
+	if c.OS == "darwin" && !c.RestoreRequired {
+		disk := filepath.Join(temp, "disk.img")
+		info, err := os.Stat(disk)
+		if err != nil {
+			return err
+		}
+		if info.Size() < config.MacOSDiskBytes {
+			if err := os.Truncate(disk, config.MacOSDiskBytes); err != nil {
+				return fmt.Errorf("grow macOS disk: %w", err)
+			}
+		}
+	}
 	if err = syncDir(temp); err != nil {
 		return err
 	}

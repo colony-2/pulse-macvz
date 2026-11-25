@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/colony-2/pulse-macvz/internal/config"
 )
 
 // Only the provider's verified, unused base builders use this observer.
@@ -20,6 +22,7 @@ if [[ $(/usr/bin/sw_vers -productVersion) != "$expected" ]]; then state=failed
 elif sudo -n test -f /var/db/pulse-tart-base/failed; then state=failed
 elif sudo -n test -f /var/db/pulse-tart-base/ready; then
   state=ready
+  if [[ $(sudo -n cat /var/db/pulse-tart-base/storage-policy 2>/dev/null) != "` + config.MacOSDiskPolicy + `" ]]; then state=preparing; fi
   for tool in c2j pulse-tart-guest git node pnpm uv python3; do
     sudo -n test -x "/opt/pulse-tart/bin/$tool" || state=failed
   done

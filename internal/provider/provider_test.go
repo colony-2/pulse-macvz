@@ -88,7 +88,7 @@ func fixture(t *testing.T) (*Provider, *fake) {
 	}
 	p.Setup = func(context.Context) ([]byte, error) { return []byte("test-setup"), nil }
 	base := p.sourceSpec(p.Config.Bases[0], 4, 8192)
-	base.Name = config.BaseImageName(p.Config.OwnerID, p.Config.Bases[0].Name)
+	base.Name = p.baseImageName(p.Config.Bases[0].Name)
 	f.baseVM = &backend.VM{Spec: base, UID: "prepared-base", LocalName: "local-" + base.Name, Worker: "mac-1", PowerState: "stopped", Conditions: []backend.Condition{{Type: "running", State: "false"}}}
 	p.Store.data.Images[base.Name] = &ImageRecord{Name: base.Name, UID: f.baseVM.UID, LocalName: f.baseVM.LocalName, NativeHash: p.Store.hash(base), Phase: "ready", Worker: "mac-1", Kind: "base"}
 

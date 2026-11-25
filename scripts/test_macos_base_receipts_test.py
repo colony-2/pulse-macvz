@@ -40,6 +40,9 @@ class MacBaseReceipts(unittest.TestCase):
                              ('/usr/bin/sw_vers', 'sw_vers'), ('/usr/bin/uuidgen', 'uuidgen_test'),
                              ('/sbin/shutdown', 'shutdown_test'), ('$EUID == 0', '1 == 1')]:
                 script = script.replace(old, new)
+            script = script.replace('\ngrow_macos_storage\n', '\n: # storage tested separately\n').replace('\nmacos_free_space\n', '\n: # storage tested separately\n')
+            if fail == 'storage':
+                script = script.replace(': # storage tested separately', 'storage_failure() { false; }; storage_failure', 1)
             prelude = '''
 uname() { case "$1" in -s) echo Darwin;; -m) echo arm64;; esac; }
 sw_vers() { echo 15.7.7; }
@@ -72,6 +75,12 @@ sleep() { if [[ $1 != 5 ]]; then command sleep "$1"; fi; }
 
     def test_failed_retry_invalidates_old_success(self):
         code, ready, failed, output = self.run_service(True)
+        self.assertNotEqual(code, 0, output)
+        self.assertFalse(ready)
+        self.assertTrue(failed)
+
+    def test_storage_failure_marks_builder_failed(self):
+        code, ready, failed, output = self.run_service('storage')
         self.assertNotEqual(code, 0, output)
         self.assertFalse(ready)
         self.assertTrue(failed)

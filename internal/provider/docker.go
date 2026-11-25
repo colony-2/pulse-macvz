@@ -78,6 +78,9 @@ func (p *Provider) dockerHash(g config.SlotGroup) string {
 	if p.gicTraps(p.base(g.Base)) {
 		return p.Store.hash([]string{hash, "gic-traps-v1"})
 	}
+	if p.base(g.Base).OS != "linux" {
+		return p.Store.hash([]string{hash, config.MacOSDiskPolicy})
+	}
 	return hash
 }
 func (p *Provider) dockerMatch(g config.SlotGroup, l api.Launch) bool {

@@ -71,12 +71,14 @@ func (p *Provider) slotTargets() (map[string]slotTarget, error) {
 			Group         string
 			DockerProfile string `json:",omitempty"`
 		}{img, group.CPU, group.MemoryMiB, group.Name, group.DockerProfile})}
+		target.hash = p.Store.hash([]string{target.hash, config.MacOSDiskPolicy})
 		for i := 0; i < group.Count; i++ {
 			t := target
 			namingGroup := group
 			if group.DockerProfile != "" {
 				namingGroup.Name += "-docker-" + group.DockerProfile
 			}
+			namingGroup.Name += "-" + config.MacOSDiskPolicy
 			t.spec.Name = config.SlotImageName(p.Config.OwnerID, namingGroup, i+1)
 			targets[fmt.Sprintf("%s-%04d", group.Name, i+1)] = t
 		}

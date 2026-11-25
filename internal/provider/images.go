@@ -532,5 +532,8 @@ func (p *Provider) baseImageName(name string) string {
 	if p.gicTraps(p.base(name)) {
 		label += "-gic-traps-v1"
 	}
+	if p.base(name).OS != "linux" {
+		label += "-" + config.MacOSDiskPolicy
+	}
 	return config.BaseImageName(p.Config.OwnerID, label)
 }
